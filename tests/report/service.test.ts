@@ -1,0 +1,319 @@
+import { describe, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import { join } from 'node:path';
+
+import { openDatabase } from '@llmtally/core/db/connection.ts';
+import { migrate } from '@llmtally/core/db/migrate.ts';
+import { buildReportRange, ALL_TIME_RANGE } from '@llmtally/core/report/range.ts';
+import { generateReport } from '@llmtally/core/report/service.ts';
+import type { ReportRequest } from '@llmtally/core/report/types.ts';
+import { makeTempDir } from '../helpers.ts';
+
+// seed epochs come from SQLite's own localtime conversion so they match
+// the report bucketing exactly, even when the test runner overrides the
+// JS timezone (bun test forces TZ=UTC while SQLite keeps the OS zone)
+function localEpoch(localDateTime: string): number {
+  const db = new Database(':memory:');
+  const row = db
+    .query<{ s: number }, [string]>("SELECT CAST(strftime('%s', ?, 'utc') AS INTEGER) AS s")
+    .get(localDateTime);
+  db.close();
+  if (row === null) {
+    throw new Error(`cannot convert ${localDateTime}`);
+  }
+  return row.s;
+}
+
+// local 23:30 on Aug 9 and 00:30 on Aug 10 straddle a local midnight
+const AUG9_LATE = localEpoch('2026-08-09 23:30:00');
+const AUG10_EARLY = localEpoch('2026-08-10 00:30:00');
+
+const LITELLM_PAYLOAD = {
+  'claude-fable-5': {
+    input_cost_per_token: 1e-5,
+    output_cost_per_token: 5e-5,
+    cache_read_input_token_cost: 1e-6,
+    cache_creation_input_token_cost: 1.25e-5,
+  },
+  'gpt-5.5': {
+    input_cost_per_token: 5e-6,
+    output_cost_per_token: 3e-5,
+    cache_read_input_token_cost: 5e-7,
+    cache_creation_input_token_cost: 6.25e-6,
+  },
+  'tiered-model': {
+    input_cost_per_token: 1e-6,
+    output_cost_per_token: 2e-6,
+    input_cost_per_token_above_100k_tokens: 1e-5,
+  },
+};
+
+interface SeedRow {
+  readonly tsUtc: number;
+  readonly agent: string;
+  readonly provider: string | null;
+  readonly model: string;
+  readonly input: number;
+  readonly output: number;
+  readonly cacheWrite?: number;
+  readonly cacheRead?: number;
+  readonly cost?: number | null;
+}
+
+function seedLedger(rows: readonly SeedRow[]): string {
+  const path = join(makeTempDir(), 'ledger.db');
+  const db = openDatabase(path);
+  migrate(db);
+  const insert = db.prepare(
+    `INSERT INTO usage_ledger
+      (ts_utc, agent, provider, model, natural_id, parser_version,
+       input_tokens, output_tokens, cache_write, cache_read, reasoning_tokens, cost_usd)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, ?)`,
+  );
+  rows.forEach((row, index) => {
+    insert.run(
+      row.tsUtc,
+      row.agent,
+      row.provider,
+      row.model,
+      `seed-${index}`,
+      row.input,
+      row.output,
+      row.cacheWrite ?? 0,
+      row.cacheRead ?? 0,
+      row.cost ?? null,
+    );
+  });
+  db.close();
+  return path;
+}
+
+function request(databasePath: string, overrides: Partial<ReportRequest> = {}): ReportRequest {
+  return {
+    groupBy: 'day',
+    range: ALL_TIME_RANGE,
+    agent: null,
+    databasePath,
+    noRefresh: false,
+    ...overrides,
+  };
+}
+
+function litellmFetch(): (url: string) => Promise<Response> {
+  return (url) => {
+    if (url.includes('litellm')) {
+      return Promise.resolve(new Response(JSON.stringify(LITELLM_PAYLOAD)));
+    }
+    return Promise.resolve(new Response(JSON.stringify({ data: [] })));
+  };
+}
+
+function deps(overrides: Record<string, unknown> = {}) {
+  return {
+    fetchFn: litellmFetch(),
+    cacheDir: makeTempDir(),
+    configPath: join(makeTempDir(), 'config.json'),
+    ...overrides,
+  };
+}
+
+describe('generateReport', () => {
+  test('buckets by local day and separates actual from nominal costs', async () => {
+    // Arrange
+    const path = seedLedger([
+      { tsUtc: AUG9_LATE, agent: 'claude-code', provider: 'anthropic', model: 'claude-fable-5', input: 1000, output: 200, cacheWrite: 100, cacheRead: 5000 },
+      { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'gpt-5.5', input: 6000, output: 100, cacheRead: 5000 },
+      { tsUtc: AUG10_EARLY, agent: 'opencode', provider: 'opencode-go', model: 'kimi-k3', input: 10, output: 5, cost: 0.125 },
+    ]);
+
+    // Act
+    const summary = await generateReport(request(path), deps());
+
+    // Assert — two local days despite adjacent UTC times
+    expect(summary.buckets.map((bucket) => bucket.key)).toEqual(['2026-08-09', '2026-08-10']);
+    const day1 = summary.buckets[0];
+    const day2 = summary.buckets[1];
+    // claude: 1000*1e-5 + 200*5e-5 + 5000*1e-6 + 100*1.25e-5
+    expect(day1?.nominal.usd).toBeCloseTo(0.02625, 10);
+    // codex: (6000-5000)*5e-6 + 100*3e-5 + 5000*5e-7
+    expect(day2?.nominal.usd).toBeCloseTo(0.0105, 10);
+    expect(day2?.actual.usd).toBe(0.125);
+    expect(summary.totals.actual.usd).toBe(0.125);
+    expect(summary.totals.nominal.usd).toBeCloseTo(0.03675, 10);
+    expect(summary.totals.unpricedRows).toBe(0);
+  });
+
+  test('unknown models stay unpriced with aggregated warnings and null totals', async () => {
+    // Arrange
+    const path = seedLedger([
+      { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'unknown', input: 10, output: 5 },
+      { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'gpt-5.5', input: 100, output: 10 },
+    ]);
+
+    // Act
+    const summary = await generateReport(request(path), deps());
+
+    // Assert — full nominal total is null but the priced subtotal survives
+    expect(summary.totals.nominal.usd).toBeNull();
+    expect(summary.totals.nominal.pricedSubtotalUsd).toBeGreaterThan(0);
+    expect(summary.totals.nominal.unpricedRows).toBe(1);
+    expect(summary.totals.unpricedModels).toContain('unknown');
+    expect(
+      summary.totals.nominal.warnings.some((warning) => warning.code === 'unknown_model'),
+    ).toBe(true);
+  });
+
+  test('tier-crossing groups are re-priced row by row', async () => {
+    // Arrange — one small and one huge request in the same (day, model) group
+    const path = seedLedger([
+      { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'tiered-model', input: 1000, output: 0 },
+      { tsUtc: AUG10_EARLY + 60, agent: 'codex', provider: 'openai', model: 'tiered-model', input: 200_000, output: 0 },
+    ]);
+
+    // Act
+    const summary = await generateReport(request(path), deps());
+
+    // Assert — 1000*1e-6 (base) + 200000*1e-5 (above-100k tier), not a single blended rate
+    expect(summary.totals.nominal.usd).toBeCloseTo(0.001 + 2.0, 10);
+  });
+
+  test('offline with no cache keeps the report alive with token-only output', async () => {
+    // Arrange
+    const path = seedLedger([
+      { tsUtc: AUG10_EARLY, agent: 'claude-code', provider: 'anthropic', model: 'claude-fable-5', input: 100, output: 10 },
+    ]);
+
+    // Act
+    const summary = await generateReport(
+      request(path),
+      deps({ fetchFn: () => Promise.reject(new Error('offline')) }),
+    );
+
+    // Assert
+    expect(summary.pricing.status).toBe('absent');
+    expect(summary.totals.nominal.usd).toBeNull();
+    expect(summary.totals.rowCount).toBe(1);
+    expect(summary.pricing.warnings.some((w) => w.includes('refresh failed'))).toBe(true);
+  });
+
+  test('noRefresh never calls the network', async () => {
+    // Arrange
+    const path = seedLedger([
+      { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'gpt-5.5', input: 10, output: 1 },
+    ]);
+    let calls = 0;
+
+    // Act
+    await generateReport(
+      request(path, { noRefresh: true }),
+      deps({
+        fetchFn: () => {
+          calls += 1;
+          return Promise.resolve(new Response('{}'));
+        },
+      }),
+    );
+
+    // Assert
+    expect(calls).toBe(0);
+  });
+
+  test('date range filters by local calendar days and agent filter narrows rows', async () => {
+    // Arrange
+    const path = seedLedger([
+      { tsUtc: AUG9_LATE, agent: 'claude-code', provider: 'anthropic', model: 'claude-fable-5', input: 1, output: 1 },
+      { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'gpt-5.5', input: 1, output: 1 },
+    ]);
+    const range = buildReportRange('2026-08-10', '2026-08-10');
+    if ('error' in range) {
+      throw new Error(range.error);
+    }
+
+    // Act
+    const ranged = await generateReport(request(path, { range }), deps());
+    const filtered = await generateReport(request(path, { agent: 'codex' }), deps());
+
+    // Assert
+    expect(ranged.buckets.map((bucket) => bucket.key)).toEqual(['2026-08-10']);
+    expect(filtered.totals.rowCount).toBe(1);
+  });
+
+  test('sql-injection-shaped agent filters are treated as plain values', async () => {
+    // Arrange
+    const path = seedLedger([
+      { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'gpt-5.5', input: 1, output: 1 },
+    ]);
+
+    // Act
+    const summary = await generateReport(
+      request(path, { agent: "codex' OR '1'='1" }),
+      deps(),
+    );
+
+    // Assert
+    expect(summary.totals.rowCount).toBe(0);
+  });
+
+  test('an invalid codex row cannot cancel out inside a healthy group sum', async () => {
+    // Arrange — invalid (input < cacheRead) and valid rows in ONE group;
+    // their SUM looks valid, so only per-row repricing catches it
+    const path = seedLedger([
+      { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'gpt-5.5', input: 100, output: 10, cacheRead: 5000 },
+      { tsUtc: AUG10_EARLY + 60, agent: 'codex', provider: 'openai', model: 'gpt-5.5', input: 20_000, output: 10, cacheRead: 5000 },
+    ]);
+
+    // Act
+    const summary = await generateReport(request(path), deps());
+
+    // Assert — valid row priced ((20000-5000)*5e-6 + 10*3e-5 + 5000*5e-7),
+    // invalid row unpriced instead of blending into the sum
+    expect(summary.totals.nominal.usd).toBeNull();
+    expect(summary.totals.nominal.pricedRows).toBe(1);
+    expect(summary.totals.nominal.unpricedRows).toBe(1);
+    expect(summary.totals.nominal.pricedSubtotalUsd).toBeCloseTo(0.0778, 10);
+    expect(
+      summary.totals.nominal.warnings.some(
+        (warning) => warning.code === 'invalid_token_semantics',
+      ),
+    ).toBe(true);
+  });
+
+  test('actual and nominal warnings never contaminate each other', async () => {
+    // Arrange — an opencode row without cost AND an unknown codex model
+    const path = seedLedger([
+      { tsUtc: AUG10_EARLY, agent: 'opencode', provider: 'opencode-go', model: 'kimi-k3', input: 1, output: 1, cost: null },
+      { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'unknown', input: 1, output: 1 },
+    ]);
+
+    // Act
+    const summary = await generateReport(request(path), deps());
+
+    // Assert
+    expect(summary.totals.actual.warnings.map((warning) => warning.code)).toEqual([
+      'missing_authoritative_cost',
+    ]);
+    expect(summary.totals.nominal.warnings.map((warning) => warning.code)).toEqual([
+      'unknown_model',
+    ]);
+  });
+
+  test('opencode rows missing cost are reported as partial actuals', async () => {
+    // Arrange
+    const path = seedLedger([
+      { tsUtc: AUG10_EARLY, agent: 'opencode', provider: 'opencode-go', model: 'kimi-k3', input: 1, output: 1, cost: 0.5 },
+      { tsUtc: AUG10_EARLY + 1, agent: 'opencode', provider: 'opencode-go', model: 'kimi-k3', input: 1, output: 1, cost: null },
+    ]);
+
+    // Act
+    const summary = await generateReport(request(path), deps());
+
+    // Assert
+    expect(summary.totals.actual.usd).toBeNull();
+    expect(summary.totals.actual.pricedSubtotalUsd).toBe(0.5);
+    expect(
+      summary.totals.actual.warnings.some(
+        (warning) => warning.code === 'missing_authoritative_cost',
+      ),
+    ).toBe(true);
+  });
+});

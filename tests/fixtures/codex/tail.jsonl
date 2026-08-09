@@ -1,0 +1,6 @@
+{"timestamp":"2026-08-04T08:00:00.000Z","type":"session_meta","payload":{"id":"rollout-tail","session_id":"sess-tail","cwd":"/tmp/proj","model_provider":"openai","source":"cli"}}
+{"timestamp":"2026-08-04T08:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"tail question"}]}}
+{"timestamp":"2026-08-04T08:00:02.000Z","type":"turn_context","payload":{"turn_id":"turn-t1","cwd":"/tmp/proj","model":"gpt-5.5","effort":"high"}}
+{"timestamp":"2026-08-04T08:00:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":6,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":13,"reasoning_output_tokens":1,"total_tokens":20},"last_token_usage":{"input_tokens":6,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":13,"reasoning_output_tokens":1,"total_tokens":20}},"rate_limits":{}}}
+{"timestamp":"2026-08-04T08:00:11.000Z","type":"event_msg","payload":{"type":"token_count","info":{{broken}}
+{"timestamp":"2026-08-04T08:00:12.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":9,"cach

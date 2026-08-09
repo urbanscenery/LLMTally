@@ -1,0 +1,4 @@
+{"timestamp":"2026-08-02T10:00:00.000Z","type":"session_meta","payload":{"id":"rollout-parent","session_id":"sess-shared","cwd":"/tmp/proj","model_provider":"openai","source":"cli"}}
+{"timestamp":"2026-08-02T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"parent prompt"}]}}
+{"timestamp":"2026-08-02T10:00:02.000Z","type":"turn_context","payload":{"turn_id":"turn-p1","cwd":"/tmp/proj","model":"gpt-5.5","effort":"high"}}
+{"timestamp":"2026-08-02T10:00:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15},"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":15}},"rate_limits":{}}}

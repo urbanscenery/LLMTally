@@ -1,0 +1,4 @@
+{"type":"user","uuid":"tu1","parentUuid":null,"isSidechain":false,"sessionId":"sess-tail","cwd":"/tmp/proj","timestamp":"2026-08-03T08:00:00.000Z","message":{"role":"user","content":"Tail question"}}
+{"type":"assistant","uuid":"ta1","parentUuid":"tu1","isSidechain":false,"sessionId":"sess-tail","cwd":"/tmp/proj","timestamp":"2026-08-03T08:00:02.000Z","requestId":"req_t1","effort":"high","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":6,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":13}}}
+{"type":"assistant","uuid":"ta-bad","message":{"usage":{{"broken":}}}
+{"type":"assistant","uuid":"ta2","parentUuid":"ta1","isSidechain":false,"sessionId":"sess-tail","cwd":"/tmp/proj","timestamp":"2026-08-03T08:00:05.000Z","requestId":"req_t2","effort":"high","message":{"role":"assistant","model":"claude-fable-5","usage":{"input_tokens":9,"cache_creation_input_tok

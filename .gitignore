@@ -1,0 +1,45 @@
+# Local-only docs (커밋하지 않는 조사·설계 기록)
+local_docs
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Env & secrets
+.env
+.env.*
+*.pem
+credentials*
+
+# Node / Bun
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.npm/
+bun.lockb
+
+# Rust
+target/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# SQLite (런타임 원장 DB)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# Logs & temp
+*.log
+tmp/
+.claude/settings.local.json
+
+# bun build --compile intermediates
+.*.bun-build

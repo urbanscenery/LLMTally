@@ -1,0 +1,49 @@
+{
+  "compilerOptions": {
+    "lib": [
+      "ESNext"
+    ],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "types": [
+      "bun"
+    ],
+    "paths": {
+      "@llmtally/core": [
+        "./packages/core/src/index.ts"
+      ],
+      "@llmtally/core/*": [
+        "./packages/core/src/*"
+      ],
+      "@llmtally/tui": [
+        "./packages/tui/src/index.ts"
+      ],
+      "@llmtally/tui/*": [
+        "./packages/tui/src/*"
+      ],
+      "@llmtally/app": [
+        "./packages/app/src/index.ts"
+      ],
+      "@llmtally/app/*": [
+        "./packages/app/src/*"
+      ]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/src/**/*.d.ts",
+    "tests/**/*.ts",
+    "scripts/**/*.ts"
+  ]
+}

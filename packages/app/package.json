@@ -1,0 +1,14 @@
+{
+  "name": "@llmtally/app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@llmtally/core": "workspace:*"
+  },
+  "description": "macOS menubar app for llmtally (not implemented yet)"
+}
