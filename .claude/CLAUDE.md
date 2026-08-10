@@ -32,6 +32,7 @@ cross-package import는 `@llmtally/*` 지정자를 쓰고 tsconfig `paths`로 �
 - `local_docs/init/03_architecture.md` — 확정 아키텍처, SQLite 스키마 초안, 설계 포인트 5가지
 - `local_docs/init/04_naming.md` — LLMTally 네이밍 근거, 채널 선점 체크리스트
 - `local_docs/init/05_next_steps.md` — Phase 0~3 로드맵, 미해결 질문
+- `local_docs/init/14_multiaccount_decisions.md` — 멀티계정·쿼터를 자체 구현하기로 한 결정과 근거
 - `.claude/plan/quota-live-multiaccount.md` — 계정 볼트·전환·라이브 폴링 실행 계획과 진행 상태
 
 ## 확정된 아키텍처 원칙
