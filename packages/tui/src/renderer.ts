@@ -71,9 +71,24 @@ function toStyledText(frame: RichFrame, theme: ResolvedTheme): StyledText {
   return new StyledText(chunks);
 }
 
+export interface WrapRendererOptions {
+  /** Fallback size-poll cadence; the event path stays primary. */
+  readonly resizePollMs?: number;
+  /** Injected in tests; production reads process.stdout. */
+  readonly readTerminalSize?: () => { columns: number; rows: number } | null;
+}
+
+function readStdoutSize(): { columns: number; rows: number } | null {
+  const { columns, rows } = process.stdout;
+  return typeof columns === 'number' && typeof rows === 'number' && columns > 0 && rows > 0
+    ? { columns, rows }
+    : null;
+}
+
 export function wrapRenderer(
   renderer: CliRenderer,
   themeProvider: () => ResolvedTheme = (): ResolvedTheme => MONO_THEME,
+  options: WrapRendererOptions = {},
 ): TuiScreen {
   const frame = new TextRenderable(renderer, {
     id: 'llmtally-frame',
@@ -83,6 +98,9 @@ export function wrapRenderer(
   });
   renderer.root.add(frame);
 
+  const resizePollMs = options.resizePollMs ?? 500;
+  const readTerminalSize = options.readTerminalSize ?? readStdoutSize;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
   let destroyed = false;
   return {
     get width(): number {
@@ -134,10 +152,50 @@ export function wrapRenderer(
       renderer.on('resize', (width: number, height: number) => {
         handler(width, height);
       });
+      if (pollTimer !== null) {
+        return;
+      }
+      // belt and braces: SIGWINCH can be missed (nested shells, tmux
+      // panes, some terminals), which leaves the layout frozen at the
+      // old width. Comparing the real stdout size against what the
+      // renderer believes catches every case the event path drops.
+      pollTimer = setInterval(() => {
+        if (destroyed) {
+          return;
+        }
+        const size = readTerminalSize();
+        if (
+          size === null ||
+          (size.columns === renderer.terminalWidth && size.rows === renderer.terminalHeight)
+        ) {
+          return;
+        }
+        const processResize = (
+          renderer as unknown as { processResize?: (width: number, height: number) => void }
+        ).processResize;
+        if (typeof processResize === 'function') {
+          try {
+            // drives the library's own resize path, which updates the
+            // native buffer and re-emits 'resize' to the handler above
+            processResize.call(renderer, size.columns, size.rows);
+            return;
+          } catch {
+            // fall through: at least reflow our own frame
+          }
+        }
+        handler(size.columns, size.rows);
+      }, resizePollMs);
+      if (typeof pollTimer.unref === 'function') {
+        pollTimer.unref();
+      }
     },
     destroy(): void {
       if (!destroyed) {
         destroyed = true;
+        if (pollTimer !== null) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
         renderer.destroy();
       }
     },

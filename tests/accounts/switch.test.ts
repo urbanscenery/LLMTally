@@ -309,6 +309,25 @@ describe('switchAccount', () => {
     // Assert
     expect(released).toBe(1);
   });
+
+  test('refuses to install a refresh-dead lineage and says how to recover', async () => {
+    // Arrange — uuid-2's stored refresh token was rejected by the server
+    const harness = makeHarness('uuid-1');
+    seedAccount(harness, 'uuid-2', 'refresh-2');
+    const { credentialFingerprint } = await import('@llmtally/core/accounts/credentials.ts');
+    harness.vault.markRefreshDeadIfFingerprint(
+      'uuid-2',
+      credentialFingerprint(harness.vault.loadCredentials('uuid-2') ?? ''),
+      NOW,
+    );
+    harness.activeStore.write(credentials('refresh-1'));
+
+    // Act & Assert — fail before any store is touched
+    await expect(switchAccount('uuid-2', ports(harness))).rejects.toThrow(/\/login as that account/);
+    expect(JSON.parse(harness.activeStore.read() ?? '{}').claudeAiOauth.refreshToken).toBe(
+      'refresh-1',
+    );
+  });
 });
 
 describe('captureActiveAccount', () => {

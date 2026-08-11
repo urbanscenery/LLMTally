@@ -46,7 +46,10 @@ import { makeOverviewTabView } from './views/overview.ts';
 
 export const MONO_THEME_NAME = 'mono';
 /** Matches the core quota cache TTL, so a poll is at most one vendor call. */
-const QUOTA_POLL_MS = 60_000;
+// Matches the core throttle's 180s cadence: polling faster only produces
+// cache hits, and the vendor budget (~28-30 requests/rolling hour per
+// token) cannot absorb more than ~20 real fetches an hour anyway.
+const QUOTA_POLL_MS = 180_000;
 
 export interface TuiSessionOptions {
   /** Given a live theme provider, builds the screen to render into. */
@@ -250,7 +253,23 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       return true;
     }
     if (key.name === 'n') {
-      void runAction('Add account', () => options.dataSource.addCurrentAccount());
+      // the walkthrough comes BEFORE the capture: llmtally has no login
+      // flow of its own — signing in always happens inside Claude Code
+      controller.setOverlay({
+        kind: 'confirm',
+        topic: 'account-add',
+        title: 'Add account',
+        message:
+          'Stores the logins Claude Code and Codex are using right now.\n' +
+          '\n' +
+          'To add a different account, sign in with it first:\n' +
+          '  · claude-code: run "claude" and use /login\n' +
+          '  · codex: run "codex login"\n' +
+          'then come back here and press n.\n' +
+          '\n' +
+          'Store the current logins?',
+        payload: '',
+      });
       return true;
     }
     const row = selectedRow();
@@ -508,6 +527,10 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
   }
 
   async function runConfirmed(topic: ConfirmTopic, payload: string): Promise<void> {
+    if (topic === 'account-add') {
+      await runAction('Add account', () => options.dataSource.addCurrentAccount());
+      return;
+    }
     if (topic === 'account-switch') {
       await runAction('Switch account', () => options.dataSource.switchToAccount(payload));
       return;

@@ -406,3 +406,69 @@ describe('readAntigravityQuota', () => {
     expect(snapshot.warnings.some((warning) => warning.includes('no cached'))).toBe(true);
   });
 });
+
+describe('per-account reads', () => {
+  test('accountEmail reads that account, not the active one', async () => {
+    // Arrange — b@ is active, but we ask for a@ (with a valid token)
+    const root = writeStore({
+      activeAccount: 'b@test.dev',
+      accounts: [
+        { email: 'a@test.dev', expiresAtMs: NOW_MS + 3_600_000 },
+        { email: 'b@test.dev', expiresAtMs: NOW_MS + 3_600_000 },
+      ],
+    });
+    const bodies: string[] = [];
+
+    // Act
+    const snapshot = await readAntigravityQuota({
+      storeDir: root,
+      nowUtc: NOW,
+      accountEmail: 'a@test.dev',
+      fetchFn: (url) => {
+        bodies.push(String(url));
+        if (String(url).includes('loadCodeAssist')) {
+          return Promise.resolve(new Response(JSON.stringify({ cloudaicompanionProject: 'p1' })));
+        }
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              defaultAgentModelId: 'gemini-default',
+              models: {
+                'gemini-default': {
+                  displayName: 'Gemini 3.1 Pro (High)',
+                  quotaInfo: { remainingFraction: 0.6, resetTime: '2026-08-12T12:00:00Z' },
+                },
+              },
+            }),
+          ),
+        );
+      },
+    });
+
+    // Assert — the reading belongs to a@, with the stable id set
+    expect(snapshot.account).toBe('a@test.dev');
+    expect(snapshot.accountId).toBe('a@test.dev');
+    expect(snapshot.windows.length).toBeGreaterThan(0);
+  });
+
+  test('an unknown accountEmail degrades to a warning, never another account', async () => {
+    // Arrange
+    const root = writeStore({
+      activeAccount: 'a@test.dev',
+      accounts: [{ email: 'a@test.dev', expiresAtMs: NOW_MS + 3_600_000 }],
+    });
+
+    // Act
+    const snapshot = await readAntigravityQuota({
+      storeDir: root,
+      nowUtc: NOW,
+      accountEmail: 'gone@test.dev',
+      fetchFn: () => Promise.reject(new Error('must not be called')),
+    });
+
+    // Assert
+    expect(snapshot.windows).toHaveLength(0);
+    expect(snapshot.account).toBe('gone@test.dev');
+    expect(snapshot.warnings.join(' ')).toContain('not found');
+  });
+});

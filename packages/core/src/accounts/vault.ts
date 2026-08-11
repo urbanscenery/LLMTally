@@ -13,18 +13,30 @@
  * are base64 so a Keychain item is always a single safe line — that is
  * encoding, not encryption.
  */
+import { Database } from 'bun:sqlite';
 import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { asObject, asString } from '../parsers/shared.ts';
-import { writeFilePrivate } from './credentials.ts';
+import { credentialFingerprint, writeFilePrivate } from './credentials.ts';
 import { macosKeychain } from './keychain.ts';
 import type { KeychainPort } from './keychain.ts';
 
 export const VAULT_KEYCHAIN_SERVICE = 'llmtally';
 const DIRECTORY_MODE = 0o700;
 const REGISTRY_VERSION = 1;
+/**
+ * Per-caller waits for the mutation lock. Quota polling must never
+ * stall (0), a rotated-credential persist must not be lost over a
+ * transient hold (long), and a user-triggered put sits in between.
+ */
+const MARK_DEAD_LOCK_WAIT_MS = 0;
+// must exceed the worst legitimate hold: a Keychain #storeEntry can
+// chain several `security` calls (~5s each) plus recovery/removal
+const REPLACE_LOCK_WAIT_MS = 60_000;
+const RECAPTURE_LOCK_WAIT_MS = 1_000;
+const PUT_LOCK_WAIT_MS = 10_000;
 
 export class VaultError extends Error {
   override readonly name = 'VaultError';
@@ -40,7 +52,22 @@ export interface VaultEntry {
   readonly alias: string | null;
   readonly addedAtUtc: number;
   readonly backend: 'keychain' | 'file';
+  /**
+   * Set when the stored refresh-token lineage was rejected by the token
+   * endpoint (`invalid_grant`): polling must stop hitting the endpoint
+   * with a dead token. Cleared by a successful refresh or a re-capture
+   * of fresh credentials. Absent in older registries → null.
+   */
+  readonly refreshDeadAtUtc: number | null;
 }
+
+/**
+ * Outcome of a compare-and-swap credential mutation. `changed` means
+ * the stored lineage moved under us (another process refreshed or
+ * re-captured first) and nothing was written; `busy` means another
+ * mutation holds the lock right now.
+ */
+export type VaultCredentialMutation = 'updated' | 'changed' | 'missing' | 'busy';
 
 interface RegistryFile {
   readonly version: number;
@@ -85,10 +112,19 @@ export function defaultVaultDir(home: string = homedir()): string {
 export class AccountVault {
   readonly #dir: string;
   readonly #keychain: KeychainPort;
+  readonly #writeLockWaitMs: number;
 
-  constructor(options: { readonly dir?: string; readonly keychain?: KeychainPort } = {}) {
+  constructor(
+    options: {
+      readonly dir?: string;
+      readonly keychain?: KeychainPort;
+      /** Test seam: how long user-path writes wait for the lock. */
+      readonly writeLockWaitMs?: number;
+    } = {},
+  ) {
     this.#dir = options.dir ?? defaultVaultDir();
     this.#keychain = options.keychain ?? macosKeychain;
+    this.#writeLockWaitMs = options.writeLockWaitMs ?? PUT_LOCK_WAIT_MS;
   }
 
   get directory(): string {
@@ -136,8 +172,43 @@ export class AccountVault {
     throw new VaultError(`no stored account matches "${selector}" (see "llmtally accounts")`);
   }
 
-  /** Stores or replaces an account together with its credentials. */
-  put(entry: Omit<VaultEntry, 'backend'>, credentialsText: string): VaultEntry {
+  /**
+   * Stores or replaces an account together with its credentials.
+   * `refreshDeadAtUtc` may be omitted, in which case an existing
+   * entry's quarantine state is preserved (a metadata refresh must not
+   * silently revive a dead lineage).
+   *
+   * Takes the mutation lock (bounded wait) so a direct write can never
+   * interleave with a fingerprint CAS in another process. A lock still
+   * busy after the wait fails the write loudly — writing unlocked would
+   * reintroduce the lost-generation race this lock exists to prevent.
+   */
+  put(
+    entry: Omit<VaultEntry, 'backend' | 'refreshDeadAtUtc'> & {
+      readonly refreshDeadAtUtc?: number | null;
+    },
+    credentialsText: string,
+  ): VaultEntry {
+    let stored: VaultEntry | null = null;
+    const attempt = this.#withMutationLock(this.#writeLockWaitMs, () => {
+      stored = this.#storeEntry(entry, credentialsText);
+      return 'updated';
+    });
+    if (attempt === 'busy' || stored === null) {
+      throw new VaultError(
+        'another credential operation is holding the vault lock — try again in a moment',
+      );
+    }
+    return stored;
+  }
+
+  /** The unlocked write; every locked path funnels through here. */
+  #storeEntry(
+    entry: Omit<VaultEntry, 'backend' | 'refreshDeadAtUtc'> & {
+      readonly refreshDeadAtUtc?: number | null;
+    },
+    credentialsText: string,
+  ): VaultEntry {
     if (credentialsText.length === 0) {
       throw new VaultError('refusing to store empty credentials');
     }
@@ -147,13 +218,13 @@ export class AccountVault {
     let backend: VaultEntry['backend'] = 'file';
     if (this.#keychain.available) {
       try {
-        this.#keychain.write(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(entry.accountId), encoded);
+        this.#keychain.write(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(entry.agent, entry.accountId), encoded);
         backend = 'keychain';
       } catch {
         // falling back to a file is only safe if the older Keychain row
         // goes away: reads prefer the Keychain, so leaving it would hide
         // the credentials we just stored behind a stale copy
-        this.#keychain.remove(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(entry.accountId));
+        this.#keychain.remove(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(entry.agent, entry.accountId));
         backend = 'file';
       }
     }
@@ -163,8 +234,12 @@ export class AccountVault {
       // a stale plaintext copy must not outlive a successful Keychain write
       rmSync(this.#credentialPath(entry.accountId), { force: true });
     }
-    const stored: VaultEntry = { ...entry, backend };
     const registry = this.#readRegistry();
+    const refreshDeadAtUtc =
+      entry.refreshDeadAtUtc !== undefined
+        ? entry.refreshDeadAtUtc
+        : (registry.accounts[entry.accountId]?.refreshDeadAtUtc ?? null);
+    const stored: VaultEntry = { ...entry, backend, refreshDeadAtUtc };
     const { accountId, ...rest } = stored;
     this.#writeRegistry({
       ...registry,
@@ -173,10 +248,143 @@ export class AccountVault {
     return stored;
   }
 
+  /**
+   * Quarantines the stored refresh lineage — but only when the caller
+   * still holds the generation it judged (`expectedFingerprint`). If
+   * the credentials changed underneath (another process refreshed or
+   * re-captured), the verdict belonged to bytes that no longer exist.
+   */
+  markRefreshDeadIfFingerprint(
+    accountId: string,
+    expectedFingerprint: string,
+    nowUtc: number,
+  ): VaultCredentialMutation {
+    return this.#withMutationLock(MARK_DEAD_LOCK_WAIT_MS, () => {
+      const registry = this.#readRegistry();
+      const entry = registry.accounts[accountId];
+      const current = this.loadCredentials(accountId);
+      if (entry === undefined || current === null) {
+        return 'missing';
+      }
+      if (credentialFingerprint(current) !== expectedFingerprint) {
+        return 'changed';
+      }
+      this.#writeRegistry({
+        ...registry,
+        accounts: {
+          ...registry.accounts,
+          [accountId]: { ...entry, refreshDeadAtUtc: nowUtc },
+        },
+      });
+      return 'updated';
+    });
+  }
+
+  /**
+   * Persists a rotated credential generation, guarded by the same CAS:
+   * a slow refresh that lands after a re-capture must not clobber the
+   * fresher bytes with an already-superseded rotation.
+   */
+  replaceCredentialsIfFingerprint(
+    accountId: string,
+    expectedFingerprint: string,
+    credentialsText: string,
+    options: { readonly clearRefreshDead: boolean },
+  ): VaultCredentialMutation {
+    return this.#withMutationLock(REPLACE_LOCK_WAIT_MS, () => {
+      const entry = this.get(accountId);
+      const current = this.loadCredentials(accountId);
+      if (entry === null || current === null) {
+        return 'missing';
+      }
+      if (credentialFingerprint(current) !== expectedFingerprint) {
+        return 'changed';
+      }
+      const { backend: _backend, ...rest } = entry;
+      this.#storeEntry(
+        {
+          ...rest,
+          refreshDeadAtUtc: options.clearRefreshDead ? null : entry.refreshDeadAtUtc,
+        },
+        credentialsText,
+      );
+      return 'updated';
+    });
+  }
+
+  /**
+   * Overwrites stored credentials with a fresh live capture and lifts
+   * the quarantine — the live login proves the account works again.
+   * Guarded like a CAS on the quarantine itself: if the entry was
+   * already healed (by a refresh or an earlier re-capture), a delayed
+   * re-capture must not overwrite the possibly-newer generation.
+   */
+  recaptureCredentials(accountId: string, credentialsText: string): VaultCredentialMutation {
+    return this.#withMutationLock(RECAPTURE_LOCK_WAIT_MS, () => {
+      const entry = this.get(accountId);
+      if (entry === null) {
+        return 'missing';
+      }
+      if (entry.refreshDeadAtUtc === null) {
+        return 'changed';
+      }
+      const { backend: _backend, ...rest } = entry;
+      this.#storeEntry({ ...rest, refreshDeadAtUtc: null }, credentialsText);
+      return 'updated';
+    });
+  }
+
+  /**
+   * Serializes credential mutations across processes. The lock is a
+   * `BEGIN IMMEDIATE` transaction on a dedicated SQLite file in the
+   * vault directory: acquisition is atomic in the kernel, contention is
+   * answered by SQLite's own busy handling (bounded by `waitMs`), and a
+   * crashed holder's lock evaporates with its process — no lock files,
+   * no TTLs, no reclaim races. Network calls never happen inside the
+   * lock; the longest hold is a Keychain write.
+   */
+  #withMutationLock(
+    waitMs: number,
+    mutate: () => Exclude<VaultCredentialMutation, 'busy'>,
+  ): VaultCredentialMutation {
+    this.#ensureDir();
+    const lockPath = join(this.#dir, '.mutation-lock.db');
+    let lockDb: Database;
+    try {
+      lockDb = new Database(lockPath, { create: true, strict: true });
+    } catch {
+      return 'busy';
+    }
+    try {
+      chmodSync(lockPath, 0o600);
+    } catch {
+      // permissions are best-effort on a zero-content lock file
+    }
+    try {
+      lockDb.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(waitMs))};`);
+      try {
+        lockDb.exec('BEGIN IMMEDIATE;');
+      } catch {
+        return 'busy';
+      }
+      try {
+        return mutate();
+      } finally {
+        try {
+          lockDb.exec('ROLLBACK;');
+        } catch {
+          // the close below releases the lock regardless
+        }
+      }
+    } finally {
+      lockDb.close();
+    }
+  }
+
   loadCredentials(accountId: string): string | null {
     const encoded =
       (this.#keychain.available
-        ? this.#keychain.read(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(accountId))
+        ? this.#keychain.read(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(this.#agentFor(accountId), accountId))
         : null) ?? this.#readCredentialFile(accountId);
     if (encoded === null) {
       return null;
@@ -189,42 +397,80 @@ export class AccountVault {
   }
 
   remove(accountId: string): void {
-    this.#keychain.remove(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(accountId));
-    rmSync(this.#credentialPath(accountId), { force: true });
-    const registry = this.#readRegistry();
-    const { [accountId]: removed, ...remaining } = registry.accounts;
-    this.#writeRegistry({
-      ...registry,
-      activeAccountId: registry.activeAccountId === accountId ? null : registry.activeAccountId,
-      accounts: remaining,
+    // registry + credential removal is a mutation like any other: an
+    // unlocked read-modify-write here could resurrect the account by
+    // racing a CAS that re-writes the registry from its earlier read
+    this.#requireMutationLock(() => {
+      this.#keychain.remove(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(this.#agentFor(accountId), accountId));
+      rmSync(this.#credentialPath(accountId), { force: true });
+      const registry = this.#readRegistry();
+      const { [accountId]: removed, ...remaining } = registry.accounts;
+      this.#writeRegistry({
+        ...registry,
+        activeAccountId: registry.activeAccountId === accountId ? null : registry.activeAccountId,
+        accounts: remaining,
+      });
     });
   }
 
-  setActive(accountId: string | null): void {
-    this.#writeRegistry({ ...this.#readRegistry(), activeAccountId: accountId });
+  /**
+   * `waitMs` defaults to the user-path wait; best-effort callers (the
+   * poll-path marker sync) pass 0 so a held lock skips the sync instead
+   * of stalling a UI repaint behind it.
+   */
+  setActive(accountId: string | null, waitMs: number = this.#writeLockWaitMs): void {
+    const result = this.#withMutationLock(waitMs, () => {
+      this.#writeRegistry({ ...this.#readRegistry(), activeAccountId: accountId });
+      return 'updated';
+    });
+    if (result === 'busy') {
+      throw new VaultError(
+        'another credential operation is holding the vault lock — try again in a moment',
+      );
+    }
   }
 
   setAlias(accountId: string, alias: string | null): VaultEntry {
-    const registry = this.#readRegistry();
-    const entry = registry.accounts[accountId];
-    if (entry === undefined) {
+    let updatedEntry: VaultEntry | null = null;
+    this.#requireMutationLock(() => {
+      const registry = this.#readRegistry();
+      const entry = registry.accounts[accountId];
+      if (entry === undefined) {
+        throw new VaultError(`no stored account with id ${accountId}`);
+      }
+      const normalized = alias === null ? null : normalizeAlias(alias);
+      if (
+        normalized !== null &&
+        Object.entries(registry.accounts).some(
+          ([id, other]) => id !== accountId && other.alias === normalized,
+        )
+      ) {
+        throw new VaultError(`alias "${normalized}" is already used by another account`);
+      }
+      const updated = { ...entry, alias: normalized };
+      this.#writeRegistry({
+        ...registry,
+        accounts: { ...registry.accounts, [accountId]: updated },
+      });
+      updatedEntry = { accountId, ...updated };
+    });
+    if (updatedEntry === null) {
       throw new VaultError(`no stored account with id ${accountId}`);
     }
-    const normalized = alias === null ? null : normalizeAlias(alias);
-    if (
-      normalized !== null &&
-      Object.entries(registry.accounts).some(
-        ([id, other]) => id !== accountId && other.alias === normalized,
-      )
-    ) {
-      throw new VaultError(`alias "${normalized}" is already used by another account`);
-    }
-    const updated = { ...entry, alias: normalized };
-    this.#writeRegistry({
-      ...registry,
-      accounts: { ...registry.accounts, [accountId]: updated },
+    return updatedEntry;
+  }
+
+  /** Lock wrapper for void mutations; a busy lock fails loudly. */
+  #requireMutationLock(mutate: () => void): void {
+    const result = this.#withMutationLock(this.#writeLockWaitMs, () => {
+      mutate();
+      return 'updated';
     });
-    return { accountId, ...updated };
+    if (result === 'busy') {
+      throw new VaultError(
+        'another credential operation is holding the vault lock — try again in a moment',
+      );
+    }
   }
 
   /**
@@ -249,8 +495,19 @@ export class AccountVault {
     return id;
   }
 
-  #keychainAccount(accountId: string): string {
-    return `claude:${assertSafeAccountId(accountId)}`;
+  /**
+   * Keychain item name. claude-code keeps the historical `claude:`
+   * prefix so existing items stay readable; every other agent uses its
+   * own name, which also keeps two agents from colliding on an id.
+   */
+  #keychainAccount(agent: string, accountId: string): string {
+    const prefix = agent === 'claude-code' ? 'claude' : assertSafeAccountId(agent);
+    return `${prefix}:${assertSafeAccountId(accountId)}`;
+  }
+
+  /** Agent for an id we only know from the registry; claude by default. */
+  #agentFor(accountId: string): string {
+    return this.#readRegistry().accounts[accountId]?.agent ?? 'claude-code';
   }
 
   #credentialPath(accountId: string): string {
@@ -293,6 +550,7 @@ export class AccountVault {
         continue;
       }
       const addedAtUtc = entry.addedAtUtc;
+      const refreshDeadAtUtc = entry.refreshDeadAtUtc;
       accounts[accountId] = {
         agent: asString(entry.agent) ?? 'claude-code',
         email: asString(entry.email),
@@ -301,6 +559,13 @@ export class AccountVault {
         alias: asString(entry.alias),
         addedAtUtc: typeof addedAtUtc === 'number' && Number.isFinite(addedAtUtc) ? addedAtUtc : 0,
         backend: entry.backend === 'keychain' ? 'keychain' : 'file',
+        // additive field: absent or malformed in older registries → null
+        refreshDeadAtUtc:
+          typeof refreshDeadAtUtc === 'number' &&
+          Number.isFinite(refreshDeadAtUtc) &&
+          refreshDeadAtUtc >= 0
+            ? refreshDeadAtUtc
+            : null,
       };
     }
     return {

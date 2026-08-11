@@ -113,3 +113,37 @@ describe('001_initial migration', () => {
     db.close();
   });
 });
+
+describe('005 quota sample identity upgrade', () => {
+  test('a pre-004 ledger upgrades with its label-only history intact', async () => {
+    // Arrange — build a v2 ledger by hand and give it a legacy sample
+    const { default: accountsSql } = await import(
+      '@llmtally/core/db/migrations/002_accounts.sql',
+      { with: { type: 'text' } }
+    );
+    const { migrate, currentSchemaVersion } = await import('@llmtally/core/db/migrate.ts');
+    const db = new Database(':memory:', { strict: true });
+    db.exec(initialSql);
+    db.exec(accountsSql);
+    db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2')", []);
+    db.run(
+      `INSERT INTO quota_samples
+         (agent, account, window_id, used_percent, resets_at_utc, source, observed_at_utc, recorded_at_utc)
+       VALUES ('claude-code', 'me@test.dev', 'five_hour', 42, NULL, 'vendor_api', 1000, 1000)`,
+      [],
+    );
+
+    // Act
+    migrate(db);
+
+    // Assert — row survived the table rebuild with '' as its unknown id
+    expect(currentSchemaVersion(db)).toBeGreaterThanOrEqual(5);
+    const row = db
+      .query<{ account: string; account_id: string; used_percent: number }, []>(
+        'SELECT account, account_id, used_percent FROM quota_samples',
+      )
+      .get();
+    expect(row).toEqual({ account: 'me@test.dev', account_id: '', used_percent: 42 });
+    db.close();
+  });
+});

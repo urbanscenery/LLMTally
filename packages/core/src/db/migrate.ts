@@ -2,6 +2,9 @@ import type { Database } from 'bun:sqlite';
 
 import initialSql from './migrations/001_initial.sql' with { type: 'text' };
 import accountsSql from './migrations/002_accounts.sql' with { type: 'text' };
+import quotaFetchStateSql from './migrations/003_quota_fetch_state.sql' with { type: 'text' };
+import quotaSampleAccountIdSql from './migrations/004_quota_sample_account_id.sql' with { type: 'text' };
+import quotaSampleIdentitySql from './migrations/005_quota_sample_identity.sql' with { type: 'text' };
 
 interface Migration {
   readonly id: number;
@@ -12,6 +15,9 @@ interface Migration {
 const MIGRATIONS: readonly Migration[] = [
   { id: 1, name: '001_initial', sql: initialSql },
   { id: 2, name: '002_accounts', sql: accountsSql },
+  { id: 3, name: '003_quota_fetch_state', sql: quotaFetchStateSql },
+  { id: 4, name: '004_quota_sample_account_id', sql: quotaSampleAccountIdSql },
+  { id: 5, name: '005_quota_sample_identity', sql: quotaSampleIdentitySql },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.id ?? 0;

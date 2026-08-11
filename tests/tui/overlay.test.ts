@@ -106,3 +106,46 @@ describe('overlay input ownership (review regression)', () => {
     expect(controller.getState().overlay).toBeNull();
   });
 });
+
+describe('overlay message wrapping', () => {
+  test('a long notice message wraps instead of truncating', async () => {
+    // Arrange — the switch-refusal message that used to end in "re…"
+    const { renderNoticeOverlay } = await import('@llmtally/tui/components/overlay-view.ts');
+    const { frameText } = await import('@llmtally/tui/rich-text.ts');
+    const message =
+      'the stored refresh token for yeontae.kim@kiwee.co.kr was rejected — log in as that account once (llmtally re-captures it automatically)';
+
+    // Act
+    const lines = frameText(
+      renderNoticeOverlay({ kind: 'notice', title: 'Switch account', message, busy: false }, 80, 24),
+    ).join('\n');
+    const flattened = lines.replace(/[│╭╮╰╯─]/g, ' ').replace(/\s+/g, ' ');
+
+    // Assert — the tail is visible and nothing was elided (phrases can
+    // straddle a wrap point, so match on the flattened text)
+    expect(flattened).toContain('re-captures it automatically)');
+    expect(lines).not.toContain('…');
+  });
+
+  test('a long confirm message wraps instead of truncating', async () => {
+    // Arrange
+    const { renderConfirmOverlay } = await import('@llmtally/tui/components/overlay-view.ts');
+    const { frameText } = await import('@llmtally/tui/rich-text.ts');
+    const message =
+      'remove stored-account-with-a-rather-long-address@example-organization.com from the vault? its credentials are deleted permanently';
+
+    // Act
+    const lines = frameText(
+      renderConfirmOverlay(
+        { kind: 'confirm', topic: 'account-remove', title: 'Remove', message, payload: 'x' },
+        80,
+        24,
+      ),
+    ).join('\n');
+    const flattened = lines.replace(/[│╭╮╰╯─]/g, ' ').replace(/\s+/g, ' ');
+
+    // Assert
+    expect(flattened).toContain('deleted permanently');
+    expect(lines).not.toContain('…');
+  });
+});

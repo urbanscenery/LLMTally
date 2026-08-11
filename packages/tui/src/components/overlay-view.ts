@@ -2,7 +2,7 @@ import { renderCard } from './card.ts';
 import { joinLine, span } from '../rich-text.ts';
 import type { RichLine } from '../rich-text.ts';
 import type { ConfirmOverlay, InputOverlay, NoticeOverlay, PickerOverlay } from '../overlay.ts';
-import { padEndWidth, truncateToWidth } from '../text.ts';
+import { padEndWidth, truncateToWidth, wrapToWidth } from '../text.ts';
 
 const MAX_WIDTH = 64;
 const MARKER = '▸ ';
@@ -44,6 +44,25 @@ export function renderPickerOverlay(
   return center(renderCard({ title: picker.title, content, width: cardWidth, active: true }), height);
 }
 
+/**
+ * Messages in decision/result overlays must never be elided: what got
+ * cut is exactly what the user needed to read (which account, why it
+ * failed, what to do next). They wrap instead.
+ */
+function wrappedMessageLines(
+  message: string,
+  cardWidth: number,
+  role: 'default' | 'accent',
+): RichLine[] {
+  const lines: RichLine[] = [];
+  for (const raw of message.split('\n')) {
+    for (const wrapped of wrapToWidth(raw, cardWidth - 4)) {
+      lines.push(joinLine(span(wrapped, role)));
+    }
+  }
+  return lines;
+}
+
 export function renderConfirmOverlay(
   confirm: ConfirmOverlay,
   width: number,
@@ -51,7 +70,7 @@ export function renderConfirmOverlay(
 ): RichLine[] {
   const cardWidth = overlayWidth(width);
   const content: RichLine[] = [
-    joinLine(span(truncateToWidth(confirm.message, cardWidth - 4), 'default')),
+    ...wrappedMessageLines(confirm.message, cardWidth, 'default'),
     [],
     joinLine(span('y', 'key'), span(' confirm    ', 'muted'), span('n / Esc', 'key'), span(' cancel', 'muted')),
   ];
@@ -83,10 +102,9 @@ export function renderNoticeOverlay(
   height: number,
 ): RichLine[] {
   const cardWidth = overlayWidth(width);
-  const content: RichLine[] = [];
-  for (const line of notice.message.split('\n')) {
-    content.push(joinLine(span(truncateToWidth(line, cardWidth - 4), notice.busy ? 'accent' : 'default')));
-  }
+  const content: RichLine[] = [
+    ...wrappedMessageLines(notice.message, cardWidth, notice.busy ? 'accent' : 'default'),
+  ];
   content.push([]);
   content.push(
     joinLine(span(notice.busy ? 'working…' : 'Enter / Esc close', 'muted')),

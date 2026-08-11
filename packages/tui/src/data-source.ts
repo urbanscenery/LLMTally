@@ -1,12 +1,16 @@
 import { installDaemon, uninstallDaemon } from '@llmtally/core/daemon/service.ts';
 import { runDoctorChecks } from '@llmtally/core/doctor/checks.ts';
 import type { DoctorCheck } from '@llmtally/core/doctor/checks.ts';
+import { resolveActiveClaudeContext } from '@llmtally/core/accounts/active-claude.ts';
+import { captureCodexAccount, switchCodexAccount } from '@llmtally/core/accounts/codex.ts';
 import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
 import { createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import { captureActiveAccount, switchAccount } from '@llmtally/core/accounts/switch.ts';
 import { AccountVault } from '@llmtally/core/accounts/vault.ts';
+import { defaultAntigravityStoreDir, resolveActiveAccount } from '@llmtally/core/quota/antigravity.ts';
+import { readCodexAuth } from '@llmtally/core/quota/codex-live.ts';
 import { loadAllQuota } from '@llmtally/core/quota/service.ts';
-import { resetQuotaThrottle } from '@llmtally/core/quota/throttle.ts';
+import { softResetQuotaThrottle } from '@llmtally/core/quota/throttle.ts';
 import { PROMPTS_DEFAULT_LIMIT, listPrompts } from '@llmtally/core/report/prompts.ts';
 import type { PromptListResult } from '@llmtally/core/report/prompts.ts';
 import { generateReport } from '@llmtally/core/report/service.ts';
@@ -51,26 +55,60 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
       });
     },
     invalidateQuotaCache(): void {
-      resetQuotaThrottle();
+      // freshness only: the 429 backoff and the shared cadence survive,
+      // so hammering r cannot spend budget the endpoint already refused
+      softResetQuotaThrottle();
     },
 
     async loadAccounts(): Promise<AccountsInput> {
       const vault = new AccountVault();
-      const snapshots = await loadAllQuota({ databasePath: options.databasePath });
+      // resolved once and passed everywhere: the live login (not the
+      // registry marker) decides which account is active
+      const context = resolveActiveClaudeContext({ vault });
+      const snapshots = await loadAllQuota({
+        databasePath: options.databasePath,
+        vault,
+        activeContext: context,
+      });
       return {
         snapshots,
         vault: vault.list(),
         discovered: discoverAccounts(),
-        activeAccountId: vault.activeAccountId(),
+        activeAccountId: context.activeAccountId,
+        // non-claude agents derive "active" from their own stores
+        activeByAgent: {
+          codex: readCodexAuth()?.accountId ?? null,
+          antigravity: resolveActiveAccount(defaultAntigravityStoreDir())?.email ?? null,
+        },
       };
     },
 
     async addCurrentAccount(): Promise<string> {
-      const entry = captureActiveAccount({
-        vault: new AccountVault(),
-        activeStore: createActiveCredentialStore(),
-      });
-      return `stored ${entry.email ?? entry.accountId} (${entry.backend})`;
+      // capture whatever is logged in right now, per agent; an agent
+      // without a login is simply skipped, not an error — but at least
+      // one login must exist for the action to have done anything
+      const vault = new AccountVault();
+      const stored: string[] = [];
+      const skipped: string[] = [];
+      try {
+        const entry = captureActiveAccount({
+          vault,
+          activeStore: createActiveCredentialStore(),
+        });
+        stored.push(`${entry.email ?? entry.accountId} (claude-code)`);
+      } catch (error) {
+        skipped.push(`claude-code: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      try {
+        const entry = captureCodexAccount({ vault });
+        stored.push(`${entry.email ?? entry.accountId} (codex)`);
+      } catch (error) {
+        skipped.push(`codex: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (stored.length === 0) {
+        throw new Error(skipped.join('\n'));
+      }
+      return [`stored ${stored.join(', ')}`, ...skipped].join('\n');
     },
 
     async removeAccount(accountId: string): Promise<string> {
@@ -81,8 +119,19 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
     },
 
     async switchToAccount(accountId: string): Promise<string> {
+      // the vault entry knows which agent owns this account; each agent
+      // has its own switch mechanics
+      const vault = new AccountVault();
+      const agent = vault.get(accountId)?.agent ?? 'claude-code';
+      if (agent === 'codex') {
+        const result = await switchCodexAccount(accountId, { vault });
+        return [
+          `switched codex to ${result.target.email ?? result.target.accountId}`,
+          ...result.warnings,
+        ].join('\n');
+      }
       const result = await switchAccount(accountId, {
-        vault: new AccountVault(),
+        vault,
         activeStore: createActiveCredentialStore(),
       });
       const sessions =

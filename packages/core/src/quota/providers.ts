@@ -3,7 +3,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { readClaudeActiveIdentity } from '../accounts/claude.ts';
+import type { ClaudeActiveIdentity } from '../accounts/claude.ts';
 import { asObject, asString } from '../parsers/shared.ts';
+import { LLMTALLY_USER_AGENT } from '../version.ts';
 
 const FETCH_TIMEOUT_MS = 3000;
 const CODEX_RECENT_FILES = 5;
@@ -18,9 +20,31 @@ export interface QuotaWindow {
 
 export type QuotaSource = 'vendor_api' | 'source_log' | 'third_party_cache' | 'stored_history';
 
+/**
+ * Why a reading has no (fresh) windows. `rate_limited` is the vendor's
+ * 429; `transport` is any other network/HTTP/parse failure; `unavailable`
+ * means we never had usable credentials; `deferred` means the throttle
+ * chose not to call (cadence/backoff/another process holds the claim).
+ */
+export type QuotaFailureKind = 'rate_limited' | 'transport' | 'unavailable' | 'deferred';
+
+export interface QuotaFailure {
+  readonly kind: QuotaFailureKind;
+  readonly failedAtUtc: number;
+  /** Earliest sensible retry, when one is known. */
+  readonly retryAtUtc: number | null;
+}
+
 export interface QuotaSnapshot {
   readonly agent: string;
-  /** The vendor answered 429; the reading failed for that reason alone. */
+  /**
+   * Stable vendor account id (Claude accountUuid); null when unknown.
+   * The dedupe/binding key — labels stay display-only.
+   */
+  readonly accountId: string | null;
+  /** Why the current read failed; null on a successful fresh reading. */
+  readonly failure: QuotaFailure | null;
+  /** Derived: `failure?.kind === 'rate_limited'`. Never set directly. */
   readonly rateLimited: boolean;
   /** Vendor-supplied hint in seconds, when it gave a usable one. */
   readonly retryAfterSeconds: number | null;
@@ -117,6 +141,7 @@ function extraUsageWindow(body: Record<string, unknown> | null): QuotaWindow | n
 
 export interface ClaudeUsageRequest {
   readonly accessToken: string;
+  readonly accountId: string | null;
   readonly account: string | null;
   readonly nowUtc: number;
   readonly fetchFn?: FetchLike;
@@ -127,26 +152,33 @@ export interface ClaudeUsageRequest {
  * the same code serves the logged-in account and every stored one.
  */
 export async function fetchClaudeUsage(request: ClaudeUsageRequest): Promise<QuotaSnapshot> {
-  const { accessToken, account, nowUtc } = request;
+  const { accessToken, accountId, account, nowUtc } = request;
   try {
     const fetchFn = request.fetchFn ?? fetch;
     const response = await fetchFn(CLAUDE_USAGE_URL, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'anthropic-beta': 'oauth-2025-04-20',
+        'User-Agent': LLMTALLY_USER_AGENT,
       },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (response.status === 429) {
       const header = Number(response.headers.get('retry-after'));
+      const retryAfterSeconds = Number.isFinite(header) && header > 0 ? header : null;
       return makeQuotaSnapshot({
         agent: 'claude-code',
         source: 'vendor_api',
         observedAtUtc: nowUtc,
         windows: [],
+        accountId,
         account,
-        rateLimited: true,
-        retryAfterSeconds: Number.isFinite(header) && header > 0 ? header : null,
+        failure: {
+          kind: 'rate_limited',
+          failedAtUtc: nowUtc,
+          retryAtUtc: retryAfterSeconds === null ? null : nowUtc + retryAfterSeconds,
+        },
+        retryAfterSeconds,
         warnings: ['claude usage endpoint returned 429 (rate limited)'],
       });
     }
@@ -172,6 +204,7 @@ export async function fetchClaudeUsage(request: ClaudeUsageRequest): Promise<Quo
       source: 'vendor_api',
       observedAtUtc: nowUtc,
       windows,
+      accountId,
       account,
     });
   } catch (error) {
@@ -180,7 +213,9 @@ export async function fetchClaudeUsage(request: ClaudeUsageRequest): Promise<Quo
       source: 'vendor_api',
       observedAtUtc: nowUtc,
       windows: [],
+      accountId,
       account,
+      failure: { kind: 'transport', failedAtUtc: nowUtc, retryAtUtc: null },
       warnings: [
         `claude quota fetch failed: ${error instanceof Error ? error.message : String(error)}`,
       ],
@@ -192,13 +227,13 @@ export async function fetchClaudeQuota(options: {
   readonly fetchFn?: FetchLike;
   readonly tokenReader?: TokenReader;
   readonly nowUtc?: number;
-  /** Display label for the active account; defaults to ~/.claude.json oauthAccount email. */
-  readonly accountReader?: () => string | null;
+  /** Active identity for id + label; defaults to ~/.claude.json oauthAccount. */
+  readonly identityReader?: () => ClaudeActiveIdentity | null;
 }): Promise<QuotaSnapshot> {
   const now = options.nowUtc ?? Math.floor(Date.now() / 1000);
-  const readAccount =
-    options.accountReader ?? ((): string | null => readClaudeActiveIdentity()?.email ?? null);
-  const account = readAccount();
+  const identity = (options.identityReader ?? readClaudeActiveIdentity)();
+  const accountId = identity?.accountUuid ?? null;
+  const account = identity?.email ?? null;
   const token = (options.tokenReader ?? defaultClaudeTokenReader())();
   if (token === null) {
     return makeQuotaSnapshot({
@@ -206,11 +241,19 @@ export async function fetchClaudeQuota(options: {
       source: 'vendor_api',
       observedAtUtc: now,
       windows: [],
+      accountId,
       account,
+      failure: { kind: 'unavailable', failedAtUtc: now, retryAtUtc: null },
       warnings: ['no Claude Code OAuth credentials found (Keychain or ~/.claude/.credentials.json)'],
     });
   }
-  return fetchClaudeUsage({ accessToken: token, account, nowUtc: now, fetchFn: options.fetchFn });
+  return fetchClaudeUsage({
+    accessToken: token,
+    accountId,
+    account,
+    nowUtc: now,
+    fetchFn: options.fetchFn,
+  });
 }
 
 /**
@@ -328,15 +371,20 @@ export function makeQuotaSnapshot(options: {
   readonly observedAtUtc: number;
   readonly windows: readonly QuotaWindow[];
   readonly plan?: string | null;
+  readonly accountId?: string | null;
   readonly account?: string | null;
   readonly warnings?: readonly string[];
-  readonly rateLimited?: boolean;
+  readonly failure?: QuotaFailure | null;
   readonly retryAfterSeconds?: number | null;
 }): QuotaSnapshot {
+  const failure = options.failure ?? null;
   return {
     agent: options.agent,
+    accountId: options.accountId ?? null,
     account: options.account ?? null,
-    rateLimited: options.rateLimited ?? false,
+    failure,
+    // the invariant lives here and nowhere else: no caller sets the flag
+    rateLimited: failure?.kind === 'rate_limited',
     retryAfterSeconds: options.retryAfterSeconds ?? null,
     plan: options.plan ?? null,
     source: options.source,

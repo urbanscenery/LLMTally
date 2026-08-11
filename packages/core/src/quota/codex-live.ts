@@ -164,14 +164,20 @@ export async function fetchCodexLiveQuota(options: {
     });
     if (response.status === 429) {
       const header = Number(response.headers.get('retry-after'));
+      const retryAfterSeconds = Number.isFinite(header) && header > 0 ? header : null;
       return makeQuotaSnapshot({
         agent: 'codex',
+        accountId: auth.accountId,
         account: auth.email,
         source: 'vendor_api',
         observedAtUtc: now,
         windows: [],
-        rateLimited: true,
-        retryAfterSeconds: Number.isFinite(header) && header > 0 ? header : null,
+        failure: {
+          kind: 'rate_limited',
+          failedAtUtc: now,
+          retryAtUtc: retryAfterSeconds === null ? null : now + retryAfterSeconds,
+        },
+        retryAfterSeconds,
         warnings: ['codex usage endpoint returned 429 (rate limited)'],
       });
     }
@@ -184,6 +190,7 @@ export async function fetchCodexLiveQuota(options: {
     }
     return makeQuotaSnapshot({
       agent: 'codex',
+      accountId: auth.accountId,
       account: auth.email,
       plan: parsed.plan,
       source: 'vendor_api',
@@ -193,10 +200,12 @@ export async function fetchCodexLiveQuota(options: {
   } catch (error) {
     return makeQuotaSnapshot({
       agent: 'codex',
+      accountId: auth.accountId,
       account: auth.email,
       source: 'vendor_api',
       observedAtUtc: now,
       windows: [],
+      failure: { kind: 'transport', failedAtUtc: now, retryAtUtc: null },
       warnings: [
         `codex live quota fetch failed: ${error instanceof Error ? error.message : String(error)}`,
       ],

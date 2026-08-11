@@ -411,11 +411,29 @@ export async function readAntigravityQuota(options: {
   readonly baseUrl?: string;
   /** false = never call the OAuth token endpoint (pure read-only mode). */
   readonly allowRefresh?: boolean;
+  /** Read this specific account instead of the active one. */
+  readonly accountEmail?: string;
 }): Promise<QuotaSnapshot> {
   const now = options.nowUtc ?? Math.floor(Date.now() / 1000);
   const storeDir = options.storeDir ?? defaultAntigravityStoreDir();
-  const account = resolveActiveAccount(storeDir);
+  const account =
+    options.accountEmail === undefined
+      ? resolveActiveAccount(storeDir)
+      : (listAntigravityAccounts(storeDir).find(
+          (candidate) => candidate.email === options.accountEmail,
+        ) ?? null);
   if (account === null) {
+    if (options.accountEmail !== undefined) {
+      return makeQuotaSnapshot({
+        agent: ANTIGRAVITY_AGENT,
+        accountId: options.accountEmail,
+        account: options.accountEmail,
+        source: 'third_party_cache',
+        observedAtUtc: now,
+        windows: [],
+        warnings: [`antigravity account ${options.accountEmail} not found in the store`],
+      });
+    }
     return makeQuotaSnapshot({
       agent: ANTIGRAVITY_AGENT,
       source: 'third_party_cache',
@@ -462,6 +480,7 @@ export async function readAntigravityQuota(options: {
       );
       return makeQuotaSnapshot({
         agent: ANTIGRAVITY_AGENT,
+        accountId: account.email,
         account: account.email,
         source: 'vendor_api',
         observedAtUtc: now,
@@ -479,6 +498,7 @@ export async function readAntigravityQuota(options: {
   if (cached === null || cached.windows.length === 0) {
     return makeQuotaSnapshot({
       agent: ANTIGRAVITY_AGENT,
+      accountId: account.email,
       account: account.email,
       source: 'third_party_cache',
       observedAtUtc: now,
@@ -492,6 +512,7 @@ export async function readAntigravityQuota(options: {
   }
   return makeQuotaSnapshot({
     agent: ANTIGRAVITY_AGENT,
+    accountId: account.email,
     account: account.email,
     source: 'third_party_cache',
     observedAtUtc: cached.observedAtUtc,

@@ -1,3 +1,4 @@
+import { Database } from 'bun:sqlite';
 import { describe, expect, test } from 'bun:test';
 import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -287,5 +288,144 @@ describe('AccountVault', () => {
     expect(readFileSync(join(vault.directory, 'unclaimed', `${id}.json`), 'utf8')).toContain(
       'no match',
     );
+  });
+});
+
+describe('refresh quarantine and credential CAS', () => {
+  function makeVault(): AccountVault {
+    return new AccountVault({ dir: makeTempDir(), keychain: createMemoryKeychain() });
+  }
+
+  test('a registry written before the field reads as not quarantined', () => {
+    // Arrange — simulate an old registry: put, then strip the field on disk
+    const vault = makeVault();
+    vault.put(entry('uuid-1'), credentials('refresh-1'));
+    const registryPath = join(vault.directory, 'registry.json');
+    const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
+    delete registry.accounts['uuid-1'].refreshDeadAtUtc;
+    writeFileSync(registryPath, JSON.stringify(registry));
+
+    // Act & Assert
+    expect(vault.get('uuid-1')?.refreshDeadAtUtc).toBeNull();
+  });
+
+  test('quarantine only lands on the generation that was judged', () => {
+    // Arrange
+    const vault = makeVault();
+    vault.put(entry('uuid-1'), credentials('refresh-old'));
+    const oldFingerprint = credentialFingerprint(credentials('refresh-old'));
+
+    // Act — the lineage rotates before the verdict arrives
+    vault.put(entry('uuid-1'), credentials('refresh-new'));
+    const late = vault.markRefreshDeadIfFingerprint('uuid-1', oldFingerprint, NOW);
+    // ...and on the current generation it sticks
+    const current = vault.markRefreshDeadIfFingerprint(
+      'uuid-1',
+      credentialFingerprint(credentials('refresh-new')),
+      NOW + 1,
+    );
+
+    // Assert
+    expect(late).toBe('changed');
+    expect(current).toBe('updated');
+    expect(vault.get('uuid-1')?.refreshDeadAtUtc).toBe(NOW + 1);
+  });
+
+  test('replaceCredentialsIfFingerprint swaps the generation and lifts quarantine', () => {
+    // Arrange — a quarantined account whose refresh finally succeeded
+    const vault = makeVault();
+    vault.put(entry('uuid-1'), credentials('refresh-old'));
+    vault.markRefreshDeadIfFingerprint('uuid-1', credentialFingerprint(credentials('refresh-old')), NOW);
+
+    // Act
+    const result = vault.replaceCredentialsIfFingerprint(
+      'uuid-1',
+      credentialFingerprint(credentials('refresh-old')),
+      credentials('refresh-rotated'),
+      { clearRefreshDead: true },
+    );
+
+    // Assert
+    expect(result).toBe('updated');
+    expect(vault.get('uuid-1')?.refreshDeadAtUtc).toBeNull();
+    expect(JSON.parse(vault.loadCredentials('uuid-1') ?? '{}').claudeAiOauth.refreshToken).toBe(
+      'refresh-rotated',
+    );
+  });
+
+  test('a metadata put without the field preserves an existing quarantine', () => {
+    // Arrange
+    const vault = makeVault();
+    vault.put(entry('uuid-1'), credentials('refresh-1'));
+    vault.markRefreshDeadIfFingerprint('uuid-1', credentialFingerprint(credentials('refresh-1')), NOW);
+
+    // Act — e.g. an alias update re-puts the entry without deciding
+    vault.put(entry('uuid-1', { alias: 'work' }), credentials('refresh-1'));
+
+    // Assert
+    expect(vault.get('uuid-1')?.refreshDeadAtUtc).toBe(NOW);
+  });
+
+  test('a held mutation lock makes polling-path mutations defer as busy', () => {
+    // Arrange — another "process" holds the lock via its own connection
+    const vault = makeVault();
+    vault.put(entry('uuid-1'), credentials('refresh-1'));
+    const fingerprint = credentialFingerprint(credentials('refresh-1'));
+    const holder = new Database(join(vault.directory, '.mutation-lock.db'), {
+      create: true,
+      strict: true,
+    });
+    holder.exec('PRAGMA busy_timeout = 0;');
+    holder.exec('BEGIN IMMEDIATE;');
+
+    // Act — the polling-path mutation must skip, not stall
+    const busy = vault.markRefreshDeadIfFingerprint('uuid-1', fingerprint, NOW);
+    holder.exec('ROLLBACK;');
+    holder.close();
+    const released = vault.markRefreshDeadIfFingerprint('uuid-1', fingerprint, NOW);
+
+    // Assert — a crashed/closed holder releases the lock automatically
+    expect(busy).toBe('busy');
+    expect(released).toBe('updated');
+  });
+
+  test('recapture only heals a quarantined entry and never touches a healthy one', () => {
+    // Arrange
+    const vault = makeVault();
+    vault.put(entry('uuid-1'), credentials('refresh-current'));
+
+    // Act — the entry is healthy, so a (delayed) re-capture is a no-op
+    const untouched = vault.recaptureCredentials('uuid-1', credentials('refresh-late'));
+
+    // Assert
+    expect(untouched).toBe('changed');
+    expect(JSON.parse(vault.loadCredentials('uuid-1') ?? '{}').claudeAiOauth.refreshToken).toBe(
+      'refresh-current',
+    );
+  });
+});
+
+describe('registry mutations under the lock', () => {
+  test('registry writes defer to a held lock instead of racing it', () => {
+    // Arrange
+    const vault = new AccountVault({
+      dir: makeTempDir(),
+      keychain: createMemoryKeychain(),
+      writeLockWaitMs: 50,
+    });
+    vault.put(entry('uuid-1'), credentials('refresh-1'));
+    const holder = new Database(join(vault.directory, '.mutation-lock.db'), {
+      create: true,
+      strict: true,
+    });
+    holder.exec('PRAGMA busy_timeout = 0;');
+    holder.exec('BEGIN IMMEDIATE;');
+
+    // Act & Assert — the alias write refuses to bypass the lock
+    // (bounded wait, then a loud failure instead of a silent race)
+    expect(() => vault.setAlias('uuid-1', 'work')).toThrow(/vault lock/);
+    holder.exec('ROLLBACK;');
+    holder.close();
+    expect(vault.setAlias('uuid-1', 'work').alias).toBe('work');
   });
 });

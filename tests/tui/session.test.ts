@@ -430,3 +430,52 @@ describe('quota freshness', () => {
     expect(invalidations).toBe(1);
   });
 });
+
+describe('add-account login guidance', () => {
+  test('pressing n explains how to log in before anything is stored', async () => {
+    // Arrange
+    const screen = new FakeScreen();
+    let captured = 0;
+    const source = makeDataSource(async () => scanSummary());
+    const session = await createTuiSession({
+      createScreen: async () => screen,
+      dataSource: {
+        ...source,
+        addCurrentAccount: async () => {
+          captured += 1;
+          return 'stored me@test.dev (keychain)';
+        },
+      },
+      chartMode: 'block',
+      themeName: null,
+      refreshSeconds: null,
+      monoForced: true,
+      firstRun: false,
+      preferences: preferences(),
+      quotaPollMs: 60_000,
+    });
+
+    // Act — open the accounts tab and press n
+    const done = session.run();
+    await settle();
+    screen.pressKey('2');
+    screen.pressKey('n');
+    await settle();
+    const guide = screen.lastFrame().join('\n');
+
+    // Assert — the login walkthrough shows BEFORE any capture happens
+    expect(guide).toContain('/login');
+    expect(guide).toContain('press n');
+    expect(captured).toBe(0);
+
+    // Act — confirm stores the current login
+    screen.pressKey('y');
+    await settle();
+
+    // Assert
+    expect(captured).toBe(1);
+    expect(screen.lastFrame().join('\n')).toContain('stored me@test.dev');
+    session.stop();
+    await done;
+  });
+});

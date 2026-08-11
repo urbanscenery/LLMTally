@@ -28,6 +28,48 @@ export function truncateToWidth(value: string, width: number): string {
   return `${out}…`;
 }
 
+/**
+ * Wraps to lines of at most `width` cells, breaking at spaces and only
+ * splitting inside a word when the word alone exceeds the width. Never
+ * drops content — the counterpart to `truncateToWidth` for text that
+ * must stay fully readable (error messages, confirmations).
+ */
+export function wrapToWidth(value: string, width: number): string[] {
+  if (width <= 0 || displayWidth(value) <= width) {
+    return [value];
+  }
+  const lines: string[] = [];
+  let current = '';
+  for (const word of value.split(' ')) {
+    const candidate = current === '' ? word : `${current} ${word}`;
+    if (displayWidth(candidate) <= width) {
+      current = candidate;
+      continue;
+    }
+    if (current !== '') {
+      lines.push(current);
+      current = '';
+    }
+    if (displayWidth(word) <= width) {
+      current = word;
+      continue;
+    }
+    // a single token wider than the line: hard-break by grapheme
+    let piece = '';
+    for (const { segment } of GRAPHEMES.segment(word)) {
+      if (displayWidth(piece + segment) > width) {
+        lines.push(piece);
+        piece = segment;
+      } else {
+        piece += segment;
+      }
+    }
+    current = piece;
+  }
+  lines.push(current);
+  return lines;
+}
+
 /** Pads or truncates so the line occupies exactly `width` cells. */
 export function fitLine(value: string, width: number): string {
   const truncated = truncateToWidth(value, width);

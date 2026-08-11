@@ -43,7 +43,7 @@ describe('recordQuotaSamples / readStoredLastGood', () => {
 
     // Act
     const inserted = recordQuotaSamples(db, [claudeSnapshot()], NOW);
-    const stored = readStoredLastGood(db, 'claude-code', 'me@test.dev', NOW + 7200);
+    const stored = readStoredLastGood(db, { agent: 'claude-code', accountId: null, account: 'me@test.dev', nowUtc: NOW + 7200, failure: null });
 
     // Assert
     expect(inserted).toBe(2);
@@ -81,7 +81,7 @@ describe('recordQuotaSamples / readStoredLastGood', () => {
     );
 
     // Act
-    const stored = readStoredLastGood(db, 'claude-code', 'me@test.dev', NOW + 60);
+    const stored = readStoredLastGood(db, { agent: 'claude-code', accountId: null, account: 'me@test.dev', nowUtc: NOW + 60, failure: null });
 
     // Assert — five_hour advanced; seven_day still from the earlier pass
     expect(stored?.windows).toEqual([
@@ -96,7 +96,7 @@ describe('recordQuotaSamples / readStoredLastGood', () => {
     recordQuotaSamples(db, [claudeSnapshot()], NOW);
 
     // Act & Assert
-    expect(readStoredLastGood(db, 'claude-code', 'me@test.dev', NOW + 25 * 3600)).toBeNull();
+    expect(readStoredLastGood(db, { agent: 'claude-code', accountId: null, account: 'me@test.dev', nowUtc: NOW + 25 * 3600, failure: null })).toBeNull();
   });
 
   test('retention GC drops samples recorded more than 30 days ago', () => {
@@ -114,7 +114,127 @@ describe('recordQuotaSamples / readStoredLastGood', () => {
     // Assert
     const count = db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM quota_samples').get();
     expect(count?.n).toBe(2);
-    expect(readStoredLastGood(db, 'claude-code', 'me@test.dev', NOW)).toBeNull();
+    expect(readStoredLastGood(db, { agent: 'claude-code', accountId: null, account: 'me@test.dev', nowUtc: NOW, failure: null })).toBeNull();
+  });
+
+  test('a 429 extends trust to the window reset, but only with a sane future reset', () => {
+    // Arrange — samples observed 30h ago: past the 24h shelf life
+    const db = openMigrated();
+    const observed = NOW - 30 * 3600;
+    recordQuotaSamples(
+      db,
+      [
+        claudeSnapshot({
+          observedAtUtc: observed,
+          windows: [
+            // seven_day resets in the future → trusted under a 429
+            { id: 'seven_day', usedPercent: 61, resetsAtUtc: NOW + 2 * 24 * 3600 },
+            // five_hour reset already passed → its usage restarted, drop it
+            { id: 'five_hour', usedPercent: 42, resetsAtUtc: observed + 5 * 3600 },
+            // reset-less window → nothing bounds its validity, drop it
+            { id: 'extra usage', usedPercent: 3, resetsAtUtc: null },
+          ],
+        }),
+      ],
+      observed,
+    );
+    const rateLimited = {
+      kind: 'rate_limited' as const,
+      failedAtUtc: NOW,
+      retryAtUtc: NOW + 360,
+    };
+
+    // Act
+    const under429 = readStoredLastGood(db, {
+      agent: 'claude-code',
+      accountId: 'acc-1',
+      account: 'me@test.dev',
+      nowUtc: NOW,
+      failure: rateLimited,
+    });
+    const underTransport = readStoredLastGood(db, {
+      agent: 'claude-code',
+      accountId: 'acc-1',
+      account: 'me@test.dev',
+      nowUtc: NOW,
+      failure: { kind: 'transport', failedAtUtc: NOW, retryAtUtc: null },
+    });
+
+    // Assert — only the 429, and only the window whose reset is ahead
+    expect(under429?.windows.map((window) => window.id)).toEqual(['seven_day']);
+    expect(under429?.accountId).toBe('acc-1');
+    expect(under429?.warnings.join(' ')).toContain('cannot have decreased');
+    expect(underTransport).toBeNull();
+  });
+
+  test('an absurdly distant reset does not extend 429 trust', () => {
+    // Arrange
+    const db = openMigrated();
+    const observed = NOW - 30 * 3600;
+    recordQuotaSamples(
+      db,
+      [
+        claudeSnapshot({
+          observedAtUtc: observed,
+          windows: [{ id: 'seven_day', usedPercent: 61, resetsAtUtc: NOW + 40 * 24 * 3600 }],
+        }),
+      ],
+      observed,
+    );
+
+    // Act & Assert — a reset 40 days out is damage, not information
+    expect(
+      readStoredLastGood(db, {
+        agent: 'claude-code',
+        accountId: null,
+        account: 'me@test.dev',
+        nowUtc: NOW,
+        failure: { kind: 'rate_limited', failedAtUtc: NOW, retryAtUtc: null },
+      }),
+    ).toBeNull();
+  });
+
+  test('two accounts sharing a label keep separate histories, found by id', () => {
+    // Arrange — personal + organization on one email, read in the same
+    // load (identical observed_at second)
+    const db = openMigrated();
+    const shared = { account: 'me@test.dev', observedAtUtc: NOW };
+    recordQuotaSamples(
+      db,
+      [
+        claudeSnapshot({
+          ...shared,
+          accountId: 'uuid-personal',
+          windows: [{ id: 'five_hour', usedPercent: 10, resetsAtUtc: null }],
+        }),
+        claudeSnapshot({
+          ...shared,
+          accountId: 'uuid-org',
+          windows: [{ id: 'five_hour', usedPercent: 90, resetsAtUtc: null }],
+        }),
+      ],
+      NOW,
+    );
+
+    // Act
+    const personal = readStoredLastGood(db, {
+      agent: 'claude-code',
+      accountId: 'uuid-personal',
+      account: 'me@test.dev',
+      nowUtc: NOW + 60,
+      failure: null,
+    });
+    const org = readStoredLastGood(db, {
+      agent: 'claude-code',
+      accountId: 'uuid-org',
+      account: 'me@test.dev',
+      nowUtc: NOW + 60,
+      failure: null,
+    });
+
+    // Assert — neither sample was lost to the unique key
+    expect(personal?.windows[0]?.usedPercent).toBe(10);
+    expect(org?.windows[0]?.usedPercent).toBe(90);
   });
 
   test('accounts are isolated from each other', () => {
@@ -123,8 +243,8 @@ describe('recordQuotaSamples / readStoredLastGood', () => {
     recordQuotaSamples(db, [claudeSnapshot()], NOW);
 
     // Act & Assert
-    expect(readStoredLastGood(db, 'claude-code', 'other@test.dev', NOW)).toBeNull();
-    expect(readStoredLastGood(db, 'codex', 'me@test.dev', NOW)).toBeNull();
+    expect(readStoredLastGood(db, { agent: 'claude-code', accountId: null, account: 'other@test.dev', nowUtc: NOW, failure: null })).toBeNull();
+    expect(readStoredLastGood(db, { agent: 'codex', accountId: null, account: 'me@test.dev', nowUtc: NOW, failure: null })).toBeNull();
   });
 });
 

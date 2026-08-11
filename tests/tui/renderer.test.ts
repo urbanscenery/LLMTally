@@ -72,3 +72,48 @@ describe('styled frame path', () => {
     screen.destroy();
   });
 });
+
+describe('terminal resize', () => {
+  test('a renderer resize reaches the handler and updates the reported size', async () => {
+    // Arrange
+    const setup = await createTestRenderer({ width: 40, height: 6 });
+    const screen = wrapRenderer(setup.renderer);
+    const seen: Array<{ width: number; height: number }> = [];
+    screen.onResize((width, height) => {
+      seen.push({ width, height });
+    });
+
+    // Act
+    setup.resize(60, 10);
+    await setup.renderOnce();
+
+    // Assert — the layout layer learns the new size immediately
+    expect(seen.at(-1)).toEqual({ width: 60, height: 10 });
+    expect(screen.width).toBe(60);
+    expect(screen.height).toBe(10);
+    screen.destroy();
+  });
+
+  test('the size poll catches a resize the event stream missed', async () => {
+    // Arrange — the "terminal" changed but no resize event ever fired
+    const setup = await createTestRenderer({ width: 40, height: 6 });
+    let reported = { columns: 40, rows: 6 };
+    const screen = wrapRenderer(setup.renderer, undefined, {
+      resizePollMs: 10,
+      readTerminalSize: () => reported,
+    });
+    const seen: Array<{ width: number; height: number }> = [];
+    screen.onResize((width, height) => {
+      seen.push({ width, height });
+    });
+
+    // Act — only the polled size changes
+    reported = { columns: 72, rows: 14 };
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // Assert — the poll noticed and drove the same resize path
+    expect(seen.at(-1)).toEqual({ width: 72, height: 14 });
+    expect(screen.width).toBe(72);
+    screen.destroy();
+  });
+});

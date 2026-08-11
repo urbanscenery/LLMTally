@@ -20,6 +20,7 @@ function inputFor(snapshots: readonly QuotaSnapshot[], overrides: Partial<Accoun
 function snapshotFixture(overrides: Partial<QuotaSnapshot> = {}): QuotaSnapshot {
   return {
     agent: 'claude-code',
+    accountId: null,
     account: null,
     plan: 'team',
     source: 'vendor_api',
@@ -29,6 +30,7 @@ function snapshotFixture(overrides: Partial<QuotaSnapshot> = {}): QuotaSnapshot 
       { id: 'seven_day', usedPercent: 24, resetsAtUtc: NOW + 90_000 },
     ],
     warnings: [],
+    failure: null,
     rateLimited: false,
     retryAfterSeconds: null,
     ...overrides,
@@ -228,6 +230,7 @@ describe('account matching (review regression)', () => {
       alias: null,
       addedAtUtc: NOW,
       backend: 'keychain' as const,
+      refreshDeadAtUtc: null,
     };
   }
 
@@ -276,5 +279,354 @@ describe('account matching (review regression)', () => {
     // Assert
     expect(model.rows[0]).toMatchObject({ accountId: 'uuid-1', label: 'stored@test.dev' });
     expect(model.rows[0]?.note).toContain('stored');
+  });
+
+  test('the live login is active even before it was ever stored in the vault', () => {
+    // Arrange — snapshot carries the stable id; the vault knows nothing
+    const model = toAccountsTabViewModel(
+      inputFor([snapshotFixture({ accountId: 'uuid-live', account: 'live@test.dev' })], {
+        vault: [],
+        activeAccountId: 'uuid-live',
+      }),
+    );
+
+    // Assert
+    expect(model.rows[0]?.isActive).toBe(true);
+    expect(model.rows[0]?.accountId).toBeNull();
+  });
+
+  test('a stable account id binds past an ambiguous shared email', () => {
+    // Arrange — two entries share the address, but the snapshot names its id
+    const vault = [vaultEntry('uuid-personal', 'me@test.dev'), vaultEntry('uuid-org', 'me@test.dev')];
+
+    // Act
+    const model = toAccountsTabViewModel(
+      inputFor([snapshotFixture({ accountId: 'uuid-org', account: 'me@test.dev' })], { vault }),
+    );
+
+    // Assert — no ambiguity note; the id decided
+    expect(model.rows[0]?.accountId).toBe('uuid-org');
+    expect(model.rows[0]?.note).toBeNull();
+  });
+
+  test('a stale registry marker cannot mark the wrong account active', () => {
+    // Arrange — data-source passes the live identity as activeAccountId,
+    // so a row whose snapshot names a different id must not be active
+    const model = toAccountsTabViewModel(
+      inputFor(
+        [snapshotFixture({ accountId: 'uuid-stored', account: 'stored@test.dev' })],
+        { vault: [vaultEntry('uuid-stored', 'stored@test.dev')], activeAccountId: 'uuid-live' },
+      ),
+    );
+
+    // Assert
+    expect(model.rows[0]?.isActive).toBe(false);
+  });
+});
+
+describe('dead-token warning', () => {
+  function deadEntry(accountId: string, email: string) {
+    return { ...vaultEntry(accountId, email), refreshDeadAtUtc: NOW - 3600 };
+  }
+
+  function vaultEntry(accountId: string, email: string) {
+    return {
+      agent: 'claude-code',
+      accountId,
+      email,
+      organizationUuid: null,
+      organizationName: null,
+      alias: null,
+      addedAtUtc: NOW,
+      backend: 'keychain' as const,
+      refreshDeadAtUtc: null,
+    };
+  }
+
+  function renderRows(input: AccountsInput): string {
+    const state = withTabResource(withActiveTab(createInitialState(), 'accounts'), 'accounts', {
+      phase: 'ready' as const,
+      data: toAccountsTabViewModel(input),
+      error: null,
+      updatedAtUtc: NOW,
+      invalidated: false,
+    });
+    return viewText(accountsTabView(state, 100, 40, NOW)).join('\n');
+  }
+
+  test('a quarantined vault-only row warns at a glance', () => {
+    // Act
+    const text = renderRows(inputFor([], { vault: [deadEntry('uuid-dead', 'dead@test.dev')] }));
+
+    // Assert — visible in the title marks AND as a body warning
+    expect(text).toContain('re-login needed');
+    expect(text).toContain('/login as this account once');
+  });
+
+  test('a quarantined row with a quota reading still warns', () => {
+    // Arrange — stale stored numbers exist, but the lineage is dead
+    const snapshot = snapshotFixture({
+      accountId: 'uuid-dead',
+      account: 'dead@test.dev',
+      source: 'stored_history',
+    });
+
+    // Act
+    const text = renderRows(
+      inputFor([snapshot], { vault: [deadEntry('uuid-dead', 'dead@test.dev')] }),
+    );
+
+    // Assert
+    expect(text).toContain('re-login needed');
+  });
+
+  test('the switch hint is disabled for a dead row', () => {
+    // Act — cursor sits on the only (dead) row
+    const model = toAccountsTabViewModel(
+      inputFor([], { vault: [deadEntry('uuid-dead', 'dead@test.dev')] }),
+    );
+
+    // Assert — the view model exposes the flag the action line dims on
+    expect(model.rows[0]?.refreshDead).toBe(true);
+  });
+
+  test('healthy rows carry no warning', () => {
+    // Act
+    const text = renderRows(inputFor([], { vault: [vaultEntry('uuid-ok', 'ok@test.dev')] }));
+
+    // Assert
+    expect(text).not.toContain('re-login needed');
+  });
+});
+
+describe('accounts view source labels', () => {
+  function stateWith(model: ReturnType<typeof toAccountsTabViewModel>) {
+    return withTabResource(withActiveTab(createInitialState(), 'accounts'), 'accounts', {
+      phase: 'ready' as const,
+      data: model,
+      error: null,
+      updatedAtUtc: NOW,
+      invalidated: false,
+    });
+  }
+
+  test('a rate-limited reading serving cached numbers says stale, never live', () => {
+    // Arrange
+    const stale = snapshotFixture({
+      account: 'me@test.dev',
+      observedAtUtc: NOW - 600,
+      failure: { kind: 'rate_limited', failedAtUtc: NOW, retryAtUtc: NOW + 360 },
+      rateLimited: true,
+    });
+    const model = toAccountsTabViewModel(inputFor([stale]));
+
+    // Act
+    const text = viewText(accountsTabView(stateWith(model), 100, 40, NOW)).join('\n');
+
+    // Assert
+    expect(text).toContain('stale, as of 10m ago');
+    expect(text).not.toContain('— live');
+  });
+
+  test('a healthy vendor reading still says live', () => {
+    // Arrange
+    const model = toAccountsTabViewModel(inputFor([snapshotFixture({ account: 'me@test.dev' })]));
+
+    // Act & Assert
+    expect(viewText(accountsTabView(stateWith(model), 100, 40, NOW)).join('\n')).toContain('live');
+  });
+});
+
+describe('multi-agent accounts', () => {
+  function codexVaultEntry(accountId: string, email: string) {
+    return {
+      agent: 'codex',
+      accountId,
+      email,
+      organizationUuid: null,
+      organizationName: null,
+      alias: null,
+      addedAtUtc: NOW,
+      backend: 'keychain' as const,
+      refreshDeadAtUtc: null,
+    };
+  }
+
+  test('a stored codex account is switchable', () => {
+    // Act
+    const model = toAccountsTabViewModel(
+      inputFor([], { vault: [codexVaultEntry('codex-2', 'two@test.dev')] }),
+    );
+
+    // Assert
+    expect(model.switchableAgents).toContain('codex');
+    expect(model.rows[0]?.accountId).toBe('codex-2');
+  });
+
+  test('the active codex account comes from activeByAgent, not the claude marker', () => {
+    // Arrange — codex live snapshot carries its account id
+    const snapshot = snapshotFixture({
+      agent: 'codex',
+      accountId: 'codex-1',
+      account: 'one@test.dev',
+    });
+
+    // Act
+    const model = toAccountsTabViewModel(
+      inputFor([snapshot], {
+        vault: [codexVaultEntry('codex-1', 'one@test.dev'), codexVaultEntry('codex-2', 'two@test.dev')],
+        activeAccountId: 'claude-uuid-unrelated',
+        activeByAgent: { codex: 'codex-1' },
+      }),
+    );
+
+    // Assert — the live codex row is active; the stored alternate is not
+    const live = model.rows.find((row) => row.accountId === 'codex-1');
+    const stored = model.rows.find((row) => row.accountId === 'codex-2');
+    expect(live?.isActive).toBe(true);
+    expect(stored?.isActive).toBe(false);
+  });
+
+  test('the active antigravity account is marked from activeByAgent', () => {
+    // Arrange — read-only agent: rows come from snapshots only
+    const active = snapshotFixture({
+      agent: 'antigravity',
+      accountId: 'a@test.dev',
+      account: 'a@test.dev',
+    });
+    const other = snapshotFixture({
+      agent: 'antigravity',
+      accountId: 'b@test.dev',
+      account: 'b@test.dev',
+    });
+
+    // Act
+    const model = toAccountsTabViewModel(
+      inputFor([active, other], { activeByAgent: { antigravity: 'a@test.dev' } }),
+    );
+
+    // Assert — active marked, and antigravity is NOT switchable
+    expect(model.rows[0]?.isActive).toBe(true);
+    expect(model.rows[1]?.isActive).toBe(false);
+    expect(model.switchableAgents).not.toContain('antigravity');
+  });
+});
+
+describe('quota window normalization and ordering', () => {
+  test('provider-specific ids map onto the 5hours/7days/1month policy', () => {
+    // Arrange — one snapshot carrying every naming convention we ingest
+    const snapshot = snapshotFixture({
+      windows: [
+        { id: 'seven_day', usedPercent: 10, resetsAtUtc: null },
+        { id: 'five_hour', usedPercent: 20, resetsAtUtc: null },
+        { id: '7d Fable', usedPercent: 30, resetsAtUtc: null },
+        { id: 'seven_day_opus', usedPercent: 40, resetsAtUtc: null },
+      ],
+    });
+
+    // Act
+    const bars = toAccountsTabViewModel(inputFor([snapshot])).rows[0]?.quota?.bars ?? [];
+
+    // Assert — policy labels, model-scoped as 7days_<Model>
+    expect(bars.map((bar) => bar.id)).toEqual([
+      '5hours',
+      '7days',
+      '7days_Fable',
+      '7days_Opus',
+    ]);
+  });
+
+  test('codex minute-suffixed windows map by duration', () => {
+    // Arrange — 300m = 5h, 10080m = 7d, 43200m = 30d
+    const snapshot = snapshotFixture({
+      agent: 'codex',
+      windows: [
+        { id: 'GPT-5.3-Codex-Spark (10080m)', usedPercent: 5, resetsAtUtc: null },
+        { id: 'primary (43200m)', usedPercent: 15, resetsAtUtc: null },
+        { id: 'primary (10080m)', usedPercent: 25, resetsAtUtc: null },
+        { id: 'primary (300m)', usedPercent: 35, resetsAtUtc: null },
+      ],
+    });
+
+    // Act
+    const bars = toAccountsTabViewModel(inputFor([snapshot])).rows[0]?.quota?.bars ?? [];
+
+    // Assert — 5hours < 7days (common before model) < 1month
+    expect(bars.map((bar) => bar.id)).toEqual([
+      '5hours',
+      '7days',
+      '7days_GPT-5.3-Codex-Spark',
+      '1month',
+    ]);
+  });
+
+  test('the order is canonical however the source delivered the windows', () => {
+    // Arrange — stored_history returns windows alphabetically; live does not.
+    // Both must render identically or the card jumps between refreshes.
+    const alphabetical = snapshotFixture({
+      source: 'stored_history',
+      windows: [
+        { id: '7d Fable', usedPercent: 30, resetsAtUtc: null },
+        { id: 'five_hour', usedPercent: 20, resetsAtUtc: null },
+        { id: 'seven_day', usedPercent: 10, resetsAtUtc: null },
+      ],
+    });
+    const providerOrder = snapshotFixture({
+      windows: [
+        { id: 'five_hour', usedPercent: 20, resetsAtUtc: null },
+        { id: 'seven_day', usedPercent: 10, resetsAtUtc: null },
+        { id: '7d Fable', usedPercent: 30, resetsAtUtc: null },
+      ],
+    });
+
+    // Act
+    const fromStored = toAccountsTabViewModel(inputFor([alphabetical])).rows[0]?.quota?.bars ?? [];
+    const fromLive = toAccountsTabViewModel(inputFor([providerOrder])).rows[0]?.quota?.bars ?? [];
+
+    // Assert
+    expect(fromStored.map((bar) => bar.id)).toEqual(fromLive.map((bar) => bar.id));
+    expect(fromLive.map((bar) => bar.id)).toEqual(['5hours', '7days', '7days_Fable']);
+  });
+
+  test('unknown window shapes keep their label and sort last, alphabetically', () => {
+    // Arrange — antigravity model labels carry no window duration
+    const snapshot = snapshotFixture({
+      agent: 'antigravity',
+      windows: [
+        { id: 'Gemini 3.5 Flash (High)', usedPercent: 5, resetsAtUtc: null },
+        { id: 'Gemini 3.1 Pro (High)', usedPercent: 10, resetsAtUtc: null },
+      ],
+    });
+    const withKnown = snapshotFixture({
+      windows: [
+        { id: 'Gemini 3.1 Pro (High)', usedPercent: 10, resetsAtUtc: null },
+        { id: 'five_hour', usedPercent: 20, resetsAtUtc: null },
+      ],
+    });
+
+    // Act & Assert
+    expect(
+      (toAccountsTabViewModel(inputFor([snapshot])).rows[0]?.quota?.bars ?? []).map((bar) => bar.id),
+    ).toEqual(['Gemini 3.1 Pro (High)', 'Gemini 3.5 Flash (High)']);
+    expect(
+      (toAccountsTabViewModel(inputFor([withKnown])).rows[0]?.quota?.bars ?? []).map((bar) => bar.id),
+    ).toEqual(['5hours', 'Gemini 3.1 Pro (High)']);
+  });
+
+  test('the monthly extra-usage axis sorts with 1month but keeps its spend label', () => {
+    // Arrange
+    const snapshot = snapshotFixture({
+      windows: [
+        { id: 'extra usage $13/$100', usedPercent: 12.5, resetsAtUtc: null },
+        { id: 'five_hour', usedPercent: 20, resetsAtUtc: null },
+        { id: 'seven_day', usedPercent: 10, resetsAtUtc: null },
+      ],
+    });
+
+    // Act
+    const bars = toAccountsTabViewModel(inputFor([snapshot])).rows[0]?.quota?.bars ?? [];
+
+    // Assert — spend detail survives; position follows the monthly rank
+    expect(bars.map((bar) => bar.id)).toEqual(['5hours', '7days', 'extra usage $13/$100']);
   });
 });

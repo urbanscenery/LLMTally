@@ -187,6 +187,13 @@ export async function switchAccount(selector: string, ports: SwitchPorts): Promi
   const { vault, activeStore } = ports;
 
   const target = vault.resolve(selector);
+  if (target.refreshDeadAtUtc !== null) {
+    // installing a lineage the token endpoint already rejected would
+    // just move the dead credentials into Claude Code
+    throw new SwitchError(
+      `the stored refresh token for ${target.email ?? target.accountId} was rejected — run "claude" and /login as that account once (llmtally re-captures it automatically)`,
+    );
+  }
   const targetCredentials = vault.loadCredentials(target.accountId);
   if (targetCredentials === null) {
     throw new SwitchError(
@@ -222,6 +229,8 @@ export async function switchAccount(selector: string, ports: SwitchPorts): Promi
           organizationName: owner.organizationName,
           alias: owner.alias,
           addedAtUtc: owner.addedAtUtc,
+          // live credentials were just working — any quarantine is stale
+          refreshDeadAtUtc: null,
         },
         compact,
       );
@@ -327,6 +336,8 @@ export function captureActiveAccount(ports: {
       organizationName: identity.organizationName,
       alias: ports.alias === undefined ? (existing?.alias ?? null) : ports.alias,
       addedAtUtc: existing?.addedAtUtc ?? ports.nowUtc ?? Math.floor(Date.now() / 1000),
+      // a capture is proof of a working login; lift any quarantine
+      refreshDeadAtUtc: null,
     },
     compactJson(live),
   );

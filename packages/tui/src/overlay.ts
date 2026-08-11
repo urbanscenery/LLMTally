@@ -7,6 +7,7 @@
 export type PickerTopic = 'theme' | 'auto-refresh' | 'account-action';
 
 export type ConfirmTopic =
+  | 'account-add'
   | 'account-remove'
   | 'account-switch'
   | 'daemon-install'

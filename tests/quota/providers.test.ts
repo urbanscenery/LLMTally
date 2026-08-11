@@ -2,10 +2,18 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { fetchClaudeQuota, readCodexQuota } from '@llmtally/core/quota/providers.ts';
+import { makeQuotaSnapshot, fetchClaudeQuota, readCodexQuota } from '@llmtally/core/quota/providers.ts';
+import { LLMTALLY_USER_AGENT } from '@llmtally/core/version.ts';
 import { makeTempDir } from '../helpers.ts';
 
 const NOW = 1_786_400_000;
+
+const TEST_IDENTITY = {
+  accountUuid: 'acc-uuid-1',
+  email: 'me@test.dev',
+  organizationUuid: null,
+  organizationName: null,
+};
 
 describe('fetchClaudeQuota', () => {
   test('parses window utilizations from the oauth usage endpoint', async () => {
@@ -16,15 +24,17 @@ describe('fetchClaudeQuota', () => {
       seven_day_opus: null,
     };
     let sawAuth = false;
+    const seenHeaders: Record<string, string> = {};
 
     // Act
     const snapshot = await fetchClaudeQuota({
       tokenReader: () => 'test-token',
-      accountReader: () => 'me@test.dev',
+      identityReader: () => TEST_IDENTITY,
       nowUtc: NOW,
       fetchFn: (url, init) => {
         const headers = init?.headers as Record<string, string>;
         sawAuth = headers.Authorization === 'Bearer test-token';
+        Object.assign(seenHeaders, headers);
         expect(url).toContain('api.anthropic.com');
         return Promise.resolve(new Response(JSON.stringify(body)));
       },
@@ -32,6 +42,9 @@ describe('fetchClaudeQuota', () => {
 
     // Assert
     expect(sawAuth).toBe(true);
+    expect(seenHeaders['User-Agent']).toBe(LLMTALLY_USER_AGENT);
+    expect(snapshot.accountId).toBe('acc-uuid-1');
+    expect(snapshot.failure).toBeNull();
     expect(snapshot.windows).toEqual([
       {
         id: 'five_hour',
@@ -72,7 +85,7 @@ describe('fetchClaudeQuota', () => {
     // Act
     const snapshot = await fetchClaudeQuota({
       tokenReader: () => 'test-token',
-      accountReader: () => null,
+      identityReader: () => null,
       nowUtc: NOW,
       fetchFn: () => Promise.resolve(new Response(JSON.stringify(body))),
     });
@@ -97,7 +110,7 @@ describe('fetchClaudeQuota', () => {
     // Act
     const snapshot = await fetchClaudeQuota({
       tokenReader: () => 'test-token',
-      accountReader: () => null,
+      identityReader: () => null,
       nowUtc: NOW,
       fetchFn: () => Promise.resolve(new Response(JSON.stringify(body))),
     });
@@ -110,20 +123,71 @@ describe('fetchClaudeQuota', () => {
     // Act
     const noToken = await fetchClaudeQuota({
       tokenReader: () => null,
-      accountReader: () => null,
+      identityReader: () => null,
       nowUtc: NOW,
     });
     const offline = await fetchClaudeQuota({
       tokenReader: () => 't',
-      accountReader: () => null,
+      identityReader: () => null,
       nowUtc: NOW,
       fetchFn: () => Promise.reject(new Error('offline')),
     });
 
-    // Assert
+    // Assert — both fail, but for structurally different reasons
     expect(noToken.windows).toHaveLength(0);
     expect(noToken.warnings[0]).toContain('credentials');
+    expect(noToken.failure?.kind).toBe('unavailable');
     expect(offline.warnings[0]).toContain('fetch failed');
+    expect(offline.failure?.kind).toBe('transport');
+    expect(offline.rateLimited).toBe(false);
+  });
+
+  test('a 429 is a structured rate_limited failure with the retry hint', async () => {
+    // Act
+    const snapshot = await fetchClaudeQuota({
+      tokenReader: () => 't',
+      identityReader: () => TEST_IDENTITY,
+      nowUtc: NOW,
+      fetchFn: () =>
+        Promise.resolve(
+          new Response('', { status: 429, headers: { 'retry-after': '120' } }),
+        ),
+    });
+
+    // Assert
+    expect(snapshot.failure).toEqual({
+      kind: 'rate_limited',
+      failedAtUtc: NOW,
+      retryAtUtc: NOW + 120,
+    });
+    expect(snapshot.rateLimited).toBe(true);
+    expect(snapshot.retryAfterSeconds).toBe(120);
+    expect(snapshot.accountId).toBe('acc-uuid-1');
+  });
+});
+
+describe('makeQuotaSnapshot', () => {
+  test('derives rateLimited from the failure kind, never from a flag', () => {
+    // Act
+    const limited = makeQuotaSnapshot({
+      agent: 'claude-code',
+      source: 'vendor_api',
+      observedAtUtc: NOW,
+      windows: [],
+      failure: { kind: 'rate_limited', failedAtUtc: NOW, retryAtUtc: null },
+    });
+    const healthy = makeQuotaSnapshot({
+      agent: 'claude-code',
+      source: 'vendor_api',
+      observedAtUtc: NOW,
+      windows: [],
+    });
+
+    // Assert
+    expect(limited.rateLimited).toBe(true);
+    expect(healthy.rateLimited).toBe(false);
+    expect(healthy.failure).toBeNull();
+    expect(healthy.accountId).toBeNull();
   });
 });
 
