@@ -46,7 +46,13 @@ import {
   listAntigravityAccounts,
   readAntigravityQuota,
 } from './antigravity.ts';
-import { defaultCodexAuthPath, fetchCodexLiveQuota, readCodexAuth } from './codex-live.ts';
+import {
+  codexQuotaSubject,
+  defaultCodexAuthPath,
+  fetchCodexUsage,
+  readCodexAuth,
+} from './codex-live.ts';
+import type { CodexAuth } from './codex-live.ts';
 import { readVaultCodexQuota } from './codex-vault.ts';
 import {
   defaultClaudeTokenReader,
@@ -153,6 +159,15 @@ export async function loadAllQuota(options: {
     }
   }
 
+  // read once per load and shared by both codex passes: the active
+  // account decides a budget key on one side and an exclusion on the
+  // other, and if those two ever named different accounts, one account
+  // would be read by neither
+  const codexAuth =
+    agent === null || agent === 'codex'
+      ? readCodexAuth(options.codexAuthPath ?? defaultCodexAuthPath())
+      : null;
+
   // read once per load and share: the OpenCode and Cline readings must
   // agree about which credential set was live while they ran
   const bundles =
@@ -165,7 +180,7 @@ export async function loadAllQuota(options: {
       agent === null || agent === 'claude-code'
         ? loadActiveClaudeQuota(context, now, stateStore, stateStoreUnavailable)
         : null,
-      agent === null || agent === 'codex' ? throttledCodexLive(now) : null,
+      agent === null || agent === 'codex' ? throttledCodexLive(codexAuth, now) : null,
       agent === null || agent === 'antigravity'
         ? loadAntigravityQuota(now, options.allowRefresh)
         : null,
@@ -232,7 +247,12 @@ export async function loadAllQuota(options: {
       snapshots.push(codexSnapshot(codexLive, now));
       try {
         snapshots.push(
-          ...(await loadStoredCodexQuota(vault, options.codexAuthPath, now, options.allowRefresh)),
+          ...(await loadStoredCodexQuota(
+            vault,
+            codexAuth?.accountId ?? null,
+            now,
+            options.allowRefresh,
+          )),
         );
       } catch {
         // a vault problem must not take the live reading down with it
@@ -619,23 +639,28 @@ async function loadAntigravityQuota(
   );
 }
 
-/** Codex may have no credentials at all, which the throttle cannot cache. */
-async function throttledCodexLive(nowUtc: number): Promise<QuotaSnapshot | null> {
-  let unavailable = false;
-  const snapshot = await throttledQuota('codex', nowUtc, async () => {
-    const live = await fetchCodexLiveQuota({ nowUtc });
-    if (live === null) {
-      unavailable = true;
-      return makeQuotaSnapshot({
-        agent: 'codex',
-        source: 'vendor_api',
-        observedAtUtc: nowUtc,
-        windows: [],
-      });
-    }
-    return live;
-  });
-  return unavailable ? null : snapshot;
+/**
+ * The active codex account, budgeted under its own key. `auth` is read
+ * once by the caller and shared with the stored-account pass so the two
+ * cannot disagree about which account is active — a disagreement there
+ * leaves one account read by nobody. Null when codex has no login at
+ * all, which the throttle has nothing to cache for.
+ */
+async function throttledCodexLive(
+  auth: CodexAuth | null,
+  nowUtc: number,
+): Promise<QuotaSnapshot | null> {
+  if (auth === null) {
+    return null;
+  }
+  return throttledQuota(codexQuotaSubject(auth.accountId, auth.email), nowUtc, async () =>
+    fetchCodexUsage({
+      accessToken: auth.accessToken,
+      accountId: auth.accountId,
+      account: auth.email,
+      nowUtc,
+    }),
+  );
 }
 
 /**
@@ -647,23 +672,19 @@ async function throttledCodexLive(nowUtc: number): Promise<QuotaSnapshot | null>
  */
 async function loadStoredCodexQuota(
   vault: AccountVault,
-  authPath: string | undefined,
+  activeAccountId: string | null,
   nowUtc: number,
   allowRefresh: boolean | undefined,
 ): Promise<QuotaSnapshot[]> {
-  const activeAccountId = readCodexAuth(authPath ?? defaultCodexAuthPath())?.accountId ?? null;
   const targets = vault
     .list()
     .filter((entry) => entry.agent === 'codex' && entry.accountId !== activeAccountId);
   return Promise.all(
     targets.map(async (entry) =>
       throttledQuota(
-        {
-          key: `codex|ua=${LLMTALLY_USER_AGENT}|acct=${entry.accountId}`,
-          agent: 'codex',
-          accountId: entry.accountId,
-          account: entry.email ?? entry.accountId,
-        },
+        // the same key the live pass uses, so an account keeps one
+        // budget across going active and inactive
+        codexQuotaSubject(entry.accountId, entry.email ?? entry.accountId),
         nowUtc,
         async () => {
           const [snapshot] = await readVaultCodexQuota({

@@ -21,6 +21,8 @@ import { join } from 'node:path';
 import { readCodexTokens } from '../accounts/codex.ts';
 import { jwtEmail } from '../accounts/discovery.ts';
 import { asObject, asString } from '../parsers/shared.ts';
+import { LLMTALLY_USER_AGENT } from '../version.ts';
+import type { QuotaThrottleSubject } from './fetch-state.ts';
 import { makeQuotaSnapshot } from './providers.ts';
 import type { FetchLike, QuotaSnapshot, QuotaWindow } from './providers.ts';
 
@@ -31,7 +33,7 @@ export function defaultCodexAuthPath(home: string = homedir()): string {
   return join(home, '.codex', 'auth.json');
 }
 
-interface CodexAuth {
+export interface CodexAuth {
   readonly accessToken: string;
   readonly accountId: string | null;
   readonly email: string | null;
@@ -131,6 +133,26 @@ export function parseCodexUsageBody(
     }
   }
   return { plan: root === null ? null : asString(root.plan_type), windows };
+}
+
+/**
+ * Budget key for one codex account. The account has to be *in* the key:
+ * auth.json holds a different login after every switch, and a key that
+ * ignored it would serve the previous account's reading for the rest of
+ * the cache window — while the account that just became active is
+ * skipped everywhere else for being active. The result is an account
+ * nothing reads at all.
+ */
+export function codexQuotaSubject(
+  accountId: string | null,
+  account: string | null,
+): QuotaThrottleSubject {
+  return {
+    key: `codex|ua=${LLMTALLY_USER_AGENT}|acct=${accountId ?? 'unknown'}`,
+    agent: 'codex',
+    accountId,
+    account,
+  };
 }
 
 export interface CodexUsageRequest {

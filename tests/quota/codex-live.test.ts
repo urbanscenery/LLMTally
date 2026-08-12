@@ -2,7 +2,15 @@ import { describe, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { fetchCodexLiveQuota, parseCodexUsageBody, readCodexAuth } from '@llmtally/core/quota/codex-live.ts';
+import {
+  codexQuotaSubject,
+  fetchCodexLiveQuota,
+  parseCodexUsageBody,
+  readCodexAuth,
+} from '@llmtally/core/quota/codex-live.ts';
+import { makeQuotaSnapshot } from '@llmtally/core/quota/providers.ts';
+import type { QuotaSnapshot } from '@llmtally/core/quota/providers.ts';
+import { resetQuotaThrottle, throttledQuota } from '@llmtally/core/quota/throttle.ts';
 import { makeTempDir } from '../helpers.ts';
 
 const NOW = 1_786_400_000;
@@ -210,6 +218,65 @@ describe('fetchCodexLiveQuota', () => {
     expect(snapshot?.warnings.join(' ')).toContain('codex live quota fetch failed');
     // (the message is passed through, so assert the provider adds no header dump)
     expect(snapshot?.warnings.join(' ')).not.toContain('Bearer');
+  });
+});
+
+describe('codexQuotaSubject', () => {
+  test('a switch does not serve the previous account from cache', async () => {
+    // Arrange — auth.json holds a different login after every switch, so
+    // two accounts must never share one budget entry
+    resetQuotaThrottle();
+    const reading = (accountId: string): QuotaSnapshot =>
+      makeQuotaSnapshot({
+        agent: 'codex',
+        accountId,
+        account: `${accountId}@test.dev`,
+        source: 'vendor_api',
+        observedAtUtc: NOW,
+        windows: [{ id: 'primary (300m)', usedPercent: 11, resetsAtUtc: null }],
+      });
+
+    // Act — read one account, then the account a switch made active
+    const before = await throttledQuota(
+      codexQuotaSubject('acc-1', 'acc-1@test.dev'),
+      NOW,
+      async () => reading('acc-1'),
+    );
+    const after = await throttledQuota(
+      codexQuotaSubject('acc-2', 'acc-2@test.dev'),
+      NOW,
+      async () => reading('acc-2'),
+    );
+
+    // Assert — the newly active account is read, not the cached one
+    expect(before.accountId).toBe('acc-1');
+    expect(after.accountId).toBe('acc-2');
+  });
+
+  test('the same account keeps one budget across active and inactive', async () => {
+    // Arrange
+    resetQuotaThrottle();
+    let calls = 0;
+
+    // Act — the live pass and the stored pass, same account
+    await throttledQuota(codexQuotaSubject('acc-1', 'a@test.dev'), NOW, async () => {
+      calls += 1;
+      return makeQuotaSnapshot({
+        agent: 'codex',
+        accountId: 'acc-1',
+        account: 'a@test.dev',
+        source: 'vendor_api',
+        observedAtUtc: NOW,
+        windows: [{ id: 'primary (300m)', usedPercent: 11, resetsAtUtc: null }],
+      });
+    });
+    await throttledQuota(codexQuotaSubject('acc-1', 'a@test.dev'), NOW, async () => {
+      calls += 1;
+      throw new Error('the cached reading should have been served');
+    });
+
+    // Assert
+    expect(calls).toBe(1);
   });
 });
 
