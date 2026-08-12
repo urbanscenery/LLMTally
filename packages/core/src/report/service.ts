@@ -4,7 +4,11 @@ import type { FetchLike } from '../pricing/cache.ts';
 import { loadPricing, pricingKey } from '../pricing/service.ts';
 import type { NeededModel } from '../pricing/service.ts';
 import { computeGroupCost, foldBuckets } from './aggregate.ts';
-import { SqliteReportRepository } from './repository.ts';
+import {
+  MAX_REPORT_GROUPS,
+  ReportCardinalityError,
+  SqliteReportRepository,
+} from './repository.ts';
 import type { ReportRequest, ReportSummary } from './types.ts';
 
 export interface ReportDeps {
@@ -21,6 +25,12 @@ export async function generateReport(
   const db = openReadOnlyDatabase(request.databasePath, LATEST_SCHEMA_VERSION);
   try {
     const repository = new SqliteReportRepository(db);
+    // refuse pathological cardinality up front (audit D-05): a report
+    // with silently truncated totals would be worse than no report
+    const groupCount = repository.countGroups(request);
+    if (groupCount > MAX_REPORT_GROUPS) {
+      throw new ReportCardinalityError(groupCount);
+    }
     // first pass only discovers which models need prices; pricing may hit
     // the network and must not pin a database snapshot open meanwhile
     const discovered = repository.aggregate(request);

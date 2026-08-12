@@ -317,3 +317,39 @@ describe('generateReport', () => {
     ).toBe(true);
   });
 });
+
+describe('aggregation cardinality cap (D-05)', () => {
+  test('a pathological group explosion is refused, never silently truncated', async () => {
+    // Arrange — 5,001 unique model strings: only a corrupt or
+    // adversarial source produces this; a real ledger has dozens
+    const path = seedLedger(
+      Array.from({ length: 5001 }, (_, index) => ({
+        tsUtc: AUG9_LATE,
+        agent: 'claude-code',
+        provider: null,
+        model: `bogus-model-${index}`,
+        input: 1,
+        output: 1,
+      })),
+    );
+
+    // Act & Assert — a diagnosable refusal beats a gigabyte of rows or
+    // a total that quietly dropped groups
+    expect(generateReport(request(path, { noRefresh: true }))).rejects.toThrow(
+      /more than 5000 groups/,
+    );
+  });
+
+  test('an ordinary ledger is nowhere near the cap and reports normally', async () => {
+    // Arrange
+    const path = seedLedger([
+      { tsUtc: AUG9_LATE, agent: 'claude-code', provider: null, model: 'claude-fable-5', input: 10, output: 5 },
+    ]);
+
+    // Act
+    const summary = await generateReport(request(path, { noRefresh: true }));
+
+    // Assert
+    expect(summary.buckets.length).toBe(1);
+  });
+});

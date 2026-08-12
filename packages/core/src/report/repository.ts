@@ -13,6 +13,26 @@ const GROUP_EXPRESSIONS: Readonly<Record<ReportGroupBy, string>> = {
   agent: 'agent',
 };
 
+/**
+ * Ceiling on aggregation groups one report may materialize (audit
+ * D-05). Legitimate ledgers stay in the low thousands (days × agents ×
+ * models); the only way past this is a corrupt or adversarial source
+ * injecting unique model strings, and the answer to that is a
+ * diagnosable refusal — never a silently truncated total, and never a
+ * gigabyte of JS rows.
+ */
+export const MAX_REPORT_GROUPS = 5000;
+
+export class ReportCardinalityError extends Error {
+  override readonly name = 'ReportCardinalityError';
+
+  constructor(groupCount: number) {
+    super(
+      `report would aggregate more than ${MAX_REPORT_GROUPS} groups (${groupCount}+) — narrow the date range or filter by agent; this usually means a source is injecting bogus model names`,
+    );
+  }
+}
+
 interface AggregateSqlRow {
   readonly bucket: string;
   readonly agent: string;
@@ -43,6 +63,23 @@ export class SqliteReportRepository {
 
   constructor(db: Database) {
     this.#db = db;
+  }
+
+  /**
+   * How many groups the aggregate would produce, counted inside SQL
+   * with a LIMIT so the answer itself is bounded: at most "cap + 1",
+   * which is all a caller needs to refuse.
+   */
+  countGroups(query: ReportQuery): number {
+    const { conditions, binds } = this.#whereParts(query);
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `SELECT COUNT(*) AS n FROM (
+        SELECT 1 FROM usage_ledger
+        ${where}
+        GROUP BY ${GROUP_EXPRESSIONS[query.groupBy]}, agent, provider, model
+        LIMIT ${MAX_REPORT_GROUPS + 1}
+      )`;
+    return this.#db.query<{ n: number }, (string | number | null)[]>(sql).get(...binds)?.n ?? 0;
   }
 
   aggregate(query: ReportQuery): readonly ReportRow[] {
