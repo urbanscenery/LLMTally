@@ -28,6 +28,12 @@ LLMTally는 로컬에서 사용하는 AI 코딩 에이전트(Claude Code, Codex 
 
 ## 설치와 사용법
 
+| 플랫폼 | 지원 |
+|---|---|
+| macOS | ✅ 지원 (launchd 백그라운드 수집 포함) |
+| Linux | 🧪 실험적 — TUI·수집·계정 파일 백엔드 동작 예상, systemd user timer 백엔드 포함 (실기기 검증 전) |
+| Windows | ❌ 미지원 (inode 커서·권한 모델이 달라 별도 작업) |
+
 [Bun](https://bun.sh) 런타임이 **필수**입니다 (>= 1.3) — 코어가 `bun:sqlite` 위에서 동작하므로
 node로는 실행되지 않습니다. npm으로 설치해도 실행에는 Bun이 필요하며, Bun이 없으면
 설치 안내를 출력하고 종료합니다.

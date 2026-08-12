@@ -341,7 +341,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         kind: 'confirm',
         topic: 'daemon-install',
         title: 'Background collection',
-        message: 'Install the launchd agent that collects usage hourly?',
+        message: 'Install the background collection agent (hourly scans)?',
         payload: '',
       });
       return true;
@@ -351,7 +351,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         kind: 'confirm',
         topic: 'daemon-uninstall',
         title: 'Background collection',
-        message: 'Remove the launchd agent?',
+        message: 'Remove the background collection agent?',
         payload: '',
       });
       return true;

@@ -377,16 +377,39 @@ function pricingChecks(home: string): DoctorCheck[] {
   return checks;
 }
 
+/**
+ * Read-only: file presence per platform backend, never a launchctl or
+ * systemctl spawn. The remediation names the TUI action — there is no
+ * CLI subcommand to run (that reference outlived the CLI's removal).
+ */
 function daemonCheck(home: string): DoctorCheck {
-  const plist = join(home, 'Library', 'LaunchAgents', 'com.llmtally.scan.plist');
-  return existsSync(plist)
-    ? { id: 'daemon.plist', status: 'pass', message: `installed at ${plist}` }
-    : {
-        id: 'daemon.plist',
-        status: 'skip',
-        message: 'periodic scan daemon is not installed',
-        remediation: 'run "llmtally daemon install" (optional)',
-      };
+  if (process.platform === 'darwin') {
+    const plist = join(home, 'Library', 'LaunchAgents', 'com.llmtally.scan.plist');
+    return existsSync(plist)
+      ? { id: 'daemon.plist', status: 'pass', message: `installed at ${plist}` }
+      : {
+          id: 'daemon.plist',
+          status: 'skip',
+          message: 'background collection agent is not installed',
+          remediation: 'press D on this tab to install it (optional)',
+        };
+  }
+  if (process.platform === 'linux') {
+    const timer = join(home, '.config', 'systemd', 'user', 'llmtally-scan.timer');
+    return existsSync(timer)
+      ? { id: 'daemon.systemd', status: 'pass', message: `installed at ${timer}` }
+      : {
+          id: 'daemon.systemd',
+          status: 'skip',
+          message: 'background collection timer is not installed',
+          remediation: 'press D on this tab to install it (optional)',
+        };
+  }
+  return {
+    id: 'daemon.unsupported',
+    status: 'skip',
+    message: 'background collection has no backend on this platform (macOS launchd, Linux systemd only)',
+  };
 }
 
 function directoryCheck(id: string, path: string, label: string): DoctorCheck {

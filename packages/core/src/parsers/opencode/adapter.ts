@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { opencodeDataDir } from '../../config/paths.ts';
 import type { LedgerEntry } from '../../domain/types.ts';
 import type {
   AdapterScanOptions,
@@ -40,9 +41,7 @@ export class OpenCodeAdapter implements SourceAdapter {
   }
 
   discover(context: SourceDiscoveryContext): Promise<SourceDiscovery> {
-    const path =
-      this.#databasePath ??
-      join(context.homeDirectory, '.local', 'share', 'opencode', 'opencode.db');
+    const path = this.#databasePath ?? join(opencodeDataDir(context.homeDirectory), 'opencode.db');
     try {
       const stats = statSync(path);
       if (!stats.isFile()) {
