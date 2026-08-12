@@ -6,6 +6,15 @@ extension Notification.Name {
     /// Posted by the Builder after persisting descriptor changes so the
     /// status item re-renders without waiting for the next quota tick.
     static let llmtallyDescriptorsChanged = Notification.Name("llmtallyDescriptorsChanged")
+    /// Posted when the privacy toggle flips — one policy across the
+    /// status item, popover, tooltips, and notifications.
+    static let llmtallyPrivacyChanged = Notification.Name("llmtallyPrivacyChanged")
+}
+
+/// Single source for the privacy switch (03_design_spec §11).
+enum PrivacySetting {
+    static let key = "privacyMode"
+    static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
 }
 
 /// Settings lives in its own window (03_design_spec §1) — never inside
@@ -34,6 +43,7 @@ struct SettingsView: View {
     enum Pane: String, CaseIterable {
         case general = "General"
         case menubar = "Menu bar"
+        case privacy = "Privacy"
     }
 
     @State private var pane: Pane = .menubar
@@ -72,6 +82,7 @@ struct SettingsView: View {
                     switch pane {
                     case .general: GeneralPane()
                     case .menubar: MenuBarPane(onConfigure: { showBuilder = true })
+                    case .privacy: PrivacyPane()
                     }
                 }
             }
@@ -132,6 +143,38 @@ private struct MenuBarPane: View {
     private var summary: String {
         let items = store.load()
         return "\(items.count) item\(items.count == 1 ? "" : "s")"
+    }
+}
+
+private struct PrivacyPane: View {
+    @AppStorage(PrivacySetting.key) private var privacyMode = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Privacy").font(.title2.weight(.semibold))
+            Text("Prompts never leave this machine. This toggle neutralizes identity for screen sharing — the same policy in the status item, popover, tooltips, VoiceOver, and notifications.")
+                .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            HStack {
+                Text("Privacy mode")
+                Spacer()
+                Toggle("", isOn: $privacyMode)
+                    .onChange(of: privacyMode) { _ in
+                        NotificationCenter.default.post(name: .llmtallyPrivacyChanged, object: nil)
+                    }
+            }
+            HStack {
+                Text("Hides")
+                Spacer()
+                Text("provider names · accounts · costs").font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Text("Replaces with")
+                Spacer()
+                Text("P1 · Account hidden · Private metric hidden").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(20)
     }
 }
 

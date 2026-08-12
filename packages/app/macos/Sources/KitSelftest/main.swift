@@ -168,6 +168,79 @@ do {
     }
 }
 
+// MARK: notification planner
+
+do {
+    // a crossing fires once, repeats are silent, dropping below re-arms
+    let hot = [snapshot(agent: "claude-code", windows: [
+        QuotaWindowDTO(id: "five_hour", usedPercent: 75, resetsAtUtc: nil)])]
+    let first = planNotifications(state: NotificationState(), quota: hot)
+    expectEqual(first.notifications.count, 1, "warning crossing fires once")
+    expect(first.notifications.first?.title.contains("75% used") ?? false, "crossing title carries the percent")
+
+    let second = planNotifications(state: first.state, quota: hot)
+    expectEqual(second.notifications.count, 0, "same reading does not re-fire")
+
+    let cooled = [snapshot(agent: "claude-code", windows: [
+        QuotaWindowDTO(id: "five_hour", usedPercent: 10, resetsAtUtc: nil)])]
+    let third = planNotifications(state: second.state, quota: cooled)
+    expectEqual(third.notifications.count, 0, "cooling down is silent")
+
+    let reheated = planNotifications(state: third.state, quota: hot)
+    expectEqual(reheated.notifications.count, 1, "reset re-arms the same threshold")
+}
+
+do {
+    // a jump straight past both lines fires critical only
+    let spike = [snapshot(agent: "codex", windows: [
+        QuotaWindowDTO(id: "primary (300m)", usedPercent: 95, resetsAtUtc: nil)])]
+    let fired = planNotifications(state: NotificationState(), quota: spike)
+    expectEqual(fired.notifications.count, 1, "spike past 70 and 90 fires one notification")
+    expect(fired.notifications.first?.key.hasPrefix("crit|") ?? false, "and it is the critical one")
+}
+
+do {
+    // auth fires immediately once; the body names no email
+    let broken = [snapshot(agent: "codex", account: "secret@example.com", failureKind: "auth_invalid")]
+    let fired = planNotifications(state: NotificationState(), quota: broken)
+    expectEqual(fired.notifications.count, 1, "auth fires immediately")
+    let text = (fired.notifications.first?.title ?? "") + (fired.notifications.first?.body ?? "")
+    expect(!text.contains("secret@example.com"), "notification text carries no email")
+    let again = planNotifications(state: fired.state, quota: broken)
+    expectEqual(again.notifications.count, 0, "auth fires once per episode")
+}
+
+// MARK: privacy
+
+do {
+    let quota = [
+        snapshot(agent: "claude-code", account: "secret@example.com", windows: [
+            QuotaWindowDTO(id: "five_hour", usedPercent: 33, resetsAtUtc: nil)]),
+        snapshot(agent: "codex", windows: [
+            QuotaWindowDTO(id: "primary (300m)", usedPercent: 5, resetsAtUtc: nil)]),
+    ]
+    let descriptors = [MenuItemDescriptor(
+        scope: .provider("claude-code"), metric: .quotaUsagePercentage, direction: "used",
+        binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"))]
+
+    let hidden = renderStatusItems(descriptors: descriptors, quota: quota,
+                                   activeAccounts: [:], privacy: true)
+    expect(hidden.title.contains("P1"), "privacy replaces the code with a stable alias")
+    expect(!hidden.title.contains("CLA"), "no provider code leaks in the title")
+    expect(!hidden.tooltip.contains("secret@example.com"), "no email leaks in the tooltip")
+    expect(hidden.tooltip.contains("Account hidden"), "tooltip states the account is hidden")
+
+    let aliases = privacyAliases(for: quota)
+    expectEqual(aliases["claude-code"], "P1", "aliases are deterministic (sorted agents)")
+    expectEqual(aliases["codex"], "P2", "second agent is P2")
+
+    // privacy notifications use the alias too
+    let authQuota = [snapshot(agent: "codex", failureKind: "auth_invalid")]
+    let fired = planNotifications(state: NotificationState(), quota: authQuota, privacy: true)
+    expect(fired.notifications.first?.title.hasPrefix("P1") ?? false,
+           "privacy notification uses the alias, not the provider name")
+}
+
 if failures > 0 {
     print("\(failures) failure(s)")
     exit(1)

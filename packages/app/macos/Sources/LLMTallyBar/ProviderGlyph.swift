@@ -86,3 +86,16 @@ struct ProviderStamp: View {
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.07)))
     }
 }
+
+/// Privacy replacement for the stamp: a neutral session-stable alias
+/// instead of any identifying glyph (03_design_spec §11).
+struct PrivacyStamp: View {
+    let alias: String
+
+    var body: some View {
+        Text(alias)
+            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+            .frame(width: 22, height: 22)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.07)))
+    }
+}

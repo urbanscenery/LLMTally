@@ -20,8 +20,12 @@ public func renderStatusItems(
     descriptors: [MenuItemDescriptor],
     quota: [QuotaSnapshotDTO],
     activeAccounts: [String: String?],
+    privacy: Bool = false,
     now: Date = Date()
 ) -> StatusRendering {
+    // privacy mode neutralizes identity in the visible text AND the
+    // tooltip/VO payload — a real replacement, not a visual mask
+    let names = PrivacyNames(privacy: privacy, quota: quota)
     // One row per agent: the active account when known, else the
     // highest-attention snapshot — the same choice Overview makes.
     var rowsByAgent: [String: AgentAttention] = [:]
@@ -46,17 +50,18 @@ public func renderStatusItems(
     for descriptor in descriptors {
         switch descriptor.metric {
         case .quotaUsagePercentage:
-            renderQuotaPercent(descriptor, rows: rows, now: now,
+            renderQuotaPercent(descriptor, rows: rows, names: names, now: now,
                                segments: &segments, tooltip: &tooltipLines)
         case .sourceFreshness:
-            renderFreshness(rows: rows, now: now, segments: &segments, tooltip: &tooltipLines)
+            renderFreshness(rows: rows, names: names, now: now,
+                            segments: &segments, tooltip: &tooltipLines)
         case .quotaReset:
             renderReset(descriptor, rows: rows, now: now, segments: &segments, tooltip: &tooltipLines)
         case .providerLabel:
             if case .provider(let provider) = descriptor.scope {
-                segments.append(agentShortCode(provider))
+                segments.append(names.code(provider))
             } else if case .pin(let provider, _) = descriptor.binding {
-                segments.append(agentShortCode(provider))
+                segments.append(names.code(provider))
             }
         case .spacer:
             segments.append(" ")
@@ -80,6 +85,7 @@ public func renderStatusItems(
 private func renderQuotaPercent(
     _ descriptor: MenuItemDescriptor,
     rows: [AgentAttention],
+    names: PrivacyNames,
     now: Date,
     segments: inout [String],
     tooltip: inout [String]
@@ -92,14 +98,14 @@ private func renderQuotaPercent(
     let (item, window) = resolved
 
     if item.rank == .authInvalid {
-        segments.append("\(identityText(descriptor, agent: item.snapshot.agent))!")
-        tooltip.append("\(agentDisplayName(item.snapshot.agent)) auth invalid · reconnect required")
+        segments.append("\(identityText(descriptor, code: names.code(item.snapshot.agent)))!")
+        tooltip.append("\(names.display(item.snapshot.agent)) auth invalid · reconnect required")
         return
     }
 
     guard let window else {
         if descriptor.unavailableBehavior == "placeholder" { segments.append("—") }
-        tooltip.append("\(agentDisplayName(item.snapshot.agent)): no windows reported")
+        tooltip.append("\(names.display(item.snapshot.agent)): no windows reported")
         return
     }
 
@@ -109,20 +115,21 @@ private func renderQuotaPercent(
         : Int(window.usedPercent.rounded())
 
     var parts: [String] = []
-    let identity = identityText(descriptor, agent: item.snapshot.agent)
+    let identity = identityText(descriptor, code: names.code(item.snapshot.agent))
     if !identity.isEmpty { parts.append(identity) }
     if descriptor.showWindowLabel ?? true { parts.append(shortWindowLabel(window.id)) }
     if descriptor.showPercentage ?? true { parts.append("\(percent)%") }
     segments.append(parts.joined(separator: " "))
 
     tooltip.append(
-        "\(agentDisplayName(item.snapshot.agent)) \(window.id) \(direction) "
+        "\(names.display(item.snapshot.agent)) \(window.id) \(direction) "
         + "\(Int(window.usedPercent.rounded()))% · \(resetText(window.resetsAtUtc, now: now))"
-        + " · \(item.snapshot.account ?? "unknown account")")
+        + " · \(names.account(item.snapshot.account))")
 }
 
 private func renderFreshness(
     rows: [AgentAttention],
+    names: PrivacyNames,
     now: Date,
     segments: inout [String],
     tooltip: inout [String]
@@ -141,7 +148,7 @@ private func renderFreshness(
 
     for row in rows {
         tooltip.append(
-            "\(agentDisplayName(row.snapshot.agent)): \(row.snapshot.source), "
+            "\(names.display(row.snapshot.agent)): \(row.snapshot.source), "
             + "observed \(shortAge(sinceEpoch: row.snapshot.observedAtUtc, now: now)) ago")
     }
 }
@@ -183,9 +190,34 @@ private func resolveQuotaBinding(
     }
 }
 
-private func identityText(_ descriptor: MenuItemDescriptor, agent: String) -> String {
+private func identityText(_ descriptor: MenuItemDescriptor, code: String) -> String {
     switch descriptor.providerIdentityPresentation {
     case "none": return ""
-    default: return agentShortCode(agent)
+    default: return code
+    }
+}
+
+/// Name resolution under privacy: real names normally, session-stable
+/// `P1/P2…` and `Account hidden` when privacy is on — in the visible
+/// text and in tooltips alike.
+struct PrivacyNames {
+    private let privacy: Bool
+    private let aliases: [String: String]
+
+    init(privacy: Bool, quota: [QuotaSnapshotDTO]) {
+        self.privacy = privacy
+        self.aliases = privacy ? privacyAliases(for: quota) : [:]
+    }
+
+    func code(_ agent: String) -> String {
+        privacy ? (aliases[agent] ?? "P?") : agentShortCode(agent)
+    }
+
+    func display(_ agent: String) -> String {
+        privacy ? (aliases[agent] ?? "Provider") : agentDisplayName(agent)
+    }
+
+    func account(_ account: String?) -> String {
+        privacy ? "Account hidden" : (account ?? "unknown account")
     }
 }

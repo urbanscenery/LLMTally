@@ -17,6 +17,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let descriptorStore = DescriptorStore()
     private var refreshTimer: Timer?
     private var descriptorObserver: NSObjectProtocol?
+    private var privacyObserver: NSObjectProtocol?
     // last-good inputs so a Builder edit re-renders without a new fetch
     private var lastQuota: [QuotaSnapshotDTO] = []
     private var lastActive: [String: String?] = [:]
@@ -45,12 +46,20 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         ) { [weak self] _ in
             self?.renderFromCache()
         }
+        privacyObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyPrivacyChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.renderFromCache()
+        }
     }
 
     deinit {
         refreshTimer?.invalidate()
         if let descriptorObserver {
             NotificationCenter.default.removeObserver(descriptorObserver)
+        }
+        if let privacyObserver {
+            NotificationCenter.default.removeObserver(privacyObserver)
         }
     }
 
@@ -88,6 +97,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             self.lastQuota = quota
             self.lastActive = active ?? self.lastActive
             self.renderFromCache()
+            NotificationManager.shared.process(quota: quota, privacy: PrivacySetting.enabled)
         }
     }
 
@@ -96,7 +106,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         apply(renderStatusItems(
             descriptors: descriptorStore.load(),
             quota: lastQuota,
-            activeAccounts: lastActive))
+            activeAccounts: lastActive,
+            privacy: PrivacySetting.enabled))
     }
 
     private func apply(_ rendering: StatusRendering) {

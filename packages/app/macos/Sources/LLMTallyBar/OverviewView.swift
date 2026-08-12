@@ -8,6 +8,11 @@ struct OverviewView: View {
     @StateObject private var model = OverviewModel()
     @State private var selectedAgent: String?
     @State private var switchIntent: SwitchIntent?
+    @AppStorage(PrivacySetting.key) private var privacy = false
+
+    private var aliases: [String: String] {
+        privacyAliases(for: model.overview?.quota ?? [])
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,12 +65,13 @@ struct OverviewView: View {
                 agent: agent,
                 items: model.agentGroups().first(where: { $0.agent == agent })?.items ?? [],
                 activeAccountId: model.activeAccounts[agent] ?? nil,
+                privacy: privacy,
                 onSwitch: { snapshot in
                     guard let accountId = snapshot.accountId else { return }
                     switchIntent = SwitchIntent(
                         agent: agent,
                         selector: accountId,
-                        label: snapshot.account ?? accountId)
+                        label: privacy ? "the selected account" : (snapshot.account ?? accountId))
                 })
         } else if model.overview == nil {
             VStack(spacing: 8) {
@@ -88,20 +94,24 @@ struct OverviewView: View {
         ScrollView {
             VStack(spacing: 0) {
                 if let headline = model.headline() {
-                    HeadlineView(item: headline)
+                    HeadlineView(item: headline, privacy: privacy,
+                                 alias: aliases[headline.snapshot.agent] ?? "P?")
                         .contentShape(Rectangle())
                         .onTapGesture { selectedAgent = headline.snapshot.agent }
                     Divider()
                 }
                 ForEach(model.agentGroups(), id: \.agent) { group in
                     if let row = model.overviewRow(for: group) {
-                        AgentRow(item: row)
+                        AgentRow(item: row, privacy: privacy,
+                                 alias: aliases[row.snapshot.agent] ?? "P?")
                             .contentShape(Rectangle())
                             .onTapGesture { selectedAgent = group.agent }
                         Divider().padding(.leading, 44)
                     }
                 }
-                TodaySection(bucket: model.todayBucket(), totals: model.overview?.report.totals)
+                TodaySection(bucket: model.todayBucket(),
+                             totals: model.overview?.report.totals,
+                             privacy: privacy)
             }
         }
     }
@@ -137,6 +147,8 @@ struct SwitchIntent: Identifiable {
 
 struct HeadlineView: View {
     let item: AgentAttention
+    var privacy = false
+    var alias = "P?"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -144,7 +156,9 @@ struct HeadlineView: View {
                 .font(.caption2.weight(.semibold))
                 .textCase(.uppercase)
                 .foregroundStyle(accent)
-            Text("\(agentDisplayName(item.snapshot.agent)) · \(item.snapshot.account ?? "unknown")")
+            Text(privacy
+                 ? "\(alias) · Account hidden"
+                 : "\(agentDisplayName(item.snapshot.agent)) · \(item.snapshot.account ?? "unknown")")
                 .font(.subheadline.weight(.semibold))
             Text(reason).font(.callout)
             Text(meta).font(.caption).foregroundStyle(.secondary).monospacedDigit()
@@ -207,14 +221,23 @@ struct HeadlineView: View {
 
 struct AgentRow: View {
     let item: AgentAttention
+    var privacy = false
+    var alias = "P?"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                ProviderStamp(agent: item.snapshot.agent)
+                if privacy {
+                    PrivacyStamp(alias: alias)
+                } else {
+                    ProviderStamp(agent: item.snapshot.agent)
+                }
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(agentDisplayName(item.snapshot.agent)).font(.callout.weight(.medium))
-                    if let account = item.snapshot.account {
+                    Text(privacy ? alias : agentDisplayName(item.snapshot.agent))
+                        .font(.callout.weight(.medium))
+                    if privacy {
+                        Text("Account hidden").font(.caption2).foregroundStyle(.secondary)
+                    } else if let account = item.snapshot.account {
                         Text(account).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
@@ -320,6 +343,7 @@ struct WindowRail: View {
 struct TodaySection: View {
     let bucket: ReportBucketDTO?
     let totals: ReportBucketDTO?
+    var privacy = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -334,6 +358,7 @@ struct TodaySection: View {
     }
 
     private var actualText: String {
+        if privacy { return "hidden" }
         guard let bucket else { return "—" }
         if let usd = bucket.actual.usd { return formatUsd(usd) }
         if bucket.actual.pricedRows > 0 { return formatUsd(bucket.actual.pricedSubtotalUsd) }
@@ -341,6 +366,7 @@ struct TodaySection: View {
     }
 
     private var actualNote: String? {
+        if privacy { return "Private metric hidden" }
         guard let bucket else { return nil }
         if bucket.actual.usd != nil { return "billable" }
         if bucket.actual.pricedRows > 0 { return "partial · \(bucket.actual.unpricedRows) unpriced" }
@@ -367,6 +393,7 @@ struct ProviderDetailView: View {
     let agent: String
     let items: [AgentAttention]
     let activeAccountId: String?
+    var privacy = false
     let onSwitch: (QuotaSnapshotDTO) -> Void
 
     var body: some View {
@@ -389,7 +416,7 @@ struct ProviderDetailView: View {
         let isActive = snapshot.accountId != nil && snapshot.accountId == activeAccountId
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(snapshot.account ?? snapshot.accountId ?? "unknown account")
+                Text(privacy ? "Account hidden" : (snapshot.account ?? snapshot.accountId ?? "unknown account"))
                     .font(.callout.weight(.medium)).lineLimit(1)
                 Spacer()
                 if isActive {

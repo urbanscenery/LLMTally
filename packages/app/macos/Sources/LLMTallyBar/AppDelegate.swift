@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("sidecar start failed: \(error)")
         }
         statusController = StatusItemController()
+        NotificationManager.shared.requestAuthorizationIfNeeded()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
