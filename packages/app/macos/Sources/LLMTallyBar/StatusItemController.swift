@@ -84,7 +84,44 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         // above the menu bar with its head off-screen.
         let bottomEdge: NSRectEdge = button.isFlipped ? .maxY : .minY
         fresh.show(relativeTo: button.bounds, of: button, preferredEdge: bottomEdge)
-        fresh.contentViewController?.view.window?.makeKey()
+    }
+
+    func popoverDidShow(_ notification: Notification) {
+        // Menu-bar managers (Ice, Bartender) relocate status-item
+        // windows when hiding/revealing items, so the anchor rect can
+        // be stale by the second open and the popover lands half above
+        // the screen. Trust the screen, not the anchor: clamp the
+        // popover window into the visible frame after it appears.
+        clampPopoverIntoVisibleFrame()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            self?.clampPopoverIntoVisibleFrame()
+        }
+    }
+
+    private func clampPopoverIntoVisibleFrame() {
+        guard
+            let window = popover?.contentViewController?.view.window,
+            let screen = window.screen ?? statusItem.button?.window?.screen ?? NSScreen.main
+        else { return }
+
+        var frame = window.frame
+        let visible = screen.visibleFrame  // excludes the menu bar (and notch)
+        var changed = false
+        if frame.maxY > visible.maxY {
+            frame.origin.y = visible.maxY - frame.height
+            changed = true
+        }
+        if frame.minX < visible.minX {
+            frame.origin.x = visible.minX + 4
+            changed = true
+        }
+        if frame.maxX > visible.maxX {
+            frame.origin.x = visible.maxX - frame.width - 4
+            changed = true
+        }
+        if changed {
+            window.setFrame(frame, display: true)
+        }
     }
 
     func popoverDidClose(_ notification: Notification) {
