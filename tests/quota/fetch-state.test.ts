@@ -169,6 +169,63 @@ describe('quota fetch state store', () => {
     expect(normalCadence.decision.kind).toBe('claimed');
   });
 
+  test('a post-429 deferral says rate_limit even after the block itself passed', () => {
+    // Arrange — a 429, then a successful probe once the block expires:
+    // the rolling hour still stretches the cadence to 360s
+    const path = dbPath();
+    const refused = claimNow(path, NOW);
+    if (refused.decision.kind === 'claimed') {
+      refused.store.complete(subject().key, refused.decision.owner, NOW, {
+        kind: 'rate_limited',
+        retryAfterSeconds: null,
+      });
+    }
+    refused.store.close();
+    const probe = claimNow(path, NOW + 360);
+    if (probe.decision.kind === 'claimed') {
+      probe.store.complete(subject().key, probe.decision.owner, NOW + 360, { kind: 'success' });
+    }
+    probe.store.close();
+
+    // Act — a fresh process (restart) asks inside the stretched cadence
+    const restarted = claimNow(path, NOW + 360 + NORMAL);
+    restarted.store.close();
+
+    // Assert — the deferral is 429-caused and must keep saying so, or a
+    // restart loses the 429-based trust extension on stored history
+    expect(restarted.decision.kind).toBe('deferred');
+    if (restarted.decision.kind === 'deferred') {
+      expect(restarted.decision.reason).toBe('rate_limit');
+    }
+  });
+
+  test('a deferral behind a live claim inside the 429 window still says rate_limit', () => {
+    // Arrange — 429 at NOW; the block expires and a probe claims a slot
+    const path = dbPath();
+    const refused = claimNow(path, NOW);
+    if (refused.decision.kind === 'claimed') {
+      refused.store.complete(subject().key, refused.decision.owner, NOW, {
+        kind: 'rate_limited',
+        retryAfterSeconds: null,
+      });
+    }
+    refused.store.close();
+    const probe = claimNow(path, NOW + 360);
+    expect(probe.decision.kind).toBe('claimed');
+
+    // Act — another process asks while the probe's claim is live
+    const concurrent = claimNow(path, NOW + 361);
+    concurrent.store.close();
+    probe.store.close();
+
+    // Assert — rate_limit outranks claim: the 429 still governs, and a
+    // 'claim' verdict would cost this process the 429 trust extension
+    expect(concurrent.decision.kind).toBe('deferred');
+    if (concurrent.decision.kind === 'deferred') {
+      expect(concurrent.decision.reason).toBe('rate_limit');
+    }
+  });
+
   test('a crashed claimer ages out after the claim TTL but keeps its cadence slot', () => {
     // Arrange — claim and never complete (simulated crash)
     const path = dbPath();

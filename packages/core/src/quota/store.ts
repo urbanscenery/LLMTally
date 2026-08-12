@@ -155,32 +155,29 @@ export function readStoredLastGood(
     // may still be true, but nothing can confirm that any more
     return null;
   }
-  // the stable id is the lookup key when the caller has one; rows
-  // recorded before the id existed carry '' and stay reachable via
-  // their display label
+  // the stable id is the lookup key when the caller has one. Rows
+  // recorded before ids existed carry '' — they used to be reachable
+  // through a display-label OR, but the same label can belong to two
+  // accounts (personal and organization), so that fallback could serve
+  // another account's numbers. Id-less rows age out with the 30-day
+  // retention instead.
   const rows = (
     request.accountId !== null
       ? db
-          .query<SampleRow, [string, string, string, string, string]>(
+          .query<SampleRow, [string, string, string]>(
             `SELECT window_id, used_percent, resets_at_utc, observed_at_utc
              FROM quota_samples
              WHERE agent = ?
-               AND (account_id = ? OR (account_id = '' AND account = ?))
+               AND account_id = ?
                AND observed_at_utc = (
                  SELECT MAX(s2.observed_at_utc) FROM quota_samples s2
                  WHERE s2.agent = quota_samples.agent
                    AND s2.window_id = quota_samples.window_id
-                   AND (s2.account_id = ? OR (s2.account_id = '' AND s2.account = ?))
+                   AND s2.account_id = ?
                )
              ORDER BY window_id`,
           )
-          .all(
-            request.agent,
-            request.accountId,
-            request.account ?? '',
-            request.accountId,
-            request.account ?? '',
-          )
+          .all(request.agent, request.accountId, request.accountId)
       : db
           .query<SampleRow, [string, string]>(
             `SELECT window_id, used_percent, resets_at_utc, observed_at_utc

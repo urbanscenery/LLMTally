@@ -315,7 +315,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         topic: 'account-switch',
         title: 'Switch account',
         message: `Switch ${row.agent} to ${row.label}?`,
-        payload: row.accountId,
+        payload: `${row.agent}:${row.accountId}`,
       });
       return true;
     }
@@ -327,7 +327,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         message: row.isActive
           ? `${row.label} is the account you are logged in as. Forget its stored credentials anyway? You would have to log in again to switch back.`
           : `Forget stored credentials for ${row.label}?`,
-        payload: row.accountId,
+        payload: `${row.agent}:${row.accountId}`,
       });
       return true;
     }
@@ -565,7 +565,8 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       return;
     }
     if (topic === 'account-switch') {
-      await runAction('Switch account', () => options.dataSource.switchToAccount(payload));
+      const [agent, accountId] = splitAccountPayload(payload);
+      await runAction('Switch account', () => options.dataSource.switchToAccount(agent, accountId));
       return;
     }
     if (topic === 'account-detach') {
@@ -580,7 +581,16 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       await runAction('Background collection', () => options.dataSource.uninstallDaemon(), 'doctor');
       return;
     }
-    await runAction('Remove account', () => options.dataSource.removeAccount(payload));
+    const [agent, accountId] = splitAccountPayload(payload);
+    await runAction('Remove account', () => options.dataSource.removeAccount(agent, accountId));
+  }
+
+  /** Payload built as `<agent>:<accountId>`; neither side contains ":". */
+  function splitAccountPayload(payload: string): [string, string] {
+    const separator = payload.indexOf(':');
+    return separator < 0
+      ? ['claude-code', payload]
+      : [payload.slice(0, separator), payload.slice(separator + 1)];
   }
 
   /**

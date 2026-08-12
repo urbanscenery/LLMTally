@@ -2,19 +2,26 @@
  * llmtally's own account store, the thing that makes switching possible
  * at all. Layout under `~/.llmtally/accounts` (0700):
  *
- *   registry.json          labels + which account is active
- *   <accountId>.cred       base64 credentials (file backend)
- *   unclaimed/<id>.cred    credentials we could not attribute, kept
- *                          with a manifest instead of being destroyed
+ *   registry.json               labels + which account is active per agent
+ *   <agent>--<accountId>.cred   base64 credentials (file backend)
+ *   unclaimed/<id>.cred         credentials we could not attribute, kept
+ *                               with a manifest instead of being destroyed
  *
  * On macOS the credentials live in the Keychain (service `llmtally`,
- * account `claude:<accountId>`) and the `.cred` file is absent; the
+ * account `<agent>:<accountId>`) and the `.cred` file is absent; the
  * file backend is the fallback when no Keychain is available. Secrets
  * are base64 so a Keychain item is always a single safe line — that is
  * encoding, not encryption.
+ *
+ * Every store keys on `(agent, accountId)`: two agents may legitimately
+ * produce the same account id (both are vendor-issued namespaces), and
+ * a single-id registry let the later agent silently overwrite the
+ * earlier one's entry while orphaning its Keychain item. Registries
+ * written by the accountId-keyed format (version 1) are read
+ * transparently and converge to version 2 on the first mutation.
  */
 import { Database } from 'bun:sqlite';
-import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,7 +32,7 @@ import type { KeychainPort } from './keychain.ts';
 
 export const VAULT_KEYCHAIN_SERVICE = 'llmtally';
 const DIRECTORY_MODE = 0o700;
-const REGISTRY_VERSION = 1;
+const REGISTRY_VERSION = 2;
 /**
  * Per-caller waits for the mutation lock. Quota polling must never
  * stall (0), a rotated-credential persist must not be lost over a
@@ -42,7 +49,7 @@ export class VaultError extends Error {
 }
 
 export interface VaultEntry {
-  /** Which agent this login belongs to; only claude-code today. */
+  /** Which agent this login belongs to (claude-code, codex, opencode…). */
   readonly agent: string;
   readonly accountId: string;
   readonly email: string | null;
@@ -70,8 +77,10 @@ export type VaultCredentialMutation = 'updated' | 'changed' | 'missing' | 'busy'
 
 interface RegistryFile {
   readonly version: number;
-  readonly activeAccountId: string | null;
-  readonly accounts: Record<string, Omit<VaultEntry, 'accountId'>>;
+  /** Active account per agent; a v1 file carried one global marker. */
+  readonly active: Readonly<Record<string, string | null>>;
+  /** Keyed `<agent>:<accountId>`; the entry also carries both fields. */
+  readonly accounts: Readonly<Record<string, VaultEntry>>;
 }
 
 const ALIAS_PATTERN = /^[a-z0-9_.-]+$/;
@@ -83,6 +92,12 @@ const ALIAS_PATTERN = /^[a-z0-9_.-]+$/;
  * `security` command through an embedded newline.
  */
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9._@-]{1,128}$/;
+/**
+ * Agent names are internal constants, but the registry is a plain file:
+ * a tampered agent value must not escape the vault directory either.
+ * `--` is excluded so `<agent>--<accountId>.cred` parses one way only.
+ */
+const AGENT_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 
 export function assertSafeAccountId(accountId: string): string {
   if (!ACCOUNT_ID_PATTERN.test(accountId) || accountId.includes('..')) {
@@ -91,6 +106,15 @@ export function assertSafeAccountId(accountId: string): string {
     );
   }
   return accountId;
+}
+
+export function assertSafeAgent(agent: string): string {
+  if (!AGENT_PATTERN.test(agent) || agent.includes('--')) {
+    throw new VaultError(
+      `refusing to use agent name "${agent}" — expected lowercase letters, digits and single "-"`,
+    );
+  }
+  return agent;
 }
 
 /** Aliases must never be mistaken for a slot number or a flag. */
@@ -131,25 +155,25 @@ export class AccountVault {
   }
 
   list(): VaultEntry[] {
-    const registry = this.#readRegistry();
-    return Object.entries(registry.accounts).map(([accountId, entry]) => ({ accountId, ...entry }));
+    return Object.values(this.#readRegistry().accounts);
   }
 
-  activeAccountId(): string | null {
-    return this.#readRegistry().activeAccountId;
+  activeAccountId(agent: string): string | null {
+    return this.#readRegistry().active[agent] ?? null;
   }
 
-  get(accountId: string): VaultEntry | null {
-    return this.list().find((entry) => entry.accountId === accountId) ?? null;
+  get(agent: string, accountId: string): VaultEntry | null {
+    return this.#readRegistry().accounts[keyFor(agent, accountId)] ?? null;
   }
 
   /**
-   * Resolves an account id, alias, or email. An email that matches more
-   * than one account is rejected rather than guessed — the same address
-   * can belong to both a personal and an organization account.
+   * Resolves an account id, alias, or email among one agent's entries.
+   * An email that matches more than one account is rejected rather than
+   * guessed — the same address can belong to both a personal and an
+   * organization account.
    */
-  resolve(selector: string): VaultEntry {
-    const entries = this.list();
+  resolve(agent: string, selector: string): VaultEntry {
+    const entries = this.list().filter((entry) => entry.agent === agent);
     const byId = entries.find((entry) => entry.accountId === selector);
     if (byId !== undefined) {
       return byId;
@@ -211,38 +235,53 @@ export class AccountVault {
     if (credentialsText.length === 0) {
       throw new VaultError('refusing to store empty credentials');
     }
+    assertSafeAgent(entry.agent);
     assertSafeAccountId(entry.accountId);
     this.#ensureDir();
     const encoded = Buffer.from(credentialsText, 'utf8').toString('base64');
     let backend: VaultEntry['backend'] = 'file';
     if (this.#keychain.available) {
+      const keychainAccount = this.#keychainAccount(entry.agent, entry.accountId);
       try {
-        this.#keychain.write(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(entry.agent, entry.accountId), encoded);
+        this.#keychain.write(VAULT_KEYCHAIN_SERVICE, keychainAccount, encoded);
         backend = 'keychain';
-      } catch {
-        // falling back to a file is only safe if the older Keychain row
-        // goes away: reads prefer the Keychain, so leaving it would hide
-        // the credentials we just stored behind a stale copy
-        this.#keychain.remove(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(entry.agent, entry.accountId));
+      } catch (error) {
+        // falling back to a file is only safe when the Keychain provably
+        // holds nothing: reads prefer the Keychain, so a row we could
+        // neither replace nor remove would shadow the fresher file copy
+        // with stale bytes the moment the keychain answers again
+        try {
+          this.#keychain.remove(VAULT_KEYCHAIN_SERVICE, keychainAccount);
+        } catch {
+          // verified by the read below; an uncleared row fails the write
+        }
+        if (this.#keychain.read(VAULT_KEYCHAIN_SERVICE, keychainAccount).kind !== 'absent') {
+          throw new VaultError(
+            `keychain write failed and the existing item could not be cleared (${
+              error instanceof Error ? error.message : String(error)
+            }) — nothing was changed`,
+          );
+        }
         backend = 'file';
       }
     }
     if (backend === 'file') {
-      writeFilePrivate(this.#credentialPath(entry.accountId), encoded);
+      writeFilePrivate(this.#credentialPath(entry.agent, entry.accountId), encoded);
     } else {
       // a stale plaintext copy must not outlive a successful Keychain write
-      rmSync(this.#credentialPath(entry.accountId), { force: true });
+      rmSync(this.#credentialPath(entry.agent, entry.accountId), { force: true });
     }
     const registry = this.#readRegistry();
+    this.#retireLegacyFile(registry, entry.agent, entry.accountId);
+    const key = keyFor(entry.agent, entry.accountId);
     const refreshDeadAtUtc =
       entry.refreshDeadAtUtc !== undefined
         ? entry.refreshDeadAtUtc
-        : (registry.accounts[entry.accountId]?.refreshDeadAtUtc ?? null);
+        : (registry.accounts[key]?.refreshDeadAtUtc ?? null);
     const stored: VaultEntry = { ...entry, backend, refreshDeadAtUtc };
-    const { accountId, ...rest } = stored;
     this.#writeRegistry({
       ...registry,
-      accounts: { ...registry.accounts, [accountId]: rest },
+      accounts: { ...registry.accounts, [key]: stored },
     });
     return stored;
   }
@@ -254,14 +293,16 @@ export class AccountVault {
    * re-captured), the verdict belonged to bytes that no longer exist.
    */
   markRefreshDeadIfFingerprint(
+    agent: string,
     accountId: string,
     expectedFingerprint: string,
     nowUtc: number,
   ): VaultCredentialMutation {
     return this.#withMutationLock(MARK_DEAD_LOCK_WAIT_MS, () => {
       const registry = this.#readRegistry();
-      const entry = registry.accounts[accountId];
-      const current = this.loadCredentials(accountId);
+      const key = keyFor(agent, accountId);
+      const entry = registry.accounts[key];
+      const current = this.loadCredentials(agent, accountId);
       if (entry === undefined || current === null) {
         return 'missing';
       }
@@ -272,7 +313,7 @@ export class AccountVault {
         ...registry,
         accounts: {
           ...registry.accounts,
-          [accountId]: { ...entry, refreshDeadAtUtc: nowUtc },
+          [key]: { ...entry, refreshDeadAtUtc: nowUtc },
         },
       });
       return 'updated';
@@ -285,14 +326,15 @@ export class AccountVault {
    * fresher bytes with an already-superseded rotation.
    */
   replaceCredentialsIfFingerprint(
+    agent: string,
     accountId: string,
     expectedFingerprint: string,
     credentialsText: string,
     options: { readonly clearRefreshDead: boolean },
   ): VaultCredentialMutation {
     return this.#withMutationLock(REPLACE_LOCK_WAIT_MS, () => {
-      const entry = this.get(accountId);
-      const current = this.loadCredentials(accountId);
+      const entry = this.get(agent, accountId);
+      const current = this.loadCredentials(agent, accountId);
       if (entry === null || current === null) {
         return 'missing';
       }
@@ -358,11 +400,26 @@ export class AccountVault {
     }
   }
 
-  loadCredentials(accountId: string): string | null {
-    const encoded =
-      (this.#keychain.available
-        ? this.#keychain.read(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(this.#agentFor(accountId), accountId))
-        : null) ?? this.#readCredentialFile(accountId);
+  /**
+   * null means confirmed absent. A keychain that cannot answer throws
+   * `VaultError` — "unknown" must never masquerade as "no credentials",
+   * or a poll quarantines and a switch refuses a perfectly stored login.
+   */
+  loadCredentials(agent: string, accountId: string): string | null {
+    let encoded: string | null = null;
+    if (this.#keychain.available) {
+      const result = this.#keychain.read(
+        VAULT_KEYCHAIN_SERVICE,
+        this.#keychainAccount(agent, accountId),
+      );
+      if (result.kind === 'error') {
+        throw new VaultError(`stored credentials are unreadable right now (${result.message})`);
+      }
+      if (result.kind === 'found') {
+        encoded = result.value;
+      }
+    }
+    encoded ??= this.#readCredentialFile(agent, accountId);
     if (encoded === null) {
       return null;
     }
@@ -373,18 +430,22 @@ export class AccountVault {
     }
   }
 
-  remove(accountId: string): void {
+  remove(agent: string, accountId: string): void {
     // registry + credential removal is a mutation like any other: an
     // unlocked read-modify-write here could resurrect the account by
     // racing a CAS that re-writes the registry from its earlier read
     this.#requireMutationLock(() => {
-      this.#keychain.remove(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(this.#agentFor(accountId), accountId));
-      rmSync(this.#credentialPath(accountId), { force: true });
+      this.#keychain.remove(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(agent, accountId));
+      rmSync(this.#credentialPath(agent, accountId), { force: true });
       const registry = this.#readRegistry();
-      const { [accountId]: removed, ...remaining } = registry.accounts;
+      this.#retireLegacyFile(registry, agent, accountId);
+      const { [keyFor(agent, accountId)]: removed, ...remaining } = registry.accounts;
       this.#writeRegistry({
         ...registry,
-        activeAccountId: registry.activeAccountId === accountId ? null : registry.activeAccountId,
+        active:
+          registry.active[agent] === accountId
+            ? { ...registry.active, [agent]: null }
+            : registry.active,
         accounts: remaining,
       });
     });
@@ -395,9 +456,13 @@ export class AccountVault {
    * poll-path marker sync) pass 0 so a held lock skips the sync instead
    * of stalling a UI repaint behind it.
    */
-  setActive(accountId: string | null, waitMs: number = this.#writeLockWaitMs): void {
+  setActive(agent: string, accountId: string | null, waitMs: number = this.#writeLockWaitMs): void {
     const result = this.#withMutationLock(waitMs, () => {
-      this.#writeRegistry({ ...this.#readRegistry(), activeAccountId: accountId });
+      const registry = this.#readRegistry();
+      this.#writeRegistry({
+        ...registry,
+        active: { ...registry.active, [agent]: accountId },
+      });
       return 'updated';
     });
     if (result === 'busy') {
@@ -407,19 +472,21 @@ export class AccountVault {
     }
   }
 
-  setAlias(accountId: string, alias: string | null): VaultEntry {
+  setAlias(agent: string, accountId: string, alias: string | null): VaultEntry {
     let updatedEntry: VaultEntry | null = null;
     this.#requireMutationLock(() => {
       const registry = this.#readRegistry();
-      const entry = registry.accounts[accountId];
+      const key = keyFor(agent, accountId);
+      const entry = registry.accounts[key];
       if (entry === undefined) {
         throw new VaultError(`no stored account with id ${accountId}`);
       }
       const normalized = alias === null ? null : normalizeAlias(alias);
       if (
         normalized !== null &&
-        Object.entries(registry.accounts).some(
-          ([id, other]) => id !== accountId && other.alias === normalized,
+        Object.values(registry.accounts).some(
+          (other) =>
+            other.agent === agent && other.accountId !== accountId && other.alias === normalized,
         )
       ) {
         throw new VaultError(`alias "${normalized}" is already used by another account`);
@@ -427,9 +494,9 @@ export class AccountVault {
       const updated = { ...entry, alias: normalized };
       this.#writeRegistry({
         ...registry,
-        accounts: { ...registry.accounts, [accountId]: updated },
+        accounts: { ...registry.accounts, [key]: updated },
       });
-      updatedEntry = { accountId, ...updated };
+      updatedEntry = updated;
     });
     if (updatedEntry === null) {
       throw new VaultError(`no stored account with id ${accountId}`);
@@ -478,26 +545,66 @@ export class AccountVault {
    * own name, which also keeps two agents from colliding on an id.
    */
   #keychainAccount(agent: string, accountId: string): string {
-    const prefix = agent === 'claude-code' ? 'claude' : assertSafeAccountId(agent);
+    const prefix = agent === 'claude-code' ? 'claude' : assertSafeAgent(agent);
     return `${prefix}:${assertSafeAccountId(accountId)}`;
   }
 
-  /** Agent for an id we only know from the registry; claude by default. */
-  #agentFor(accountId: string): string {
-    return this.#readRegistry().accounts[accountId]?.agent ?? 'claude-code';
+  #credentialPath(agent: string, accountId: string): string {
+    return join(this.#dir, `${assertSafeAgent(agent)}--${assertSafeAccountId(accountId)}.cred`);
   }
 
-  #credentialPath(accountId: string): string {
+  /** Pre-v2 file name; still read so a v1 vault works before it migrates. */
+  #legacyCredentialPath(accountId: string): string {
     return join(this.#dir, `${assertSafeAccountId(accountId)}.cred`);
   }
 
-  #readCredentialFile(accountId: string): string | null {
+  /**
+   * Retires the pre-v2 `<accountId>.cred` file on the first credential
+   * mutation that touches its account id. v1 could not say which agent
+   * the bytes belong to, so they are first copied to the qualified path
+   * of every OTHER agent sharing the id that has no qualified file yet
+   * (preserving exactly what a fallback read would have returned), and
+   * only then is the ambiguous name deleted — a removed account's
+   * secret must not survive under a name any agent can still read.
+   */
+  #retireLegacyFile(registry: RegistryFile, mutatingAgent: string, accountId: string): void {
+    const legacyPath = this.#legacyCredentialPath(accountId);
+    let encoded: string | null;
     try {
-      const text = readFileSync(this.#credentialPath(accountId), 'utf8').trim();
-      return text.length === 0 ? null : text;
+      const text = readFileSync(legacyPath, 'utf8').trim();
+      encoded = text.length === 0 ? null : text;
     } catch {
-      return null;
+      return;
     }
+    if (encoded !== null) {
+      for (const other of Object.values(registry.accounts)) {
+        if (other.accountId !== accountId || other.agent === mutatingAgent) {
+          continue;
+        }
+        const qualified = this.#credentialPath(other.agent, other.accountId);
+        if (!existsSync(qualified)) {
+          writeFilePrivate(qualified, encoded);
+        }
+      }
+    }
+    rmSync(legacyPath, { force: true });
+  }
+
+  #readCredentialFile(agent: string, accountId: string): string | null {
+    for (const path of [
+      this.#credentialPath(agent, accountId),
+      this.#legacyCredentialPath(accountId),
+    ]) {
+      try {
+        const text = readFileSync(path, 'utf8').trim();
+        if (text.length > 0) {
+          return text;
+        }
+      } catch {
+        // fall through to the older name
+      }
+    }
+    return null;
   }
 
   #registryPath(): string {
@@ -509,6 +616,12 @@ export class AccountVault {
     chmodSync(this.#dir, DIRECTORY_MODE);
   }
 
+  /**
+   * Reads either registry format into the canonical v2 shape. A v1 file
+   * (accounts keyed by accountId alone, one global active marker) is
+   * converted in memory only — read paths must stay write-free — and
+   * the first mutation persists the converted form.
+   */
   #readRegistry(): RegistryFile {
     let parsed: Record<string, unknown> | null = null;
     try {
@@ -517,19 +630,24 @@ export class AccountVault {
       parsed = null;
     }
     if (parsed === null) {
-      return { version: REGISTRY_VERSION, activeAccountId: null, accounts: {} };
+      return { version: REGISTRY_VERSION, active: {}, accounts: {} };
     }
-    const accounts: Record<string, Omit<VaultEntry, 'accountId'>> = {};
+    const isV2 = parsed.version === REGISTRY_VERSION;
+    const accounts: Record<string, VaultEntry> = {};
     const raw = asObject(parsed.accounts) ?? {};
-    for (const [accountId, value] of Object.entries(raw)) {
+    for (const [rawKey, value] of Object.entries(raw)) {
       const entry = asObject(value);
       if (entry === null) {
         continue;
       }
+      const agent = asString(entry.agent) ?? 'claude-code';
+      // v2 stores the id in the entry; a v1 key IS the id
+      const accountId = (isV2 ? asString(entry.accountId) : rawKey) ?? rawKey;
       const addedAtUtc = entry.addedAtUtc;
       const refreshDeadAtUtc = entry.refreshDeadAtUtc;
-      accounts[accountId] = {
-        agent: asString(entry.agent) ?? 'claude-code',
+      accounts[keyFor(agent, accountId)] = {
+        agent,
+        accountId,
         email: asString(entry.email),
         organizationUuid: asString(entry.organizationUuid),
         organizationName: asString(entry.organizationName),
@@ -547,7 +665,7 @@ export class AccountVault {
     }
     return {
       version: REGISTRY_VERSION,
-      activeAccountId: asString(parsed.activeAccountId),
+      active: readActive(parsed, accounts, isV2),
       accounts,
     };
   }
@@ -556,6 +674,36 @@ export class AccountVault {
     this.#ensureDir();
     writeFilePrivate(this.#registryPath(), `${JSON.stringify(registry, null, 2)}\n`);
   }
+}
+
+function keyFor(agent: string, accountId: string): string {
+  return `${agent}:${accountId}`;
+}
+
+/**
+ * The per-agent active map. A v1 file carried a single `activeAccountId`
+ * whose agent was implicit; it is attributed to the agent of the entry
+ * it names (claude-code when no entry matches — the marker predates
+ * every other agent).
+ */
+function readActive(
+  parsed: Record<string, unknown>,
+  accounts: Readonly<Record<string, VaultEntry>>,
+  isV2: boolean,
+): Record<string, string | null> {
+  if (isV2) {
+    const active: Record<string, string | null> = {};
+    for (const [agent, value] of Object.entries(asObject(parsed.active) ?? {})) {
+      active[agent] = asString(value);
+    }
+    return active;
+  }
+  const marker = asString(parsed.activeAccountId);
+  if (marker === null) {
+    return {};
+  }
+  const owner = Object.values(accounts).find((entry) => entry.accountId === marker);
+  return { [owner?.agent ?? 'claude-code']: marker };
 }
 
 /** Directories the vault owns, for doctor's privacy checks. */

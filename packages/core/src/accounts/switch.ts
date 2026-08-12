@@ -163,8 +163,17 @@ function classifyOutgoing(
   const fingerprint = credentialFingerprint(live);
   const byFingerprint = vault
     .list()
+    .filter((entry) => entry.agent === 'claude-code')
     .find((entry) => {
-      const stored = vault.loadCredentials(entry.accountId);
+      // one unreadable third account must not veto the whole switch:
+      // treated as "no match", the outgoing login still ends up stashed
+      // or config-attributed below rather than destroyed
+      let stored: string | null;
+      try {
+        stored = vault.loadCredentials(entry.agent, entry.accountId);
+      } catch {
+        return false;
+      }
       return stored !== null && credentialFingerprint(stored) === fingerprint;
     });
   if (byFingerprint !== undefined) {
@@ -173,7 +182,8 @@ function classifyOutgoing(
   // the lineage is unknown; fall back to whoever the config says is
   // selected, which is right whenever the token merely rotated
   const identity = readClaudeActiveIdentity(globalConfigPath(home));
-  const selected = identity?.accountUuid === undefined ? null : vault.get(identity.accountUuid ?? '');
+  const selected =
+    identity?.accountUuid === undefined ? null : vault.get('claude-code', identity.accountUuid ?? '');
   if (selected !== null) {
     return { kind: 'own', owner: selected };
   }
@@ -186,7 +196,7 @@ export async function switchAccount(selector: string, ports: SwitchPorts): Promi
   const now = ports.nowUtc ?? Math.floor(Date.now() / 1000);
   const { vault, activeStore } = ports;
 
-  const target = vault.resolve(selector);
+  const target = vault.resolve('claude-code', selector);
   if (target.refreshDeadAtUtc !== null) {
     // installing a lineage the token endpoint already rejected would
     // just move the dead credentials into Claude Code
@@ -194,7 +204,7 @@ export async function switchAccount(selector: string, ports: SwitchPorts): Promi
       `the stored refresh token for ${target.email ?? target.accountId} was rejected — run "claude" and /login as that account once (llmtally re-captures it automatically)`,
     );
   }
-  const targetCredentials = vault.loadCredentials(target.accountId);
+  const targetCredentials = vault.loadCredentials(target.agent, target.accountId);
   if (targetCredentials === null) {
     throw new SwitchError(
       `no stored credentials for ${target.email ?? target.accountId} — open the Accounts tab and press n while logged in as that account`,
@@ -203,7 +213,7 @@ export async function switchAccount(selector: string, ports: SwitchPorts): Promi
 
   const warnings: string[] = [];
   const liveSessions = liveSessionPids(configHome);
-  if (vault.activeAccountId() === target.accountId) {
+  if (vault.activeAccountId('claude-code') === target.accountId) {
     warnings.push(`${target.email ?? target.accountId} was already the active account`);
   }
 
@@ -262,10 +272,10 @@ export async function switchAccount(selector: string, ports: SwitchPorts): Promi
       writeFilePrivate(configPath, previousConfig);
     });
 
-    const previousAccountId = vault.activeAccountId();
-    vault.setActive(target.accountId);
+    const previousAccountId = vault.activeAccountId('claude-code');
+    vault.setActive('claude-code', target.accountId);
     undo.push(() => {
-      vault.setActive(previousAccountId);
+      vault.setActive('claude-code', previousAccountId);
     });
 
     activeStore.touch();
@@ -326,7 +336,7 @@ export function captureActiveAccount(ports: {
   if (isWipedCredential(live)) {
     throw new SwitchError('the active credentials are blank (signed out) — nothing was stored');
   }
-  const existing = ports.vault.get(accountId);
+  const existing = ports.vault.get('claude-code', accountId);
   const stored = ports.vault.put(
     {
       agent: 'claude-code',
@@ -341,6 +351,6 @@ export function captureActiveAccount(ports: {
     },
     compactJson(live),
   );
-  ports.vault.setActive(accountId);
+  ports.vault.setActive('claude-code', accountId);
   return stored;
 }

@@ -98,7 +98,7 @@ describe('resolveActiveClaudeContext', () => {
     const vault = makeVault();
     storedEntry(vault, 'old-active');
     storedEntry(vault, 'real-active');
-    vault.setActive('old-active');
+    vault.setActive('claude-code', 'old-active');
     const configPath = configWith({ accountUuid: 'real-active', emailAddress: 'real@test.dev' });
 
     // Act
@@ -107,14 +107,14 @@ describe('resolveActiveClaudeContext', () => {
     // Assert — context and marker both follow the live login
     expect(context.status).toBe('identified');
     expect(context.activeAccountId).toBe('real-active');
-    expect(vault.activeAccountId()).toBe('real-active');
+    expect(vault.activeAccountId('claude-code')).toBe('real-active');
   });
 
   test('a signed-out config clears a stale marker instead of trusting it', () => {
     // Arrange
     const vault = makeVault();
     storedEntry(vault, 'old-active');
-    vault.setActive('old-active');
+    vault.setActive('claude-code', 'old-active');
 
     // Act
     const context = resolveActiveClaudeContext({ vault, configPath: configWith(undefined) });
@@ -122,14 +122,14 @@ describe('resolveActiveClaudeContext', () => {
     // Assert
     expect(context.status).toBe('signed_out');
     expect(context.activeAccountId).toBeNull();
-    expect(vault.activeAccountId()).toBeNull();
+    expect(vault.activeAccountId('claude-code')).toBeNull();
   });
 
   test('an unreadable config falls back to the registry marker without writing', () => {
     // Arrange
     const vault = makeVault();
     storedEntry(vault, 'marker');
-    vault.setActive('marker');
+    vault.setActive('claude-code', 'marker');
 
     // Act
     const context = resolveActiveClaudeContext({
@@ -140,7 +140,7 @@ describe('resolveActiveClaudeContext', () => {
     // Assert — fallback only here, and the marker survives untouched
     expect(context.status).toBe('unreadable');
     expect(context.activeAccountId).toBe('marker');
-    expect(vault.activeAccountId()).toBe('marker');
+    expect(vault.activeAccountId('claude-code')).toBe('marker');
   });
 
   test('an identity not yet stored in the vault is still the active account', () => {

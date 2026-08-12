@@ -46,8 +46,8 @@ function storedEntry(vault: AccountVault, accountId: string, refreshToken: strin
 }
 
 function quarantine(vault: AccountVault, accountId: string): void {
-  const stored = vault.loadCredentials(accountId) ?? '';
-  vault.markRefreshDeadIfFingerprint(accountId, credentialFingerprint(stored), NOW - 100);
+  const stored = vault.loadCredentials('claude-code', accountId) ?? '';
+  vault.markRefreshDeadIfFingerprint('claude-code', accountId, credentialFingerprint(stored), NOW - 100);
 }
 
 function storeWith(text: string | null) {
@@ -76,7 +76,7 @@ function oracle(accountUuid: string | null, calls: string[] = []) {
 }
 
 function storedRefreshToken(vault: AccountVault, accountId: string): string {
-  return JSON.parse(vault.loadCredentials(accountId) ?? '{}').claudeAiOauth.refreshToken;
+  return JSON.parse(vault.loadCredentials('claude-code', accountId) ?? '{}').claudeAiOauth.refreshToken;
 }
 
 describe('syncActiveClaudeCredential', () => {
@@ -124,7 +124,7 @@ describe('syncActiveClaudeCredential', () => {
 
     // Assert
     expect(result).toBe('synced');
-    expect(vault.get('acc-1')?.refreshDeadAtUtc).toBeNull();
+    expect(vault.get('claude-code', 'acc-1')?.refreshDeadAtUtc).toBeNull();
   });
 
   test('refuses to write a credential that belongs to another account', async () => {

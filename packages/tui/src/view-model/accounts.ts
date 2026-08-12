@@ -274,7 +274,8 @@ export function toAccountsTabViewModel(input: AccountsInput): AccountsTabViewMod
         ? matches[0]
         : matches.find((candidate) => candidate.accountId === activeId));
     if (entry !== undefined) {
-      claimedVault.add(entry.accountId);
+      // agent-qualified: two agents may store the same account id
+      claimedVault.add(`${entry.agent}:${entry.accountId}`);
     }
     rows.push({
       agent: provider.agent,
@@ -298,7 +299,7 @@ export function toAccountsTabViewModel(input: AccountsInput): AccountsTabViewMod
   }
 
   for (const entry of input.vault) {
-    if (claimedVault.has(entry.accountId)) {
+    if (claimedVault.has(`${entry.agent}:${entry.accountId}`)) {
       continue;
     }
     rows.push({

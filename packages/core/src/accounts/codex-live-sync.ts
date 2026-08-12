@@ -54,11 +54,17 @@ export function syncActiveCodexCredential(options: CodexLiveSyncOptions): CodexL
 
   // a login the vault never saw is not ours to store — capturing it is
   // "accounts add", an explicit user action, not a background sync
-  const entry = options.vault.get(identity.accountId);
-  if (entry === null || entry.agent !== 'codex') {
+  const entry = options.vault.get('codex', identity.accountId);
+  if (entry === null) {
     return 'not_needed';
   }
-  const stored = options.vault.loadCredentials(identity.accountId);
+  let stored: string | null;
+  try {
+    stored = options.vault.loadCredentials('codex', identity.accountId);
+  } catch {
+    // an unanswerable keychain is "unknown", not "no credentials"
+    return 'unavailable';
+  }
   if (stored === null) {
     return 'unavailable';
   }
@@ -69,13 +75,20 @@ export function syncActiveCodexCredential(options: CodexLiveSyncOptions): CodexL
 
   // CAS on the generation we compared against: a switch or another sync
   // may have written fresher bytes since the read above
-  const result = options.vault.replaceCredentialsIfFingerprint(
-    identity.accountId,
-    storedFingerprint,
-    live,
-    // the live login is proof the lineage works; any quarantine is stale
-    { clearRefreshDead: true },
-  );
+  let result;
+  try {
+    result = options.vault.replaceCredentialsIfFingerprint(
+      'codex',
+      identity.accountId,
+      storedFingerprint,
+      live,
+      // the live login is proof the lineage works; any quarantine is stale
+      { clearRefreshDead: true },
+    );
+  } catch {
+    // the vault could not answer mid-CAS; the next poll retries
+    return 'unavailable';
+  }
   if (result === 'updated') {
     return 'synced';
   }

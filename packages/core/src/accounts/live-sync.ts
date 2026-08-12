@@ -72,7 +72,7 @@ export async function syncActiveClaudeCredential(
     return 'not_needed';
   }
   const accountId = options.context.activeAccountId;
-  const entry = options.vault.get(accountId);
+  const entry = options.vault.get('claude-code', accountId);
   if (entry === null) {
     return 'not_needed';
   }
@@ -82,7 +82,13 @@ export async function syncActiveClaudeCredential(
     return 'unavailable';
   }
 
-  const stored = options.vault.loadCredentials(accountId);
+  let stored: string | null;
+  try {
+    stored = options.vault.loadCredentials('claude-code', accountId);
+  } catch {
+    // an unanswerable keychain is "unknown", not "no credentials"
+    return 'unavailable';
+  }
   if (stored === null) {
     // an entry with no credentials cannot be switched to anyway; seeding
     // it from a live blob is "accounts add", not a background sync
@@ -94,7 +100,12 @@ export async function syncActiveClaudeCredential(
     return 'not_needed';
   }
 
-  const owns = await ownsLiveCredential(accountId, live, liveFingerprint, options);
+  const owns = await verifyLiveCredentialOwner({
+    accountId,
+    credentials: live,
+    nowUtc: options.nowUtc,
+    fetchFn: options.fetchFn,
+  });
   if (owns === 'unresolved') {
     return 'unverified';
   }
@@ -104,13 +115,20 @@ export async function syncActiveClaudeCredential(
 
   // CAS on the generation we compared against: a switch or another sync
   // landing in the probe's network gap already wrote fresher bytes
-  const result = options.vault.replaceCredentialsIfFingerprint(
-    accountId,
-    storedFingerprint,
-    live,
-    // the live login is proof the lineage works; any quarantine is stale
-    { clearRefreshDead: true },
-  );
+  let result;
+  try {
+    result = options.vault.replaceCredentialsIfFingerprint(
+      'claude-code',
+      accountId,
+      storedFingerprint,
+      live,
+      // the live login is proof the lineage works; any quarantine is stale
+      { clearRefreshDead: true },
+    );
+  } catch {
+    // the vault could not answer mid-CAS; the next poll retries
+    return 'unavailable';
+  }
   if (result === 'updated') {
     return 'synced';
   }
@@ -135,13 +153,20 @@ function readLive(activeStore: ActiveCredentialStore): string | null {
   }
 }
 
-async function ownsLiveCredential(
-  accountId: string,
-  live: string,
-  liveFingerprint: string,
-  options: LiveCredentialSyncOptions,
-): Promise<'own' | 'foreign' | 'unresolved'> {
-  const key = `${accountId}|${liveFingerprint}`;
+/**
+ * Whether the credential bytes belong to `accountId`, settled by the
+ * profile oracle and memoized per (account, lineage) so a steady state
+ * costs nothing. Shared by the mirror above and by quota attribution:
+ * a reading taken with these bytes must not be recorded under an
+ * account the oracle says they do not belong to.
+ */
+export async function verifyLiveCredentialOwner(options: {
+  readonly accountId: string;
+  readonly credentials: string;
+  readonly nowUtc: number;
+  readonly fetchFn?: ProfileFetch;
+}): Promise<'own' | 'foreign' | 'unresolved'> {
+  const key = `${options.accountId}|${credentialFingerprint(options.credentials)}`;
   const memo = probes.get(key);
   if (memo?.kind === 'verdict') {
     return memo.ownsSlot ? 'own' : 'foreign';
@@ -150,7 +175,7 @@ async function ownsLiveCredential(
     return 'unresolved';
   }
 
-  const accessToken = oauthAccessToken(live);
+  const accessToken = oauthAccessToken(options.credentials);
   const identity =
     accessToken === null
       ? null
@@ -162,7 +187,7 @@ async function ownsLiveCredential(
     });
     return 'unresolved';
   }
-  const ownsSlot = identity.accountUuid === accountId;
+  const ownsSlot = identity.accountUuid === options.accountId;
   probes.set(key, { kind: 'verdict', ownsSlot });
   return ownsSlot ? 'own' : 'foreign';
 }

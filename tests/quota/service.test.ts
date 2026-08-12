@@ -3,6 +3,8 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
+import { resetLiveCredentialProbes } from '@llmtally/core/accounts/live-sync.ts';
+import type { ActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import { AccountVault } from '@llmtally/core/accounts/vault.ts';
 import { makeQuotaSnapshot } from '@llmtally/core/quota/providers.ts';
 import type { QuotaSnapshot } from '@llmtally/core/quota/providers.ts';
@@ -89,6 +91,68 @@ describe('dedupeByAccount', () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.windows).toHaveLength(1);
     expect(result[0]?.warnings).toEqual(['claude quota fetch failed: http 429']);
+  });
+
+  test('a fresher failed read carries its typed failure onto the merged row', () => {
+    // Arrange — the live read was refused just now; the cache has numbers
+    const failed = snapshot({
+      agent: 'claude-code',
+      account: 'me@test.dev',
+      windows: [],
+      failure: { kind: 'rate_limited', failedAtUtc: NOW, retryAtUtc: NOW + 360 },
+      retryAfterSeconds: 360,
+      warnings: ['claude usage endpoint returned 429 (rate limited)'],
+    });
+    const cached = snapshot({
+      agent: 'claude-code',
+      account: 'me@test.dev',
+      source: 'third_party_cache',
+      observedAtUtc: NOW - 600,
+    });
+
+    // Act
+    const result = dedupeByAccount([failed, cached]);
+
+    // Assert — numbers from the cache, the CURRENT state stays typed
+    expect(result).toHaveLength(1);
+    expect(result[0]?.windows).toHaveLength(1);
+    expect(result[0]?.failure?.kind).toBe('rate_limited');
+    expect(result[0]?.rateLimited).toBe(true);
+    expect(result[0]?.retryAfterSeconds).toBe(360);
+  });
+
+  test('at the same observation instant, the failure is what gets shown', () => {
+    // Arrange — one load produced both rows in the same second
+    const failed = snapshot({
+      agent: 'claude-code',
+      account: 'me@test.dev',
+      windows: [],
+      failure: { kind: 'deferred', failedAtUtc: NOW, retryAtUtc: NOW + 180 },
+    });
+    const cached = snapshot({
+      agent: 'claude-code',
+      account: 'me@test.dev',
+      source: 'third_party_cache',
+    });
+
+    // Act & Assert — ties break toward surfacing the current failure
+    expect(dedupeByAccount([failed, cached])[0]?.failure?.kind).toBe('deferred');
+  });
+
+  test('an older failure never overrides a fresher successful read', () => {
+    // Arrange
+    const staleFailure = snapshot({
+      agent: 'claude-code',
+      account: 'me@test.dev',
+      windows: [],
+      observedAtUtc: NOW - 600,
+      failure: { kind: 'transport', failedAtUtc: NOW - 600, retryAtUtc: null },
+    });
+    const freshSuccess = snapshot({ agent: 'claude-code', account: 'me@test.dev' });
+
+    // Act & Assert — the account is healthy now; old failures stay history
+    const result = dedupeByAccount([staleFailure, freshSuccess]);
+    expect(result[0]?.failure).toBeNull();
   });
 
   test('the surviving row keeps the position of its first appearance', () => {
@@ -241,5 +305,197 @@ describe('loadAllQuota and the opencode credential file', () => {
     // endpoints stay untouched when they were not asked for
     expect(result.every((entry) => entry.agent === 'antigravity')).toBe(true);
     expect(urls.filter((url) => SUBSCRIPTION_HOSTS.some((host) => url.includes(host)))).toEqual([]);
+  });
+});
+
+describe('active claude quota attribution', () => {
+  const IDENTIFIED_A = {
+    status: 'identified',
+    source: 'claude_config',
+    activeAccountId: 'uuid-a',
+    identity: {
+      accountUuid: 'uuid-a',
+      email: 'a@test.dev',
+      organizationUuid: null,
+      organizationName: null,
+    },
+  } as const;
+
+  function liveStore(text: string): ActiveCredentialStore {
+    return {
+      backend: 'file',
+      read: () => text,
+      write: () => undefined,
+      clear: () => undefined,
+      touch: () => undefined,
+    };
+  }
+
+  function credentialsOf(refresh: string): string {
+    return JSON.stringify({
+      claudeAiOauth: {
+        accessToken: `access-${refresh}`,
+        refreshToken: refresh,
+        expiresAt: (NOW + 3600) * 1000,
+      },
+    });
+  }
+
+  function profileAnswering(uuid: string, calls: string[]) {
+    return (url: string): Promise<Response> => {
+      calls.push(String(url));
+      return Promise.resolve(
+        new Response(JSON.stringify({ account: { uuid, email: `${uuid}@test.dev` } })),
+      );
+    };
+  }
+
+  test('a foreign live credential defers the reading instead of attributing it', async () => {
+    // Arrange — config says A, but the oracle says the bytes are B's
+    // (/login writes the credential store and ~/.claude.json separately)
+    resetLiveCredentialProbes();
+    resetQuotaThrottle();
+    const vault = new AccountVault({ dir: makeTempDir(), keychain: createMemoryKeychain() });
+    const profileCalls: string[] = [];
+
+    // Act
+    const { result, urls } = await (async () => {
+      const original = globalThis.fetch;
+      const urls: string[] = [];
+      globalThis.fetch = ((url: string): Promise<Response> => {
+        urls.push(String(url));
+        return Promise.reject(new Error('no vendor call expected'));
+      }) as unknown as typeof fetch;
+      try {
+        const result = await loadAllQuota({
+          agent: 'claude-code',
+          nowUtc: NOW,
+          vault,
+          activeContext: IDENTIFIED_A,
+          activeStore: liveStore(credentialsOf('refresh-b')),
+          profileFetchFn: profileAnswering('uuid-b', profileCalls),
+        });
+        return { result, urls };
+      } finally {
+        globalThis.fetch = original;
+      }
+    })();
+
+    // Assert — deferred: attributed row exists but carries no reading,
+    // and the usage endpoint was never spent under the wrong account
+    expect(profileCalls).toHaveLength(1);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.accountId).toBe('uuid-a');
+    expect(result[0]?.windows).toEqual([]);
+    expect(result[0]?.failure?.kind).toBe('unavailable');
+    expect(result[0]?.warnings[0]).toMatch(/different account.*settling/);
+    expect(urls).toEqual([]);
+  });
+
+  test('an owned live credential proceeds to the usage endpoint', async () => {
+    // Arrange — the oracle confirms the bytes belong to the named account
+    resetLiveCredentialProbes();
+    resetQuotaThrottle();
+    const vault = new AccountVault({ dir: makeTempDir(), keychain: createMemoryKeychain() });
+    const profileCalls: string[] = [];
+
+    // Act
+    const { result, urls } = await (async () => {
+      const original = globalThis.fetch;
+      const urls: string[] = [];
+      globalThis.fetch = ((url: string): Promise<Response> => {
+        urls.push(String(url));
+        return Promise.resolve(
+          new Response(JSON.stringify({ five_hour: { utilization: 42, resets_at: null } })),
+        );
+      }) as unknown as typeof fetch;
+      try {
+        const result = await loadAllQuota({
+          agent: 'claude-code',
+          nowUtc: NOW,
+          vault,
+          activeContext: IDENTIFIED_A,
+          activeStore: liveStore(credentialsOf('refresh-a')),
+          profileFetchFn: profileAnswering('uuid-a', profileCalls),
+        });
+        return { result, urls };
+      } finally {
+        globalThis.fetch = original;
+      }
+    })();
+
+    // Assert — verification passed and the reading is attributed to A
+    expect(profileCalls).toHaveLength(1);
+    expect(urls.length).toBeGreaterThan(0);
+    expect(result[0]?.accountId).toBe('uuid-a');
+    expect(result[0]?.windows[0]?.usedPercent).toBe(42);
+  });
+});
+
+describe('stored claude budget key', () => {
+  test('a stored account claims under its token fingerprint, like the live path', async () => {
+    // Arrange — one stored (inactive) account with a usable token; the
+    // vendor budgets per token, so the key must follow the token
+    resetQuotaThrottle();
+    const home = makeTempDir();
+    const databasePath = join(home, 'ledger.db');
+    const vault = new AccountVault({ dir: join(home, 'vault'), keychain: createMemoryKeychain() });
+    vault.put(
+      {
+        agent: 'claude-code',
+        accountId: 'uuid-stored',
+        email: 'stored@test.dev',
+        organizationUuid: null,
+        organizationName: null,
+        alias: null,
+        addedAtUtc: NOW,
+      },
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'access-stored',
+          refreshToken: 'refresh-stored',
+          expiresAt: (NOW + 3600) * 1000,
+        },
+      }),
+    );
+    const original = globalThis.fetch;
+    globalThis.fetch = ((): Promise<Response> =>
+      Promise.resolve(
+        new Response(JSON.stringify({ five_hour: { utilization: 12, resets_at: null } })),
+      )) as unknown as typeof fetch;
+
+    // Act
+    try {
+      await loadAllQuota({
+        agent: 'claude-code',
+        nowUtc: NOW,
+        vault,
+        databasePath,
+        activeContext: {
+          status: 'signed_out',
+          source: 'none',
+          activeAccountId: null,
+          identity: null,
+        },
+      });
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    // Assert — the persisted claim row is keyed by token, not account
+    const { Database } = await import('bun:sqlite');
+    const db = new Database(databasePath, { readonly: true, strict: true });
+    try {
+      const rows = db
+        .query<{ key: string; account_id: string | null }, []>(
+          `SELECT key, account_id FROM quota_fetch_state WHERE agent = 'claude-code'`,
+        )
+        .all();
+      const storedRow = rows.find((row) => row.account_id === 'uuid-stored');
+      expect(storedRow?.key).toMatch(/\|token=sha256:/);
+      expect(rows.some((row) => row.key.includes('|acct='))).toBe(false);
+    } finally {
+      db.close();
+    }
   });
 });

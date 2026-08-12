@@ -25,6 +25,7 @@
 import { readCodexTokens, withRotatedCodexTokens } from '../accounts/codex.ts';
 import { credentialFingerprint } from '../accounts/credentials.ts';
 import { jwtExpiryUtc } from '../accounts/discovery.ts';
+import { VaultError } from '../accounts/vault.ts';
 import type { AccountVault, VaultEntry } from '../accounts/vault.ts';
 import { asObject, asString } from '../parsers/shared.ts';
 import { LLMTALLY_USER_AGENT } from '../version.ts';
@@ -180,7 +181,20 @@ export async function readVaultCodexQuota(
     .filter((entry) => options.only === undefined || entry.accountId === options.only);
   const fetchFn = options.fetchFn ?? fetch;
 
-  return Promise.all(targets.map(async (entry) => readOneAccount(entry, options, fetchFn)));
+  return Promise.all(
+    targets.map(async (entry) => {
+      try {
+        return await readOneAccount(entry, options, fetchFn);
+      } catch (error) {
+        // an unanswerable keychain degrades to "unavailable, will retry"
+        // instead of killing the poll or posing as missing credentials
+        if (error instanceof VaultError) {
+          return unavailable(entry, options.nowUtc, `${error.message}; will retry`);
+        }
+        throw error;
+      }
+    }),
+  );
 }
 
 async function readOneAccount(
@@ -188,7 +202,7 @@ async function readOneAccount(
   options: VaultCodexQuotaOptions,
   fetchFn: FetchLike,
 ): Promise<QuotaSnapshot> {
-  const stored = options.vault.loadCredentials(entry.accountId);
+  const stored = options.vault.loadCredentials(entry.agent, entry.accountId);
   const tokens = stored === null ? null : readCodexTokens(stored);
   if (stored === null || tokens === null) {
     return unavailable(entry, options.nowUtc, 'no stored credentials to read quota with');
@@ -269,6 +283,7 @@ async function renew(
     // quarantine only the generation we judged; if the bytes moved, the
     // verdict is obsolete and the next cycle re-evaluates
     options.vault.markRefreshDeadIfFingerprint(
+      entry.agent,
       entry.accountId,
       expectedFingerprint,
       options.nowUtc,
@@ -286,6 +301,7 @@ async function renew(
   // OpenAI may rotate the refresh token on a grant, so losing this write
   // would leave the vault holding an invalidated lineage
   const persisted = options.vault.replaceCredentialsIfFingerprint(
+    entry.agent,
     entry.accountId,
     expectedFingerprint,
     refreshed.credentials,
@@ -301,7 +317,7 @@ async function renew(
   if (persisted === 'changed' || persisted === 'busy') {
     // someone else rotated or is rotating: use whatever is stored now,
     // but never call the token endpoint twice in one cycle
-    const current = options.vault.loadCredentials(entry.accountId);
+    const current = options.vault.loadCredentials(entry.agent, entry.accountId);
     const currentTokens = current === null ? null : readCodexTokens(current);
     if (currentTokens !== null && isUsable(currentTokens.accessToken, options.nowUtc)) {
       return usageWith(entry, currentTokens.accessToken ?? '', options, fetchFn);

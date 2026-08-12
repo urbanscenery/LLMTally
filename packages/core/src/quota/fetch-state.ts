@@ -198,9 +198,16 @@ export function openQuotaFetchStateStore(
         if (nowUtc_ < retryAtUtc) {
           db.exec('COMMIT;');
           // rate_limit outranks claim outranks cadence: report the
-          // strongest condition, not the latest timestamp
+          // strongest condition, not the latest timestamp. A deferral
+          // whose interval is stretched by a recent 429 IS rate limiting
+          // — a restarted process must keep saying so, or the stored
+          // history loses the 429-based trust extension it still earns.
           const reason =
-            row.blocked_until_utc > nowUtc_ ? 'rate_limit' : liveClaim ? 'claim' : 'cadence';
+            row.blocked_until_utc > nowUtc_ || post429Active
+              ? 'rate_limit'
+              : liveClaim
+                ? 'claim'
+                : 'cadence';
           return { kind: 'deferred', reason, retryAtUtc, state: toState(row) };
         }
 
@@ -252,10 +259,17 @@ export function openQuotaFetchStateStore(
           db.exec('COMMIT;');
           const stillLive =
             current.claim_owner !== null && (current.claim_until_utc ?? 0) > nowUtc_;
+          const stillPost429 =
+            current.last_429_utc !== null &&
+            nowUtc_ - current.last_429_utc < POST_429_WINDOW_SECONDS;
           return {
             kind: 'deferred',
             reason:
-              current.blocked_until_utc > nowUtc_ ? 'rate_limit' : stillLive ? 'claim' : 'cadence',
+              current.blocked_until_utc > nowUtc_ || stillPost429
+                ? 'rate_limit'
+                : stillLive
+                  ? 'claim'
+                  : 'cadence',
             retryAtUtc: Math.max(
               current.blocked_until_utc,
               current.last_fetch_utc + effectiveInterval,

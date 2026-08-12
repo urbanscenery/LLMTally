@@ -482,3 +482,80 @@ describe('add-account login guidance', () => {
     await done;
   });
 });
+
+describe('account action routing', () => {
+  function vaultEntry(agent: string, accountId: string) {
+    return {
+      agent,
+      accountId,
+      email: null,
+      organizationUuid: null,
+      organizationName: null,
+      alias: null,
+      addedAtUtc: NOW,
+      backend: 'file' as const,
+      refreshDeadAtUtc: null,
+    };
+  }
+
+  test('switch and remove reach the data source with the row agent, not just the id', async () => {
+    // Arrange — two agents legitimately share one account id; the row's
+    // agent is what keeps the action from landing on the wrong login
+    const screen = new FakeScreen();
+    const switches: [string, string][] = [];
+    const removals: [string, string][] = [];
+    const source = makeDataSource(async () => scanSummary());
+    const session = await createTuiSession({
+      createScreen: async () => screen,
+      dataSource: {
+        ...source,
+        loadAccounts: async () => ({
+          snapshots: [],
+          vault: [vaultEntry('claude-code', 'uuid-x'), vaultEntry('codex', 'uuid-x')],
+          discovered: [],
+          activeAccountId: null,
+        }),
+        switchToAccount: async (agent: string, accountId: string) => {
+          switches.push([agent, accountId]);
+          return 'switched';
+        },
+        removeAccount: async (agent: string, accountId: string) => {
+          removals.push([agent, accountId]);
+          return 'removed';
+        },
+      },
+      chartMode: 'block',
+      themeName: null,
+      refreshSeconds: null,
+      monoForced: true,
+      firstRun: false,
+      preferences: preferences(),
+      quotaPollMs: 60_000,
+    });
+
+    // Act — select the codex row (second) and switch, then remove
+    const done = session.run();
+    await settle();
+    screen.pressKey('2');
+    await settle();
+    screen.pressKey('j');
+    screen.pressKey('s');
+    await settle();
+    screen.pressKey('y');
+    await settle();
+    // the action result notice must be dismissed before keys route back
+    screen.pressKey('escape');
+    await settle();
+    screen.pressKey('j');
+    screen.pressKey('x');
+    await settle();
+    screen.pressKey('y');
+    await settle();
+    session.stop();
+    await done;
+
+    // Assert — both actions carried (agent, accountId), codex included
+    expect(switches).toEqual([['codex', 'uuid-x']]);
+    expect(removals).toEqual([['codex', 'uuid-x']]);
+  });
+});

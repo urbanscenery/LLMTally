@@ -144,6 +144,7 @@ describe('recordQuotaSamples / readStoredLastGood', () => {
       db,
       [
         claudeSnapshot({
+          accountId: 'acc-1',
           observedAtUtc: observed,
           windows: [
             // seven_day resets in the future → trusted under a 429
@@ -209,6 +210,25 @@ describe('recordQuotaSamples / readStoredLastGood', () => {
         account: 'me@test.dev',
         nowUtc: NOW,
         failure: { kind: 'rate_limited', failedAtUtc: NOW, retryAtUtc: null },
+      }),
+    ).toBeNull();
+  });
+
+  test('an id-carrying reader never inherits id-less rows via the label', () => {
+    // Arrange — samples recorded before ids existed carry '' and share
+    // the display label; the same label can belong to another account
+    const db = openMigrated();
+    recordQuotaSamples(db, [claudeSnapshot()], NOW);
+
+    // Act & Assert — attribution by label alone is how one account's
+    // numbers end up under another; the id-less rows just age out
+    expect(
+      readStoredLastGood(db, {
+        agent: 'claude-code',
+        accountId: 'acc-1',
+        account: 'me@test.dev',
+        nowUtc: NOW + 60,
+        failure: null,
       }),
     ).toBeNull();
   });

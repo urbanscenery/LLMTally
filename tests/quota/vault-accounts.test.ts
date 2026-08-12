@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test';
 
 import type { ActiveClaudeContext } from '@llmtally/core/accounts/active-claude.ts';
 import { AccountVault } from '@llmtally/core/accounts/vault.ts';
-import { createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
+import { KeychainError, createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
+import type { KeychainPort } from '@llmtally/core/accounts/keychain.ts';
 import { LLMTALLY_USER_AGENT } from '@llmtally/core/version.ts';
 import { readVaultAccountsQuota } from '@llmtally/core/quota/vault-accounts.ts';
 import { makeTempDir } from '../helpers.ts';
@@ -56,6 +57,53 @@ function usageResponse(): Response {
 }
 
 describe('readVaultAccountsQuota', () => {
+  test('an unanswerable keychain degrades to unavailable, not "no stored credentials"', async () => {
+    // Arrange — the vault keychain is locked/timing out; the entry
+    // exists (file-backend fallback) but reads throw
+    const erroring: KeychainPort = {
+      available: true,
+      read: () => ({ kind: 'error', message: 'security timed out' }),
+      write: () => {
+        throw new KeychainError('security timed out');
+      },
+      remove: () => undefined,
+      findAccount: () => null,
+    };
+    const dir = makeTempDir();
+    const healthy = new AccountVault({ dir, keychain: createMemoryKeychain(false) });
+    healthy.put(
+      {
+        agent: 'claude-code',
+        accountId: 'uuid-1',
+        email: 'uuid-1@test.dev',
+        organizationUuid: null,
+        organizationName: null,
+        alias: null,
+        addedAtUtc: NOW,
+      },
+      credentials('refresh-1', NOW_MS + 3_600_000),
+    );
+    const vault = new AccountVault({ dir, keychain: erroring });
+    const calls: string[] = [];
+
+    // Act
+    const snapshots = await readVaultAccountsQuota({
+      vault,
+      activeContext: SIGNED_OUT,
+      nowUtc: NOW,
+      fetchFn: (url) => {
+        calls.push(String(url));
+        return Promise.resolve(usageResponse());
+      },
+    });
+
+    // Assert — the poll survives, says why, and spends no requests
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.failure?.kind).toBe('unavailable');
+    expect(snapshots[0]?.warnings[0]).toMatch(/unreadable right now.*will retry/);
+    expect(calls).toEqual([]);
+  });
+
   test('reads stored accounts live and skips the one the live login names', async () => {
     // Arrange — the context (not any registry marker) decides "active"
     const vault = makeVault([
@@ -110,7 +158,7 @@ describe('readVaultAccountsQuota', () => {
 
     // Assert — losing the rotated token would strand the account
     expect(snapshots[0]?.windows).toHaveLength(1);
-    const stored = JSON.parse(vault.loadCredentials('uuid-other') ?? '{}');
+    const stored = JSON.parse(vault.loadCredentials('claude-code', 'uuid-other') ?? '{}');
     expect(stored.claudeAiOauth.refreshToken).toBe('rotated');
     expect(stored.claudeAiOauth.accessToken).toBe('fresh');
     expect(calls[0]).toContain('oauth/token');
@@ -168,7 +216,7 @@ describe('readVaultAccountsQuota', () => {
     expect(tokenCalls).toBe(1);
     expect(first[0]?.warnings[0]).toContain('re-login');
     expect(second[0]?.warnings[0]).toContain('/login as this account');
-    expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBe(NOW);
+    expect(vault.get('claude-code', 'uuid-other')?.refreshDeadAtUtc).toBe(NOW);
   });
 
   test.each([400, 401, 403])(
@@ -187,7 +235,7 @@ describe('readVaultAccountsQuota', () => {
       });
 
       // Assert
-      expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBe(NOW);
+      expect(vault.get('claude-code', 'uuid-other')?.refreshDeadAtUtc).toBe(NOW);
     },
   );
 
@@ -205,7 +253,7 @@ describe('readVaultAccountsQuota', () => {
     });
 
     // Assert
-    expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBeNull();
+    expect(vault.get('claude-code', 'uuid-other')?.refreshDeadAtUtc).toBeNull();
   });
 
   test('an invalid_client marker on an allowlisted status quarantines too', async () => {
@@ -222,7 +270,7 @@ describe('readVaultAccountsQuota', () => {
     });
 
     // Assert
-    expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBe(NOW);
+    expect(vault.get('claude-code', 'uuid-other')?.refreshDeadAtUtc).toBe(NOW);
   });
 
   test('a plain-text (non-JSON) marker still quarantines on an allowlisted status', async () => {
@@ -239,7 +287,7 @@ describe('readVaultAccountsQuota', () => {
     });
 
     // Assert
-    expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBe(NOW);
+    expect(vault.get('claude-code', 'uuid-other')?.refreshDeadAtUtc).toBe(NOW);
   });
 
   test.each([409, 418, 422, 500, 503])(
@@ -271,7 +319,7 @@ describe('readVaultAccountsQuota', () => {
       expect(tokenCalls).toBe(2);
       expect(first[0]?.warnings[0]).toContain('will retry');
       expect(second[0]?.warnings[0]).toContain('will retry');
-      expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBeNull();
+      expect(vault.get('claude-code', 'uuid-other')?.refreshDeadAtUtc).toBeNull();
     },
   );
 
@@ -304,17 +352,18 @@ describe('readVaultAccountsQuota', () => {
     expect(tokenCalls).toBe(2);
     expect(first[0]?.warnings[0]).toContain('will retry');
     expect(second[0]?.warnings[0]).toContain('will retry');
-    expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBeNull();
+    expect(vault.get('claude-code', 'uuid-other')?.refreshDeadAtUtc).toBeNull();
   });
 
   test('a quarantined account with a still-usable access token is read anyway', async () => {
     // Arrange — quarantine only blocks the token endpoint, not usage
     const vault = makeVault([{ id: 'uuid-other', expiresAt: NOW_MS + 3_600_000 }]);
     vault.markRefreshDeadIfFingerprint(
+      'claude-code',
       'uuid-other',
       // fingerprint of the stored credentials (refresh-token hash)
       (await import('@llmtally/core/accounts/credentials.ts')).credentialFingerprint(
-        vault.loadCredentials('uuid-other') ?? '',
+        vault.loadCredentials('claude-code', 'uuid-other') ?? '',
       ),
       NOW - 60,
     );
@@ -377,7 +426,7 @@ describe('readVaultAccountsQuota', () => {
     });
 
     // Assert — the newer generation survived; the stale rotation was dropped
-    const stored = JSON.parse(vault.loadCredentials('uuid-other') ?? '{}');
+    const stored = JSON.parse(vault.loadCredentials('claude-code', 'uuid-other') ?? '{}');
     expect(stored.claudeAiOauth.refreshToken).toBe('newer-generation');
     expect(snapshots[0]?.windows).toHaveLength(1);
   });

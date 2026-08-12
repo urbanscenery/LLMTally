@@ -21,6 +21,7 @@
 import { asObject, asString } from '../parsers/shared.ts';
 import type { ActiveClaudeContext } from '../accounts/active-claude.ts';
 import { credentialFingerprint } from '../accounts/credentials.ts';
+import { VaultError } from '../accounts/vault.ts';
 import type { AccountVault, VaultEntry } from '../accounts/vault.ts';
 import { LLMTALLY_USER_AGENT } from '../version.ts';
 import { fetchClaudeUsage } from './providers.ts';
@@ -199,7 +200,19 @@ export async function readVaultAccountsQuota(
   const fetchFn = options.fetchFn ?? fetch;
 
   return Promise.all(
-    targets.map(async (entry) => readOneAccount(entry, options, fetchFn)),
+    targets.map(async (entry) => {
+      try {
+        return await readOneAccount(entry, options, fetchFn);
+      } catch (error) {
+        // a keychain that cannot answer right now (locked, timed out)
+        // must degrade to "unavailable, will retry" — never kill the
+        // whole poll, and never read as "no stored credentials"
+        if (error instanceof VaultError) {
+          return unavailable(entry, options.nowUtc, `${error.message}; will retry`);
+        }
+        throw error;
+      }
+    }),
   );
 }
 
@@ -208,7 +221,7 @@ async function readOneAccount(
   options: VaultQuotaOptions,
   fetchFn: FetchLike,
 ): Promise<QuotaSnapshot> {
-  const stored = options.vault.loadCredentials(entry.accountId);
+  const stored = options.vault.loadCredentials(entry.agent, entry.accountId);
   const oauth = stored === null ? null : readOauth(stored);
   if (stored === null || oauth === null) {
     return unavailable(entry, options.nowUtc, 'no stored credentials to read quota with');
@@ -238,6 +251,7 @@ async function readOneAccount(
     // quarantine only the generation we judged; if the bytes moved,
     // the verdict is obsolete and the next cycle re-evaluates
     options.vault.markRefreshDeadIfFingerprint(
+      entry.agent,
       entry.accountId,
       expectedFingerprint,
       options.nowUtc,
@@ -261,6 +275,7 @@ async function readOneAccount(
   // CAS itself waits generously on the lock, so a 'busy' here means
   // something held it far beyond any legitimate operation.
   const persisted = options.vault.replaceCredentialsIfFingerprint(
+    entry.agent,
     entry.accountId,
     expectedFingerprint,
     refreshed.credentials,
@@ -276,7 +291,7 @@ async function readOneAccount(
   if (persisted === 'changed' || persisted === 'busy') {
     // someone else rotated or is rotating: use whatever is stored now,
     // but never call the token endpoint twice in one cycle
-    const current = options.vault.loadCredentials(entry.accountId);
+    const current = options.vault.loadCredentials(entry.agent, entry.accountId);
     const currentOauth = current === null ? null : readOauth(current);
     if (currentOauth !== null && isUsable(currentOauth, options.nowUtc)) {
       return usageWith(entry, currentOauth.accessToken ?? '', options, fetchFn);

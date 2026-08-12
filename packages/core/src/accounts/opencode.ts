@@ -160,7 +160,7 @@ export function captureOpencodeAccount(ports: {
     );
   }
   const accountId = opencodeAccountId(live);
-  const existing = ports.vault.get(accountId);
+  const existing = ports.vault.get(OPENCODE_AGENT, accountId);
   return ports.vault.put(
     {
       agent: OPENCODE_AGENT,
@@ -214,7 +214,7 @@ export async function switchOpencodeAccount(
   const { vault } = ports;
 
   const target = resolveOpencodeEntry(vault, selector);
-  const targetCredentials = vault.loadCredentials(target.accountId);
+  const targetCredentials = vault.loadCredentials(OPENCODE_AGENT, target.accountId);
   if (targetCredentials === null) {
     throw new OpencodeAccountError(
       `no stored credentials for ${target.accountId} — press n while that set is active`,
@@ -236,7 +236,14 @@ export async function switchOpencodeAccount(
       .list()
       .filter((entry) => entry.agent === OPENCODE_AGENT)
       .find((entry) => {
-        const stored = vault.loadCredentials(entry.accountId);
+        // an unreadable third account reads as "no match", not a veto:
+        // the outgoing credential set is still captured/stashed below
+        let stored: string | null;
+        try {
+          stored = vault.loadCredentials(OPENCODE_AGENT, entry.accountId);
+        } catch {
+          return false;
+        }
         return stored !== null && opencodeCredentialFingerprint(stored) === fingerprint;
       });
     if (owner !== undefined) {

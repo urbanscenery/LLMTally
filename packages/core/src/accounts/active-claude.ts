@@ -51,9 +51,9 @@ export function resolveActiveClaudeContext(options: {
   if (state.status === 'identified') {
     const accountUuid = state.identity.accountUuid;
     try {
-      if (options.vault.activeAccountId() !== accountUuid) {
+      if (options.vault.activeAccountId('claude-code') !== accountUuid) {
         // wait 0: a held lock skips the sync rather than stalling a poll
-        options.vault.setActive(accountUuid, 0);
+        options.vault.setActive('claude-code', accountUuid, 0);
       }
     } catch {
       // the context already carries the truth; the marker catches up later
@@ -68,8 +68,8 @@ export function resolveActiveClaudeContext(options: {
 
   if (state.status === 'signed_out') {
     try {
-      if (options.vault.activeAccountId() !== null) {
-        options.vault.setActive(null, 0);
+      if (options.vault.activeAccountId('claude-code') !== null) {
+        options.vault.setActive('claude-code', null, 0);
       }
     } catch {
       // same best-effort rule as above
@@ -79,7 +79,7 @@ export function resolveActiveClaudeContext(options: {
 
   let marker: string | null = null;
   try {
-    marker = options.vault.activeAccountId();
+    marker = options.vault.activeAccountId('claude-code');
   } catch {
     marker = null;
   }

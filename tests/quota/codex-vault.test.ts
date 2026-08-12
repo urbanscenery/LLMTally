@@ -54,8 +54,9 @@ function makeVault(
 /** Marks a stored lineage dead, keyed on the bytes the vault holds now. */
 function quarantine(vault: AccountVault, accountId: string): void {
   vault.markRefreshDeadIfFingerprint(
+    'codex',
     accountId,
-    credentialFingerprint(vault.loadCredentials(accountId) ?? ''),
+    credentialFingerprint(vault.loadCredentials('codex', accountId) ?? ''),
     NOW - 10,
   );
 }
@@ -111,7 +112,7 @@ describe('readVaultCodexQuota', () => {
   test('refreshes an expired token and persists the rotated generation', async () => {
     // Arrange — the stored access token died yesterday
     const vault = makeVault([{ id: 'acc-1', expUtc: NOW - 60 }]);
-    const before = vault.loadCredentials('acc-1') ?? '';
+    const before = vault.loadCredentials('codex', 'acc-1') ?? '';
     const calls: string[] = [];
 
     // Act
@@ -143,7 +144,7 @@ describe('readVaultCodexQuota', () => {
     // Assert — the reading succeeded and the vault holds the new lineage
     expect(calls).toEqual([TOKEN_URL, USAGE_URL]);
     expect(snapshots[0]?.windows[0]?.usedPercent).toBe(42);
-    const after = vault.loadCredentials('acc-1') ?? '';
+    const after = vault.loadCredentials('codex', 'acc-1') ?? '';
     expect(readCodexTokens(after)?.refreshToken).toBe('rt-rotated');
     expect(codexCredentialFingerprint(after)).not.toBe(codexCredentialFingerprint(before));
     // the rotated file must stay something the codex CLI can read back
@@ -167,7 +168,7 @@ describe('readVaultCodexQuota', () => {
     });
 
     // Assert
-    expect(vault.get('acc-1')?.refreshDeadAtUtc).toBe(NOW);
+    expect(vault.get('codex', 'acc-1')?.refreshDeadAtUtc).toBe(NOW);
     expect(snapshots[0]?.failure?.kind).toBe('unavailable');
     expect(snapshots[0]?.warnings.join(' ')).toContain('invalid_grant');
   });
@@ -240,7 +241,7 @@ describe('readVaultCodexQuota', () => {
     // Assert — one renewal, then the reading succeeds
     expect(calls).toEqual([USAGE_URL, TOKEN_URL, USAGE_URL]);
     expect(snapshots[0]?.windows[0]?.usedPercent).toBe(42);
-    expect(readCodexTokens(vault.loadCredentials('acc-1') ?? '')?.refreshToken).toBe('rt-new');
+    expect(readCodexTokens(vault.loadCredentials('codex', 'acc-1') ?? '')?.refreshToken).toBe('rt-new');
   });
 
   test('a revoked lineage is quarantined so switching to it is blocked', async () => {
@@ -261,7 +262,7 @@ describe('readVaultCodexQuota', () => {
     });
 
     // Assert — quarantined, and the message names the fix
-    expect(vault.get('acc-1')?.refreshDeadAtUtc).toBe(NOW);
+    expect(vault.get('codex', 'acc-1')?.refreshDeadAtUtc).toBe(NOW);
     expect(snapshots[0]?.warnings.join(' ')).toContain('codex login');
   });
 

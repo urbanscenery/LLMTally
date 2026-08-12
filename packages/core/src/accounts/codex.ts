@@ -155,7 +155,7 @@ export function captureCodexAccount(ports: {
       `no usable Codex login found in ${authPath} — run "codex login" first`,
     );
   }
-  const existing = ports.vault.get(identity.accountId);
+  const existing = ports.vault.get(CODEX_AGENT, identity.accountId);
   return ports.vault.put(
     {
       agent: CODEX_AGENT,
@@ -209,7 +209,7 @@ export function detachCodexLogin(ports: {
     authPath,
     nowUtc: ports.nowUtc,
   });
-  const stored = ports.vault.loadCredentials(entry.accountId);
+  const stored = ports.vault.loadCredentials(CODEX_AGENT, entry.accountId);
   const live = readAuthFile(authPath);
   if (stored === null || live === null || stored !== live) {
     throw new CodexAccountError(
@@ -280,7 +280,7 @@ export async function switchCodexAccount(
       `the stored login for ${target.email ?? target.accountId} was rejected — run "codex login" as that account once (llmtally re-captures it on the next add)`,
     );
   }
-  const targetCredentials = vault.loadCredentials(target.accountId);
+  const targetCredentials = vault.loadCredentials(CODEX_AGENT, target.accountId);
   if (targetCredentials === null) {
     throw new CodexAccountError(
       `no stored credentials for ${target.email ?? target.accountId} — press n while logged in as that account`,
@@ -304,7 +304,14 @@ export async function switchCodexAccount(
       .list()
       .filter((entry) => entry.agent === CODEX_AGENT)
       .find((entry) => {
-        const stored = vault.loadCredentials(entry.accountId);
+        // an unreadable third account reads as "no match", not a veto:
+        // the outgoing login is still captured/stashed below
+        let stored: string | null;
+        try {
+          stored = vault.loadCredentials(CODEX_AGENT, entry.accountId);
+        } catch {
+          return false;
+        }
         return stored !== null && codexCredentialFingerprint(stored) === fingerprint;
       });
     if (owner !== undefined) {

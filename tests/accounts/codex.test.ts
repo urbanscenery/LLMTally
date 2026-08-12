@@ -71,7 +71,7 @@ describe('captureCodexAccount', () => {
     expect(entry.agent).toBe('codex');
     expect(entry.accountId).toBe('acc-1');
     expect(entry.email).toBe('acc-1@test.dev');
-    expect(vault.loadCredentials('acc-1')).toBe(authJson('acc-1', 'rt-1'));
+    expect(vault.loadCredentials('codex', 'acc-1')).toBe(authJson('acc-1', 'rt-1'));
     expect(keychain.read(VAULT_KEYCHAIN_SERVICE, 'codex:acc-1')).not.toBeNull();
   });
 
@@ -87,7 +87,7 @@ describe('captureCodexAccount', () => {
 
     // Assert
     expect(vault.list().filter((entry) => entry.agent === 'codex')).toHaveLength(1);
-    expect(JSON.parse(vault.loadCredentials('acc-1') ?? '{}').tokens.refresh_token).toBe('rt-2');
+    expect(JSON.parse(vault.loadCredentials('codex', 'acc-1') ?? '{}').tokens.refresh_token).toBe('rt-2');
   });
 
   test('a missing or token-less auth.json refuses loudly', () => {
@@ -113,7 +113,7 @@ describe('detachCodexLogin', () => {
 
     // Assert — preserved in the vault, gone from the file
     expect(result.entry.accountId).toBe('acc-1');
-    expect(vault.loadCredentials('acc-1')).toBe(authJson('acc-1', 'rt-1'));
+    expect(vault.loadCredentials('codex', 'acc-1')).toBe(authJson('acc-1', 'rt-1'));
     expect(existsSync(authPath)).toBe(false);
   });
 
@@ -164,7 +164,7 @@ describe('switchCodexAccount', () => {
     expect(result.target.accountId).toBe('acc-2');
     expect(result.outgoing).toBe('own');
     expect(JSON.parse(readFileSync(authPath, 'utf8')).tokens.account_id).toBe('acc-2');
-    expect(JSON.parse(vault.loadCredentials('acc-1') ?? '{}').tokens.access_token).toBe(
+    expect(JSON.parse(vault.loadCredentials('codex', 'acc-1') ?? '{}').tokens.access_token).toBe(
       'access-fresher',
     );
     expect(statSync(authPath).mode & 0o777).toBe(0o600);
@@ -248,9 +248,10 @@ describe('switchCodexAccount', () => {
     writeFileSync(authPath, authJson('acc-2', 'rt-2'));
     captureCodexAccount({ vault, authPath, nowUtc: NOW });
     vault.markRefreshDeadIfFingerprint(
+      'codex',
       'acc-2',
       (await import('@llmtally/core/accounts/credentials.ts')).credentialFingerprint(
-        vault.loadCredentials('acc-2') ?? '',
+        vault.loadCredentials('codex', 'acc-2') ?? '',
       ),
       NOW,
     );

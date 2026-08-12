@@ -48,6 +48,11 @@ export function defaultClaudeConfigHome(home: string = homedir()): string {
 export interface ActiveCredentialStore {
   /** 'keychain' or 'file' — the backend a write would land in. */
   readonly backend: 'keychain' | 'file';
+  /**
+   * null means confirmed absent. A keychain that cannot answer (locked,
+   * timed out) throws `CredentialError` instead — callers about to
+   * overwrite the store must abort on that, not proceed as if empty.
+   */
   read(): string | null;
   write(text: string): void;
   /** Removes the stored credentials; used to undo a write that had nothing before it. */
@@ -82,9 +87,14 @@ export function createActiveCredentialStore(options: ActiveStoreOptions = {}): A
 
     read(): string | null {
       if (useKeychain) {
-        const value = keychain.read(ACTIVE_KEYCHAIN_SERVICE, account);
-        if (value !== null) {
-          return value;
+        const result = keychain.read(ACTIVE_KEYCHAIN_SERVICE, account);
+        if (result.kind === 'found') {
+          return result.value;
+        }
+        if (result.kind === 'error') {
+          throw new CredentialError(
+            `could not read the active Claude Code credentials (${result.message}) — refusing to treat them as absent`,
+          );
         }
       }
       try {

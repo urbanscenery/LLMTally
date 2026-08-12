@@ -10,9 +10,23 @@ import {
   isWipedCredential,
   prepareForActivation,
 } from '@llmtally/core/accounts/credentials.ts';
-import { createMemoryKeychain, parseAccountAttribute } from '@llmtally/core/accounts/keychain.ts';
+import { KeychainError, createMemoryKeychain, parseAccountAttribute } from '@llmtally/core/accounts/keychain.ts';
+import type { KeychainPort } from '@llmtally/core/accounts/keychain.ts';
 import { AccountVault, normalizeAlias } from '@llmtally/core/accounts/vault.ts';
 import { makeTempDir } from '../helpers.ts';
+
+/** A keychain that exists but cannot answer (locked login keychain, timeout). */
+function erroringKeychain(): KeychainPort {
+  return {
+    available: true,
+    read: () => ({ kind: 'error', message: 'security timed out or was killed (keychain locked?)' }),
+    write: () => {
+      throw new KeychainError('security timed out');
+    },
+    remove: () => undefined,
+    findAccount: () => null,
+  };
+}
 
 const NOW = 1_786_400_000;
 
@@ -120,7 +134,10 @@ describe('createActiveCredentialStore', () => {
 
     // Assert — stored on one line, file untouched in content but touched in mtime
     expect(store.backend).toBe('keychain');
-    expect(keychain.read('Claude Code-credentials', 'me')).toBe(credentials('refresh-1'));
+    expect(keychain.read('Claude Code-credentials', 'me')).toEqual({
+      kind: 'found',
+      value: credentials('refresh-1'),
+    });
     expect(readFileSync(filePath, 'utf8')).toBe('{}');
     expect(statSync(filePath).mtimeMs).toBeGreaterThanOrEqual(before);
   });
@@ -140,6 +157,19 @@ describe('createActiveCredentialStore', () => {
 
     // Assert
     expect(() => readFileSync(join(configHome, '.credentials.json'), 'utf8')).toThrow();
+  });
+
+  test('an unanswerable keychain makes read throw instead of reporting absence', () => {
+    // Arrange — no file exists, and the keychain cannot answer
+    const configHome = makeTempDir();
+    const store = createActiveCredentialStore({
+      configHome,
+      keychain: erroringKeychain(),
+      keychainAccount: 'me',
+    });
+
+    // Act & Assert — "unknown" must never read as "signed out"
+    expect(() => store.read()).toThrow(/refusing to treat them as absent/);
   });
 
   test('without a keychain the file backend is used at 0600', () => {
@@ -175,7 +205,7 @@ describe('AccountVault', () => {
 
     // Assert
     expect(stored.backend).toBe('keychain');
-    expect(vault.loadCredentials('uuid-1')).toBe(credentials('refresh-1'));
+    expect(vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-1'));
     expect(vault.list()).toHaveLength(1);
   });
 
@@ -188,8 +218,8 @@ describe('AccountVault', () => {
 
     // Assert
     expect(stored.backend).toBe('file');
-    expect(vault.loadCredentials('uuid-1')).toBe(credentials('refresh-1'));
-    expect(statSync(join(vault.directory, 'uuid-1.cred')).mode & 0o777).toBe(0o600);
+    expect(vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-1'));
+    expect(statSync(join(vault.directory, 'claude-code--uuid-1.cred')).mode & 0o777).toBe(0o600);
   });
 
   test('empty credentials are refused rather than stored', () => {
@@ -204,10 +234,10 @@ describe('AccountVault', () => {
     vault.put(entry('uuid-2', { email: 'uuid-1@test.dev' }), credentials('refresh-2'));
 
     // Act & Assert
-    expect(vault.resolve('uuid-2').accountId).toBe('uuid-2');
-    expect(vault.resolve('work').accountId).toBe('uuid-1');
-    expect(() => vault.resolve('uuid-1@test.dev')).toThrow('matches 2 accounts');
-    expect(() => vault.resolve('nobody')).toThrow('no stored account');
+    expect(vault.resolve('claude-code', 'uuid-2').accountId).toBe('uuid-2');
+    expect(vault.resolve('claude-code', 'work').accountId).toBe('uuid-1');
+    expect(() => vault.resolve('claude-code', 'uuid-1@test.dev')).toThrow('matches 2 accounts');
+    expect(() => vault.resolve('claude-code', 'nobody')).toThrow('no stored account');
   });
 
   test('aliases are normalized and cannot collide', () => {
@@ -217,11 +247,11 @@ describe('AccountVault', () => {
     vault.put(entry('uuid-2'), credentials('refresh-2'));
 
     // Act
-    vault.setAlias('uuid-1', 'Work');
+    vault.setAlias('claude-code', 'uuid-1', 'Work');
 
     // Assert
-    expect(vault.get('uuid-1')?.alias).toBe('work');
-    expect(() => vault.setAlias('uuid-2', 'work')).toThrow('already used');
+    expect(vault.get('claude-code', 'uuid-1')?.alias).toBe('work');
+    expect(() => vault.setAlias('claude-code', 'uuid-2', 'work')).toThrow('already used');
     expect(() => normalizeAlias('12')).toThrow('invalid alias');
     expect(() => normalizeAlias('-x')).toThrow('invalid alias');
   });
@@ -230,15 +260,15 @@ describe('AccountVault', () => {
     // Arrange
     const vault = makeVault();
     vault.put(entry('uuid-1'), credentials('refresh-1'));
-    vault.setActive('uuid-1');
+    vault.setActive('claude-code', 'uuid-1');
 
     // Act
-    vault.remove('uuid-1');
+    vault.remove('claude-code', 'uuid-1');
 
     // Assert
     expect(vault.list()).toHaveLength(0);
-    expect(vault.loadCredentials('uuid-1')).toBeNull();
-    expect(vault.activeAccountId()).toBeNull();
+    expect(vault.loadCredentials('claude-code', 'uuid-1')).toBeNull();
+    expect(vault.activeAccountId('claude-code')).toBeNull();
   });
 
   test('a crafted account id cannot escape the vault or inject a command', () => {
@@ -272,7 +302,33 @@ describe('AccountVault', () => {
 
     // Assert — the newer credentials are what comes back, not the old row
     expect(stored.backend).toBe('file');
-    expect(vault.loadCredentials('uuid-1')).toBe(huge);
+    expect(vault.loadCredentials('claude-code', 'uuid-1')).toBe(huge);
+  });
+
+  test('an unanswerable keychain makes loadCredentials throw, not report absence', () => {
+    // Arrange — stored while the keychain worked; read while it cannot
+    // prove it holds nothing newer
+    const dir = makeTempDir();
+    const healthy = new AccountVault({ dir, keychain: createMemoryKeychain() });
+    healthy.put(entry('uuid-1'), credentials('refresh-1'));
+    const vault = new AccountVault({ dir, keychain: erroringKeychain() });
+
+    // Act & Assert — absence is a verdict; a locked keychain has none
+    expect(() => vault.loadCredentials('claude-code', 'uuid-1')).toThrow(/unreadable right now/);
+  });
+
+  test('a write that can neither store nor clear the keychain row aborts the put', () => {
+    // Arrange — the keychain refuses the write AND cannot prove the old
+    // row is gone; a file fallback would be shadowed by stale bytes the
+    // moment the keychain answers again
+    const vault = new AccountVault({ dir: makeTempDir(), keychain: erroringKeychain() });
+
+    // Act & Assert — nothing stored, registry untouched
+    expect(() => vault.put(entry('uuid-1'), credentials('refresh-1'))).toThrow(
+      /could not be cleared/,
+    );
+    expect(vault.list()).toHaveLength(0);
+    expect(() => readFileSync(join(vault.directory, 'claude-code--uuid-1.cred'))).toThrow();
   });
 
   test('unclaimed credentials are preserved with a manifest', () => {
@@ -302,11 +358,11 @@ describe('refresh quarantine and credential CAS', () => {
     vault.put(entry('uuid-1'), credentials('refresh-1'));
     const registryPath = join(vault.directory, 'registry.json');
     const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
-    delete registry.accounts['uuid-1'].refreshDeadAtUtc;
+    delete registry.accounts['claude-code:uuid-1'].refreshDeadAtUtc;
     writeFileSync(registryPath, JSON.stringify(registry));
 
     // Act & Assert
-    expect(vault.get('uuid-1')?.refreshDeadAtUtc).toBeNull();
+    expect(vault.get('claude-code', 'uuid-1')?.refreshDeadAtUtc).toBeNull();
   });
 
   test('quarantine only lands on the generation that was judged', () => {
@@ -317,9 +373,10 @@ describe('refresh quarantine and credential CAS', () => {
 
     // Act — the lineage rotates before the verdict arrives
     vault.put(entry('uuid-1'), credentials('refresh-new'));
-    const late = vault.markRefreshDeadIfFingerprint('uuid-1', oldFingerprint, NOW);
+    const late = vault.markRefreshDeadIfFingerprint('claude-code', 'uuid-1', oldFingerprint, NOW);
     // ...and on the current generation it sticks
     const current = vault.markRefreshDeadIfFingerprint(
+      'claude-code',
       'uuid-1',
       credentialFingerprint(credentials('refresh-new')),
       NOW + 1,
@@ -328,17 +385,18 @@ describe('refresh quarantine and credential CAS', () => {
     // Assert
     expect(late).toBe('changed');
     expect(current).toBe('updated');
-    expect(vault.get('uuid-1')?.refreshDeadAtUtc).toBe(NOW + 1);
+    expect(vault.get('claude-code', 'uuid-1')?.refreshDeadAtUtc).toBe(NOW + 1);
   });
 
   test('replaceCredentialsIfFingerprint swaps the generation and lifts quarantine', () => {
     // Arrange — a quarantined account whose refresh finally succeeded
     const vault = makeVault();
     vault.put(entry('uuid-1'), credentials('refresh-old'));
-    vault.markRefreshDeadIfFingerprint('uuid-1', credentialFingerprint(credentials('refresh-old')), NOW);
+    vault.markRefreshDeadIfFingerprint('claude-code', 'uuid-1', credentialFingerprint(credentials('refresh-old')), NOW);
 
     // Act
     const result = vault.replaceCredentialsIfFingerprint(
+      'claude-code',
       'uuid-1',
       credentialFingerprint(credentials('refresh-old')),
       credentials('refresh-rotated'),
@@ -347,8 +405,8 @@ describe('refresh quarantine and credential CAS', () => {
 
     // Assert
     expect(result).toBe('updated');
-    expect(vault.get('uuid-1')?.refreshDeadAtUtc).toBeNull();
-    expect(JSON.parse(vault.loadCredentials('uuid-1') ?? '{}').claudeAiOauth.refreshToken).toBe(
+    expect(vault.get('claude-code', 'uuid-1')?.refreshDeadAtUtc).toBeNull();
+    expect(JSON.parse(vault.loadCredentials('claude-code', 'uuid-1') ?? '{}').claudeAiOauth.refreshToken).toBe(
       'refresh-rotated',
     );
   });
@@ -357,13 +415,13 @@ describe('refresh quarantine and credential CAS', () => {
     // Arrange
     const vault = makeVault();
     vault.put(entry('uuid-1'), credentials('refresh-1'));
-    vault.markRefreshDeadIfFingerprint('uuid-1', credentialFingerprint(credentials('refresh-1')), NOW);
+    vault.markRefreshDeadIfFingerprint('claude-code', 'uuid-1', credentialFingerprint(credentials('refresh-1')), NOW);
 
     // Act — e.g. an alias update re-puts the entry without deciding
     vault.put(entry('uuid-1', { alias: 'work' }), credentials('refresh-1'));
 
     // Assert
-    expect(vault.get('uuid-1')?.refreshDeadAtUtc).toBe(NOW);
+    expect(vault.get('claude-code', 'uuid-1')?.refreshDeadAtUtc).toBe(NOW);
   });
 
   test('a held mutation lock makes polling-path mutations defer as busy', () => {
@@ -379,10 +437,10 @@ describe('refresh quarantine and credential CAS', () => {
     holder.exec('BEGIN IMMEDIATE;');
 
     // Act — the polling-path mutation must skip, not stall
-    const busy = vault.markRefreshDeadIfFingerprint('uuid-1', fingerprint, NOW);
+    const busy = vault.markRefreshDeadIfFingerprint('claude-code', 'uuid-1', fingerprint, NOW);
     holder.exec('ROLLBACK;');
     holder.close();
-    const released = vault.markRefreshDeadIfFingerprint('uuid-1', fingerprint, NOW);
+    const released = vault.markRefreshDeadIfFingerprint('claude-code', 'uuid-1', fingerprint, NOW);
 
     // Assert — a crashed/closed holder releases the lock automatically
     expect(busy).toBe('busy');
@@ -409,9 +467,211 @@ describe('registry mutations under the lock', () => {
 
     // Act & Assert — the alias write refuses to bypass the lock
     // (bounded wait, then a loud failure instead of a silent race)
-    expect(() => vault.setAlias('uuid-1', 'work')).toThrow(/vault lock/);
+    expect(() => vault.setAlias('claude-code', 'uuid-1', 'work')).toThrow(/vault lock/);
     holder.exec('ROLLBACK;');
     holder.close();
-    expect(vault.setAlias('uuid-1', 'work').alias).toBe('work');
+    expect(vault.setAlias('claude-code', 'uuid-1', 'work').alias).toBe('work');
+  });
+});
+
+describe('multi-agent registry (v2)', () => {
+  function makeVault(available = true) {
+    return new AccountVault({ dir: makeTempDir(), keychain: createMemoryKeychain(available) });
+  }
+
+  function codexEntry(accountId: string, overrides: Record<string, unknown> = {}) {
+    return entry(accountId, { agent: 'codex', email: null, ...overrides });
+  }
+
+  test('two agents may store the same account id without colliding', () => {
+    // Arrange — the D-08 collision: both agents issued the same id
+    const vault = makeVault();
+
+    // Act
+    vault.put(entry('uuid-1'), credentials('refresh-claude'));
+    vault.put(codexEntry('uuid-1'), '{"tokens":{"refresh_token":"rt-codex"}}');
+
+    // Assert — both entries survive with their own credentials
+    expect(vault.list()).toHaveLength(2);
+    expect(vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-claude'));
+    expect(vault.loadCredentials('codex', 'uuid-1')).toBe('{"tokens":{"refresh_token":"rt-codex"}}');
+    expect(vault.get('claude-code', 'uuid-1')?.agent).toBe('claude-code');
+    expect(vault.get('codex', 'uuid-1')?.agent).toBe('codex');
+  });
+
+  test("removing one agent's account leaves the other agent's intact", () => {
+    // Arrange
+    const vault = makeVault();
+    vault.put(entry('uuid-1'), credentials('refresh-claude'));
+    vault.put(codexEntry('uuid-1'), '{"tokens":{"refresh_token":"rt-codex"}}');
+
+    // Act
+    vault.remove('codex', 'uuid-1');
+
+    // Assert
+    expect(vault.get('codex', 'uuid-1')).toBeNull();
+    expect(vault.loadCredentials('codex', 'uuid-1')).toBeNull();
+    expect(vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-claude'));
+  });
+
+  test('active markers are tracked per agent', () => {
+    // Arrange
+    const vault = makeVault();
+    vault.put(entry('uuid-1'), credentials('refresh-1'));
+    vault.put(codexEntry('acct-9'), '{"tokens":{"refresh_token":"rt"}}');
+
+    // Act
+    vault.setActive('claude-code', 'uuid-1');
+    vault.setActive('codex', 'acct-9');
+
+    // Assert — one agent's switch never moves another agent's marker
+    expect(vault.activeAccountId('claude-code')).toBe('uuid-1');
+    expect(vault.activeAccountId('codex')).toBe('acct-9');
+    vault.setActive('codex', null);
+    expect(vault.activeAccountId('claude-code')).toBe('uuid-1');
+    expect(vault.activeAccountId('codex')).toBeNull();
+  });
+
+  test('the same alias may exist on two agents but not twice within one', () => {
+    // Arrange
+    const vault = makeVault();
+    vault.put(entry('uuid-1'), credentials('refresh-1'));
+    vault.put(entry('uuid-2'), credentials('refresh-2'));
+    vault.put(codexEntry('acct-9'), '{"tokens":{"refresh_token":"rt"}}');
+
+    // Act & Assert — resolve() is agent-scoped, so cross-agent reuse is safe
+    vault.setAlias('claude-code', 'uuid-1', 'work');
+    expect(vault.setAlias('codex', 'acct-9', 'work').alias).toBe('work');
+    expect(() => vault.setAlias('claude-code', 'uuid-2', 'work')).toThrow('already used');
+  });
+
+  test('a v1 registry is read transparently and converges to v2 on the first mutation', () => {
+    // Arrange — a vault written by the accountId-keyed format
+    const dir = makeTempDir();
+    writeFileSync(
+      join(dir, 'registry.json'),
+      JSON.stringify({
+        version: 1,
+        activeAccountId: 'uuid-1',
+        accounts: {
+          'uuid-1': {
+            agent: 'claude-code',
+            email: 'uuid-1@test.dev',
+            organizationUuid: null,
+            organizationName: null,
+            alias: null,
+            addedAtUtc: NOW,
+            backend: 'file',
+          },
+          'acct-9': {
+            agent: 'codex',
+            email: null,
+            organizationUuid: null,
+            organizationName: null,
+            alias: null,
+            addedAtUtc: NOW,
+            backend: 'file',
+          },
+        },
+      }),
+    );
+    const encode = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+    writeFileSync(join(dir, 'uuid-1.cred'), encode(credentials('refresh-1')));
+    writeFileSync(join(dir, 'acct-9.cred'), encode('{"tokens":{"refresh_token":"rt"}}'));
+    const vault = new AccountVault({ dir, keychain: createMemoryKeychain(false) });
+
+    // Act & Assert — reads work off the v1 file and the legacy names
+    expect(vault.list()).toHaveLength(2);
+    expect(vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-1'));
+    expect(vault.loadCredentials('codex', 'acct-9')).toBe('{"tokens":{"refresh_token":"rt"}}');
+    // the v1 marker belongs to the agent of the entry it names
+    expect(vault.activeAccountId('claude-code')).toBe('uuid-1');
+    expect(vault.activeAccountId('codex')).toBeNull();
+
+    // Act — the first mutation persists the converted form
+    vault.put(entry('uuid-1', { email: 'uuid-1@test.dev' }), credentials('refresh-2'));
+
+    // Assert — v2 on disk, credentials under the agent-qualified name
+    const registry = JSON.parse(readFileSync(join(dir, 'registry.json'), 'utf8'));
+    expect(registry.version).toBe(2);
+    expect(registry.accounts['claude-code:uuid-1'].accountId).toBe('uuid-1');
+    expect(registry.accounts['codex:acct-9'].agent).toBe('codex');
+    expect(registry.active['claude-code']).toBe('uuid-1');
+    expect(vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-2'));
+    expect(readFileSync(join(dir, 'claude-code--uuid-1.cred'), 'utf8')).toBe(
+      encode(credentials('refresh-2')),
+    );
+    // the legacy file is gone once nothing else can depend on it
+    expect(() => readFileSync(join(dir, 'uuid-1.cred'))).toThrow();
+  });
+
+  test('removing an account aborts when the keychain cannot delete its secret', () => {
+    // Arrange — the item reads fine but the delete fails (locked mid-way)
+    const backing = createMemoryKeychain();
+    const stubborn = {
+      available: true,
+      read: backing.read,
+      write: backing.write,
+      remove: (): void => {
+        throw new KeychainError('security timed out while deleting the item');
+      },
+      findAccount: backing.findAccount,
+    };
+    const vault = new AccountVault({ dir: makeTempDir(), keychain: stubborn });
+    vault.put(entry('uuid-1'), credentials('refresh-1'));
+
+    // Act & Assert — reporting "removed" while the secret survives in
+    // the keychain would be a lie; the registry must stay consistent
+    expect(() => vault.remove('claude-code', 'uuid-1')).toThrow(/timed out/);
+    expect(vault.get('claude-code', 'uuid-1')).not.toBeNull();
+    expect(vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-1'));
+  });
+
+  test('a v1 collision leaves the shared legacy file for the other agent', () => {
+    // Arrange — v1 could only keep one entry per id; the codex one won,
+    // but the legacy .cred file is the only copy either agent has
+    const dir = makeTempDir();
+    writeFileSync(
+      join(dir, 'registry.json'),
+      JSON.stringify({
+        version: 1,
+        activeAccountId: null,
+        accounts: {
+          'uuid-1': {
+            agent: 'codex',
+            email: null,
+            organizationUuid: null,
+            organizationName: null,
+            alias: null,
+            addedAtUtc: NOW,
+            backend: 'file',
+          },
+        },
+      }),
+    );
+    const encode = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+    writeFileSync(join(dir, 'uuid-1.cred'), encode('{"tokens":{"refresh_token":"rt-codex"}}'));
+    const vault = new AccountVault({ dir, keychain: createMemoryKeychain(false) });
+
+    // Act — claude re-captures the same id as its own account
+    vault.put(entry('uuid-1'), credentials('refresh-claude'));
+
+    // Assert — the codex entry can still read its only copy, which the
+    // mutation materialized under its own qualified name; the ambiguous
+    // legacy name is gone
+    expect(vault.loadCredentials('codex', 'uuid-1')).toBe('{"tokens":{"refresh_token":"rt-codex"}}');
+    expect(vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-claude'));
+    expect(() => readFileSync(join(dir, 'uuid-1.cred'))).toThrow();
+    expect(readFileSync(join(dir, 'codex--uuid-1.cred'), 'utf8')).toBe(
+      encode('{"tokens":{"refresh_token":"rt-codex"}}'),
+    );
+
+    // Act — removing one agent must not leave its secret readable by the other
+    vault.remove('codex', 'uuid-1');
+
+    // Assert
+    expect(vault.loadCredentials('codex', 'uuid-1')).toBeNull();
+    expect(() => readFileSync(join(dir, 'codex--uuid-1.cred'))).toThrow();
+    expect(vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-claude'));
   });
 });

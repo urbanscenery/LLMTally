@@ -61,7 +61,7 @@ describe('syncActiveCodexCredential', () => {
 
     // Assert
     expect(outcome).toBe('synced');
-    expect(readCodexTokens(vault.loadCredentials('acc-1') ?? '')?.refreshToken).toBe('rt-rotated');
+    expect(readCodexTokens(vault.loadCredentials('codex', 'acc-1') ?? '')?.refreshToken).toBe('rt-rotated');
   });
 
   test('does nothing when the stored copy already matches', async () => {
@@ -69,14 +69,14 @@ describe('syncActiveCodexCredential', () => {
     const { authPath, vault } = harness();
     const same = authJson('acc-1', 'rt-1');
     writeFileSync(authPath, same);
-    const before = credentialFingerprint(vault.loadCredentials('acc-1') ?? '');
+    const before = credentialFingerprint(vault.loadCredentials('codex', 'acc-1') ?? '');
 
     // Act
     const outcome = syncActiveCodexCredential({ vault, authPath, nowUtc: NOW });
 
     // Assert
     expect(outcome).toBe('not_needed');
-    expect(credentialFingerprint(vault.loadCredentials('acc-1') ?? '')).toBe(before);
+    expect(credentialFingerprint(vault.loadCredentials('codex', 'acc-1') ?? '')).toBe(before);
   });
 
   test('leaves an unstored login alone — capturing it is the user\'s call', async () => {
@@ -89,8 +89,8 @@ describe('syncActiveCodexCredential', () => {
 
     // Assert
     expect(outcome).toBe('not_needed');
-    expect(vault.get('acc-stranger')).toBeNull();
-    expect(readCodexTokens(vault.loadCredentials('acc-1') ?? '')?.refreshToken).toBe('rt-1');
+    expect(vault.get('codex', 'acc-stranger')).toBeNull();
+    expect(readCodexTokens(vault.loadCredentials('codex', 'acc-1') ?? '')?.refreshToken).toBe('rt-1');
   });
 
   test('never overwrites a good backup with an unusable live file', async () => {
@@ -103,7 +103,7 @@ describe('syncActiveCodexCredential', () => {
 
     // Assert
     expect(outcome).toBe('unavailable');
-    expect(readCodexTokens(vault.loadCredentials('acc-1') ?? '')?.refreshToken).toBe('rt-1');
+    expect(readCodexTokens(vault.loadCredentials('codex', 'acc-1') ?? '')?.refreshToken).toBe('rt-1');
   });
 
   test('a missing auth.json is not a reason to touch the vault', async () => {
@@ -115,15 +115,16 @@ describe('syncActiveCodexCredential', () => {
 
     // Assert
     expect(outcome).toBe('unavailable');
-    expect(readCodexTokens(vault.loadCredentials('acc-1') ?? '')?.refreshToken).toBe('rt-1');
+    expect(readCodexTokens(vault.loadCredentials('codex', 'acc-1') ?? '')?.refreshToken).toBe('rt-1');
   });
 
   test('a live login lifts a stale quarantine', async () => {
     // Arrange — quarantined earlier, but the CLI is using it right now
     const { authPath, vault } = harness();
     vault.markRefreshDeadIfFingerprint(
+      'codex',
       'acc-1',
-      credentialFingerprint(vault.loadCredentials('acc-1') ?? ''),
+      credentialFingerprint(vault.loadCredentials('codex', 'acc-1') ?? ''),
       NOW - 10,
     );
     writeFileSync(authPath, authJson('acc-1', 'rt-rotated'));
@@ -133,6 +134,6 @@ describe('syncActiveCodexCredential', () => {
 
     // Assert
     expect(outcome).toBe('synced');
-    expect(vault.get('acc-1')?.refreshDeadAtUtc).toBeNull();
+    expect(vault.get('codex', 'acc-1')?.refreshDeadAtUtc).toBeNull();
   });
 });

@@ -165,7 +165,7 @@ describe('captureOpencodeAccount', () => {
     // Assert
     expect(entry.agent).toBe('opencode');
     expect(entry.accountId).toMatch(/^opencode-go\.[0-9a-f]{6}$/);
-    expect(vault.loadCredentials(entry.accountId)).toBe(authJson({ 'opencode-go': 'sk-a' }));
+    expect(vault.loadCredentials('opencode', entry.accountId)).toBe(authJson({ 'opencode-go': 'sk-a' }));
     expect(keychain.read(VAULT_KEYCHAIN_SERVICE, `opencode:${entry.accountId}`)).not.toBeNull();
   });
 
@@ -221,7 +221,7 @@ describe('switchOpencodeAccount', () => {
     expect(readFileSync(authPath, 'utf8')).toBe(
       authJson({ 'opencode-go': 'sk-b', 'cline-pass': 'sk_c' }),
     );
-    expect(vault.loadCredentials(entryA.accountId)).toBe(authJson({ 'opencode-go': 'sk-a' }));
+    expect(vault.loadCredentials('opencode', entryA.accountId)).toBe(authJson({ 'opencode-go': 'sk-a' }));
     expect(statSync(authPath).mode & 0o777).toBe(0o600);
   });
 
@@ -238,7 +238,7 @@ describe('switchOpencodeAccount', () => {
     // Assert — preserved as its own entry, not lost
     expect(result.outgoing).toBe('unclaimed');
     const strangerId = opencodeAccountId(authJson({ 'opencode-go': 'sk-stranger' }));
-    expect(vault.loadCredentials(strangerId)).toBe(authJson({ 'opencode-go': 'sk-stranger' }));
+    expect(vault.loadCredentials('opencode', strangerId)).toBe(authJson({ 'opencode-go': 'sk-stranger' }));
   });
 
   test('aborts when auth.json changes between read and write', async () => {

@@ -219,6 +219,22 @@ export async function fetchClaudeUsage(request: ClaudeUsageRequest): Promise<Quo
     if (extra !== null) {
       windows.push(extra);
     }
+    if (windows.length === 0) {
+      // a real usage response always carries at least `five_hour`; a 2xx
+      // that parses to nothing is schema drift (or an empty body), and
+      // reporting it as success would replace good numbers with a blank
+      // gauge instead of falling back to the last good reading
+      return makeQuotaSnapshot({
+        agent: 'claude-code',
+        source: 'vendor_api',
+        observedAtUtc: nowUtc,
+        windows: [],
+        accountId,
+        account,
+        failure: { kind: 'unavailable', failedAtUtc: nowUtc, retryAtUtc: null },
+        warnings: ['claude usage response carried no recognizable windows (schema drift?)'],
+      });
+    }
     return makeQuotaSnapshot({
       agent: 'claude-code',
       source: 'vendor_api',

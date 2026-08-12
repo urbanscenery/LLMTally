@@ -19,10 +19,11 @@ import { readFileSync } from 'node:fs';
 
 import { resolveActiveClaudeContext } from '../accounts/active-claude.ts';
 import { syncActiveCodexCredential } from '../accounts/codex-live-sync.ts';
-import { syncActiveClaudeCredential } from '../accounts/live-sync.ts';
+import { syncActiveClaudeCredential, verifyLiveCredentialOwner } from '../accounts/live-sync.ts';
 import type { ActiveClaudeContext } from '../accounts/active-claude.ts';
-import { createActiveCredentialStore } from '../accounts/credentials.ts';
+import { createActiveCredentialStore, oauthAccessToken } from '../accounts/credentials.ts';
 import type { ActiveCredentialStore } from '../accounts/credentials.ts';
+import type { ProfileFetch } from '../accounts/oauth-profile.ts';
 import {
   OPENCODE_AGENT,
   defaultOpencodeAuthPath,
@@ -55,7 +56,6 @@ import {
 import type { CodexAuth } from './codex-live.ts';
 import { readVaultCodexQuota } from './codex-vault.ts';
 import {
-  defaultClaudeTokenReader,
   fetchClaudeQuota,
   makeQuotaSnapshot,
   readCodexQuota,
@@ -108,11 +108,14 @@ export async function loadAllQuota(options: {
   readonly grokAuthPath?: string;
   /** Injected in tests; production reads ~/.codex/auth.json. */
   readonly codexAuthPath?: string;
+  /** Injected in tests; production probes the OAuth profile endpoint. */
+  readonly profileFetchFn?: ProfileFetch;
 } = {}): Promise<QuotaSnapshot[]> {
   const agent = options.agent ?? null;
   const now = options.nowUtc ?? Math.floor(Date.now() / 1000);
   const vault = options.vault ?? new AccountVault();
   const context = options.activeContext ?? resolveActiveClaudeContext({ vault });
+  const activeStore = options.activeStore ?? createActiveCredentialStore();
 
   // Before any stored account is refreshed: Claude Code rotates the
   // active account's lineage during normal use, and a vault still
@@ -124,8 +127,9 @@ export async function loadAllQuota(options: {
       await syncActiveClaudeCredential({
         context,
         vault,
-        activeStore: options.activeStore ?? createActiveCredentialStore(),
+        activeStore,
         nowUtc: now,
+        fetchFn: options.profileFetchFn,
       });
     } catch {
       // self-healing is opportunistic; quota display must not depend on it
@@ -178,7 +182,7 @@ export async function loadAllQuota(options: {
   try {
     const [claude, codexLive, antigravity, opencode, cline, grok] = await Promise.all([
       agent === null || agent === 'claude-code'
-        ? loadActiveClaudeQuota(context, now, stateStore, stateStoreUnavailable)
+        ? loadActiveClaudeQuota(context, now, stateStore, stateStoreUnavailable, activeStore, options.profileFetchFn)
         : null,
       agent === null || agent === 'codex' ? throttledCodexLive(codexAuth, now) : null,
       agent === null || agent === 'antigravity'
@@ -208,7 +212,7 @@ export async function loadAllQuota(options: {
             )
             .map(async (entry) =>
               throttledQuota(
-                storedAccountSubject(entry.accountId, entry.email),
+                storedAccountSubject(vault, entry),
                 now,
                 async () => {
                   const [snapshot] = await readVaultAccountsQuota({
@@ -281,17 +285,40 @@ export async function loadAllQuota(options: {
 }
 
 /**
- * The live account's budget key follows its access token (a rotation =
- * a fresh vendor budget); stored accounts are keyed per account id —
- * conservative across our own refresh rotations, which only ever
- * under-spends.
+ * Stored accounts claim under the same key format as the live path —
+ * the vendor budgets requests per access token, so the same token must
+ * spend ONE budget whether its account is active or not (an account
+ * that just went inactive would otherwise get a fresh budget for a
+ * token the live path already spent). Unreadable credentials fall back
+ * to an account-scoped key: budgeting still happens, just conservatively.
+ *
+ * Known window (accepted): when the callback renews an expired token,
+ * that one usage call is recorded under the pre-rotation key and the
+ * rotated token starts a fresh row on the next poll. The vendor's
+ * budget genuinely resets with the rotation, so the extra call is
+ * vendor-legal and bounded to one per rotation (~token lifetime); the
+ * alternative — a lineage-scoped key — would reopen the live/stored
+ * double-budget this key exists to close.
  */
-function storedAccountSubject(accountId: string, email: string | null): QuotaThrottleSubject {
+function storedAccountSubject(
+  vault: AccountVault,
+  entry: VaultEntry,
+): QuotaThrottleSubject {
+  let token: string | null = null;
+  try {
+    const stored = vault.loadCredentials(entry.agent, entry.accountId);
+    token = stored === null ? null : oauthAccessToken(stored);
+  } catch {
+    // an unanswerable keychain still gets a budget key, just not a token one
+  }
   return {
-    key: `claude-code|ua=${LLMTALLY_USER_AGENT}|acct=${accountId}`,
+    key:
+      token === null
+        ? `claude-code|ua=${LLMTALLY_USER_AGENT}|acct=${entry.accountId}`
+        : `claude-code|ua=${LLMTALLY_USER_AGENT}|token=${accessTokenFingerprint(token)}`,
     agent: 'claude-code',
-    accountId,
-    account: email ?? accountId,
+    accountId: entry.accountId,
+    account: entry.email ?? entry.accountId,
   };
 }
 
@@ -300,6 +327,8 @@ async function loadActiveClaudeQuota(
   now: number,
   stateStore: QuotaFetchStateStore | null,
   stateStoreUnavailable: boolean,
+  activeStore: ActiveCredentialStore,
+  profileFetchFn?: ProfileFetch,
 ): Promise<QuotaSnapshot> {
   if (context.status === 'signed_out') {
     // a deliberate sign-out ends the live account's story: a residual
@@ -313,11 +342,43 @@ async function loadActiveClaudeQuota(
       warnings: ['no Claude Code account is signed in'],
     });
   }
-  // the token is read once per load: it names the budget key and is
-  // then injected into the fetch so the two can never disagree
-  const token = defaultClaudeTokenReader()();
+  // the credentials are read once per load: they name the budget key and
+  // the token is then injected into the fetch so the two cannot disagree
+  let live: string | null = null;
+  try {
+    live = activeStore.read();
+  } catch {
+    // an unanswerable keychain degrades to the token-less path below
+  }
+  const token = live === null ? null : oauthAccessToken(live);
   const accountId = context.activeAccountId;
   const account = context.identity?.email ?? null;
+  // `/login` writes the credential store and ~/.claude.json separately,
+  // so the bytes can briefly belong to another account than the config
+  // names. The oracle's verdict is memoized per lineage; on a mismatch
+  // the reading is deferred rather than recorded under the wrong account.
+  if (live !== null && token !== null && context.status === 'identified') {
+    const owner = await verifyLiveCredentialOwner({
+      accountId: context.activeAccountId,
+      credentials: live,
+      nowUtc: now,
+      fetchFn: profileFetchFn,
+    });
+    if (owner === 'foreign') {
+      return makeQuotaSnapshot({
+        agent: 'claude-code',
+        accountId,
+        account,
+        source: 'vendor_api',
+        observedAtUtc: now,
+        windows: [],
+        failure: { kind: 'unavailable', failedAtUtc: now, retryAtUtc: null },
+        warnings: [
+          'the live credentials belong to a different account than ~/.claude.json names — a switch or login is settling; retrying shortly',
+        ],
+      });
+    }
+  }
   const subject =
     token === null
       ? {
@@ -393,7 +454,7 @@ function listOpencodeBundles(
     }
     let authText: string | null = null;
     try {
-      authText = vault.loadCredentials(entry.accountId);
+      authText = vault.loadCredentials(entry.agent, entry.accountId);
     } catch {
       // an unreadable stored set simply yields no quota reading
     }
@@ -594,8 +655,26 @@ export function dedupeByAccount(snapshots: readonly QuotaSnapshot[]): QuotaSnaps
     const winner = preferredSnapshot(current, snapshot);
     const loser = winner === current ? snapshot : current;
     const carried = loser.windows.length === 0 ? loser.warnings : [];
+    // a windowless failed read that is at least as fresh as the winner
+    // is the CURRENT state of this account: its typed failure rides
+    // along with the winner's numbers instead of degrading to a warning
+    const freshFailure =
+      loser.failure !== null &&
+      loser.windows.length === 0 &&
+      loser.observedAtUtc >= winner.observedAtUtc
+        ? loser
+        : null;
+    let merged = winner;
+    if (freshFailure !== null) {
+      merged = {
+        ...merged,
+        failure: freshFailure.failure,
+        rateLimited: freshFailure.rateLimited,
+        retryAfterSeconds: freshFailure.retryAfterSeconds,
+      };
+    }
     result[at] =
-      carried.length === 0 ? winner : { ...winner, warnings: [...winner.warnings, ...carried] };
+      carried.length === 0 ? merged : { ...merged, warnings: [...merged.warnings, ...carried] };
   }
   return result;
 }
@@ -730,6 +809,11 @@ function codexSnapshot(live: QuotaSnapshot | null, nowUtc: number): QuotaSnapsho
     ...logs,
     accountId: logs.accountId ?? live.accountId,
     account: logs.account ?? live.account,
+    // the fallback stands in for a read that failed just now; that
+    // typed failure is the row's current state, not a mere footnote
+    failure: live.failure ?? logs.failure,
+    rateLimited: live.rateLimited || logs.rateLimited,
+    retryAfterSeconds: live.retryAfterSeconds ?? logs.retryAfterSeconds,
     warnings: [...live.warnings, ...logs.warnings],
   };
 }

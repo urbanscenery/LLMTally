@@ -47,8 +47,8 @@ export interface TuiDataSource {
   uninstallDaemon(): Promise<string>;
   /** Account mutations; each resolves to a line to show the user. */
   addCurrentAccount(): Promise<string>;
-  removeAccount(accountId: string): Promise<string>;
-  switchToAccount(accountId: string): Promise<string>;
+  removeAccount(agent: string, accountId: string): Promise<string>;
+  switchToAccount(agent: string, accountId: string): Promise<string>;
   /** Stores the live codex login, then signs codex out without revoking. */
   detachCodexAccount(): Promise<string>;
 }
@@ -150,18 +150,16 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
       ].join('\n');
     },
 
-    async removeAccount(accountId: string): Promise<string> {
+    async removeAccount(agent: string, accountId: string): Promise<string> {
       const vault = new AccountVault();
-      const entry = vault.get(accountId);
-      vault.remove(accountId);
+      const entry = vault.get(agent, accountId);
+      vault.remove(agent, accountId);
       return `removed ${entry?.email ?? accountId} from the vault`;
     },
 
-    async switchToAccount(accountId: string): Promise<string> {
-      // the vault entry knows which agent owns this account; each agent
-      // has its own switch mechanics
+    async switchToAccount(agent: string, accountId: string): Promise<string> {
+      // each agent has its own switch mechanics
       const vault = new AccountVault();
-      const agent = vault.get(accountId)?.agent ?? 'claude-code';
       if (agent === 'codex') {
         const result = await switchCodexAccount(accountId, { vault });
         return [

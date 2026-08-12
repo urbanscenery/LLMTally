@@ -61,6 +61,22 @@ describe('fetchClaudeQuota', () => {
     expect(snapshot.account).toBe('me@test.dev');
   });
 
+  test('a 2xx that parses to zero windows is a failure, not an empty success', async () => {
+    // Arrange — schema drift (or an empty body) on a healthy status code
+    const snapshot = await fetchClaudeQuota({
+      tokenReader: () => 'test-token',
+      identityReader: () => TEST_IDENTITY,
+      nowUtc: NOW,
+      fetchFn: () => Promise.resolve(new Response(JSON.stringify({}))),
+    });
+
+    // Assert — a real usage response always carries five_hour; reporting
+    // this as success would blank the gauge instead of serving last-good
+    expect(snapshot.windows).toEqual([]);
+    expect(snapshot.failure?.kind).toBe('unavailable');
+    expect(snapshot.warnings[0]).toMatch(/no recognizable windows/);
+  });
+
   test('parses model-scoped weekly limits and the extra-usage axis', async () => {
     // Arrange
     const body = {

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from '
 import { join } from 'node:path';
 
 import { acquireClaudeLocks, claudeLockSpecs } from '@llmtally/core/accounts/claude-locks.ts';
-import { createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
+import { CredentialError, createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import type { ActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import { createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
 import {
@@ -106,7 +106,7 @@ describe('switchAccount', () => {
     const harness = makeHarness('uuid-1');
     seedAccount(harness, 'uuid-1', 'refresh-1');
     seedAccount(harness, 'uuid-2', 'refresh-2');
-    harness.vault.setActive('uuid-1');
+    harness.vault.setActive('claude-code', 'uuid-1');
     harness.activeStore.write(credentials('refresh-1'));
 
     // Act
@@ -119,7 +119,7 @@ describe('switchAccount', () => {
     expect(config.oauthAccount.accountUuid).toBe('uuid-2');
     expect(config.oauthAccount.emailAddress).toBe('uuid-2@test.dev');
     expect(config.projects).toEqual({ '/work': { history: ['keep me'] } });
-    expect(harness.vault.activeAccountId()).toBe('uuid-2');
+    expect(harness.vault.activeAccountId('claude-code')).toBe('uuid-2');
   });
 
   test('the outgoing account is backed up before it is replaced', async () => {
@@ -134,7 +134,7 @@ describe('switchAccount', () => {
 
     // Assert — the newer bytes replaced the stored snapshot for uuid-1
     expect(result.outgoing).toBe('own');
-    const stored = JSON.parse(harness.vault.loadCredentials('uuid-1') ?? '{}');
+    const stored = JSON.parse(harness.vault.loadCredentials('claude-code', 'uuid-1') ?? '{}');
     expect(stored.trustedDeviceToken).toBe('device-1');
   });
 
@@ -155,7 +155,37 @@ describe('switchAccount', () => {
       'utf8',
     );
     expect(Buffer.from(stashed, 'base64').toString('utf8')).toBe(credentials('refresh-stranger'));
-    expect(harness.vault.loadCredentials('uuid-2')).toBe(credentials('refresh-2'));
+    expect(harness.vault.loadCredentials('claude-code', 'uuid-2')).toBe(credentials('refresh-2'));
+  });
+
+  test('an unreadable live store aborts the switch before anything is written', async () => {
+    // Arrange — the keychain reports a timeout, not absence; a switch
+    // that read this as "absent" would overwrite the login with no backup
+    const harness = makeHarness('uuid-1');
+    seedAccount(harness, 'uuid-1', 'refresh-1');
+    seedAccount(harness, 'uuid-2', 'refresh-2');
+    const writes: string[] = [];
+    const unreadableStore: ActiveCredentialStore = {
+      backend: 'keychain',
+      read: () => {
+        throw new CredentialError(
+          'could not read the active Claude Code credentials (security timed out) — refusing to treat them as absent',
+        );
+      },
+      write: (text) => {
+        writes.push(text);
+      },
+      clear: () => undefined,
+      touch: () => undefined,
+    };
+
+    // Act & Assert — fail closed: no write, no config splice
+    await expect(
+      switchAccount('uuid-2', ports(harness, { activeStore: unreadableStore })),
+    ).rejects.toThrow(/refusing to treat them as absent/);
+    expect(writes).toEqual([]);
+    const config = JSON.parse(readFileSync(harness.configPath, 'utf8'));
+    expect(config.oauthAccount.accountUuid).toBe('uuid-1');
   });
 
   test('a signed-out live store never overwrites a stored snapshot', async () => {
@@ -170,7 +200,7 @@ describe('switchAccount', () => {
 
     // Assert
     expect(result.outgoing).toBe('wiped');
-    expect(harness.vault.loadCredentials('uuid-1')).toBe(credentials('refresh-1'));
+    expect(harness.vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-1'));
     expect(result.warnings.some((warning) => warning.includes('blank'))).toBe(true);
   });
 
@@ -179,14 +209,14 @@ describe('switchAccount', () => {
     const harness = makeHarness('uuid-1');
     seedAccount(harness, 'uuid-1', 'refresh-1');
     seedAccount(harness, 'uuid-2', 'refresh-2');
-    harness.vault.setActive('uuid-1');
+    harness.vault.setActive('claude-code', 'uuid-1');
     harness.activeStore.write(credentials('refresh-1'));
     writeFileSync(harness.configPath, 'this is not json');
 
     // Act & Assert
     await expect(switchAccount('uuid-2', ports(harness))).rejects.toThrow('not valid JSON');
     expect(JSON.parse(harness.activeStore.read() ?? '{}').claudeAiOauth.refreshToken).toBe('refresh-1');
-    expect(harness.vault.activeAccountId()).toBe('uuid-1');
+    expect(harness.vault.activeAccountId('claude-code')).toBe('uuid-1');
   });
 
   test('a rollback with nothing previously live clears instead of leaving the target behind', async () => {
@@ -202,14 +232,14 @@ describe('switchAccount', () => {
     // Assert — leaving uuid-2's token here would make a later "accounts
     // add" store it under uuid-1, destroying that account's backup
     expect(harness.activeStore.read()).toBeNull();
-    expect(harness.vault.loadCredentials('uuid-1')).toBe(credentials('refresh-1'));
+    expect(harness.vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-1'));
   });
 
   test('an account with no stored credentials is refused before anything changes', async () => {
     // Arrange
     const harness = makeHarness('uuid-1');
     seedAccount(harness, 'uuid-2', 'refresh-2');
-    harness.vault.remove('uuid-2');
+    harness.vault.remove('claude-code', 'uuid-2');
     harness.vault.put(
       {
         agent: 'claude-code',
@@ -316,8 +346,9 @@ describe('switchAccount', () => {
     seedAccount(harness, 'uuid-2', 'refresh-2');
     const { credentialFingerprint } = await import('@llmtally/core/accounts/credentials.ts');
     harness.vault.markRefreshDeadIfFingerprint(
+      'claude-code',
       'uuid-2',
-      credentialFingerprint(harness.vault.loadCredentials('uuid-2') ?? ''),
+      credentialFingerprint(harness.vault.loadCredentials('claude-code', 'uuid-2') ?? ''),
       NOW,
     );
     harness.activeStore.write(credentials('refresh-1'));
@@ -348,8 +379,8 @@ describe('captureActiveAccount', () => {
     // Assert
     expect(entry.accountId).toBe('uuid-1');
     expect(entry.email).toBe('uuid-1@test.dev');
-    expect(harness.vault.activeAccountId()).toBe('uuid-1');
-    expect(harness.vault.loadCredentials('uuid-1')).toBe(credentials('refresh-1'));
+    expect(harness.vault.activeAccountId('claude-code')).toBe('uuid-1');
+    expect(harness.vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-1'));
   });
 
   test('refuses when nothing is logged in or the store is empty', () => {

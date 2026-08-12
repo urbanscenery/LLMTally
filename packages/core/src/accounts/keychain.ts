@@ -7,14 +7,18 @@
  * Secrets go in through stdin (`security -i`) rather than argv so they
  * never appear in the process list.
  *
- * A read that fails returns null. Callers about to overwrite a backup
- * must treat null as "unknown", never as "empty": `security` reports a
- * timeout the same way it reports a missing item, and letting that
- * destroy a stored credential is exactly the failure mode this whole
- * module exists to avoid.
+ * A read answers with three distinct states — found, absent, error —
+ * because `security` reports a locked keychain, a timeout, and a
+ * missing item through different exit codes, and collapsing them into
+ * one "null" is how a switch ends up overwriting a stored credential
+ * it merely could not read. Only exit 44 (errSecItemNotFound) means
+ * absent; everything else non-zero is an operational error the caller
+ * must treat as "unknown", never as "empty".
  */
 const SECURITY_BIN = '/usr/bin/security';
 const TIMEOUT_MS = 5000;
+/** `security` exits 44 (errSecItemNotFound) when the item does not exist. */
+const ITEM_NOT_FOUND_EXIT = 44;
 /**
  * `security -i` parses stdin with a 4096-byte line buffer; measured on
  * macOS 26, a command line around 2.8 KB stores fine and one around
@@ -25,14 +29,26 @@ const TIMEOUT_MS = 5000;
 const MAX_COMMAND_BYTES = 4000;
 const CONTROL_CHARACTERS = new RegExp('[\\u0000-\\u001f\\u007f]');
 
+export type KeychainReadResult =
+  | { readonly kind: 'found'; readonly value: string }
+  | { readonly kind: 'absent' }
+  /** The keychain could not answer (locked, timed out, denied). */
+  | { readonly kind: 'error'; readonly message: string };
+
 export interface KeychainPort {
   readonly available: boolean;
-  read(service: string, account: string): string | null;
+  read(service: string, account: string): KeychainReadResult;
   /** Throws when the secret could not be stored and verified. */
   write(service: string, account: string, secret: string): void;
+  /** Throws when the item may still exist (operational failure); absent is success. */
   remove(service: string, account: string): void;
   /** Account attribute of an existing item, so updates hit the same row. */
   findAccount(service: string): string | null;
+}
+
+/** The secret when found, else null — for callers where absent and error coincide. */
+export function keychainValue(result: KeychainReadResult): string | null {
+  return result.kind === 'found' ? result.value : null;
 }
 
 export class KeychainError extends Error {
@@ -66,7 +82,7 @@ export const macosKeychain: KeychainPort = {
 
   read(service, account) {
     if (!macosKeychain.available) {
-      return null;
+      return { kind: 'absent' };
     }
     const argv = ['find-generic-password', '-s', service];
     if (account.length > 0) {
@@ -74,12 +90,21 @@ export const macosKeychain: KeychainPort = {
     }
     argv.push('-w');
     const result = runSecurity(argv);
-    if (result.code !== 0) {
-      return null;
+    if (result.code === 0) {
+      // -w prints the secret followed by a newline; nothing else is added
+      const value = result.stdout.replace(/\n$/, '');
+      return value.length === 0 ? { kind: 'absent' } : { kind: 'found', value };
     }
-    // -w prints the secret followed by a newline; nothing else is added
-    const value = result.stdout.replace(/\n$/, '');
-    return value.length === 0 ? null : value;
+    if (result.code === ITEM_NOT_FOUND_EXIT) {
+      return { kind: 'absent' };
+    }
+    return {
+      kind: 'error',
+      message:
+        result.code === -1
+          ? 'security timed out or was killed (keychain locked?)'
+          : `security find-generic-password failed (exit ${result.code})`,
+    };
   },
 
   write(service, account, secret) {
@@ -104,23 +129,36 @@ export const macosKeychain: KeychainPort = {
         `secret is too large for the keychain CLI (${secret.length} characters); the item was left unchanged`,
       );
     }
-    // remember what was there so a partial write can be undone
-    const previous = macosKeychain.read(service, account);
+    // remember what was there so a partial write can be undone; a state
+    // we cannot read is a state we must not overwrite
+    const previousResult = macosKeychain.read(service, account);
+    if (previousResult.kind === 'error') {
+      throw new KeychainError(
+        `refusing to write: the existing keychain item could not be read (${previousResult.message})`,
+      );
+    }
+    const previous = previousResult.kind === 'found' ? previousResult.value : null;
     const result = runSecurity(['-i'], command);
     if (result.code !== 0) {
       throw new KeychainError(`security add-generic-password failed (exit ${result.code})`);
     }
-    if (macosKeychain.read(service, account) === secret) {
+    const verify = macosKeychain.read(service, account);
+    if (verify.kind === 'found' && verify.value === secret) {
       return;
     }
     // the parser accepted the line but stored something else; put the
     // previous value back rather than leaving a truncated credential
     let restored = true;
     if (previous === null) {
-      macosKeychain.remove(service, account);
+      try {
+        macosKeychain.remove(service, account);
+      } catch {
+        restored = false;
+      }
     } else {
       const undo = runSecurity(['-i'], storeCommand(service, account, previous));
-      restored = undo.code === 0 && macosKeychain.read(service, account) === previous;
+      const readBack = macosKeychain.read(service, account);
+      restored = undo.code === 0 && readBack.kind === 'found' && readBack.value === previous;
     }
     throw new KeychainError(
       restored
@@ -133,7 +171,16 @@ export const macosKeychain: KeychainPort = {
     if (!macosKeychain.available) {
       return;
     }
-    runSecurity(['delete-generic-password', '-s', service, '-a', account]);
+    const result = runSecurity(['delete-generic-password', '-s', service, '-a', account]);
+    // absent is success; anything else operational means the secret may
+    // still exist — a caller about to report "removed" must know that
+    if (result.code !== 0 && result.code !== ITEM_NOT_FOUND_EXIT) {
+      throw new KeychainError(
+        result.code === -1
+          ? 'security timed out while deleting the item (keychain locked?)'
+          : `security delete-generic-password failed (exit ${result.code})`,
+      );
+    }
   },
 
   findAccount(service) {
@@ -169,7 +216,8 @@ export function createMemoryKeychain(
   return {
     available,
     read(service, account) {
-      return services.get(service)?.get(account) ?? null;
+      const value = services.get(service)?.get(account);
+      return value === undefined ? { kind: 'absent' } : { kind: 'found', value };
     },
     write(service, account, secret) {
       if (!available) {
