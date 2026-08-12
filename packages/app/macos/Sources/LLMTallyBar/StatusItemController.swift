@@ -68,7 +68,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            // preferredEdge is interpreted in the positioning view's own
+            // coordinate space, and NSStatusBarButton is flipped — there
+            // .minY is the visual TOP edge, which floated the popover
+            // above the menu bar with its head off-screen.
+            let bottomEdge: NSRectEdge = button.isFlipped ? .maxY : .minY
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: bottomEdge)
             popover.contentViewController?.view.window?.makeKey()
         }
     }
