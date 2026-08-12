@@ -12,6 +12,7 @@ struct BuilderView: View {
     @State private var items: [MenuItemDescriptor]
     @State private var selectedId: String?
     @State private var quota: [QuotaSnapshotDTO] = []
+    @State private var buckets: [ReportBucketDTO] = []
     private let store = DescriptorStore()
 
     init(onBack: @escaping () -> Void) {
@@ -57,22 +58,22 @@ struct BuilderView: View {
     }
 
     /// Fake menubar chrome so the item is judged in its real habitat.
+    /// The image comes from StatusComposer — the exact renderer the
+    /// real status button uses.
     private var preview: some View {
-        let rendering = renderStatusItems(descriptors: items, quota: quota, activeAccounts: [:])
+        let rendering = renderStatusSegments(
+            descriptors: items, quota: quota, buckets: buckets,
+            activeAccounts: [:], privacy: PrivacySetting.enabled)
         return HStack(spacing: 14) {
             Text("Finder").font(.system(size: 12, weight: .semibold)).opacity(0.6)
             Text("File").font(.system(size: 12)).opacity(0.5)
             Text("Edit").font(.system(size: 12)).opacity(0.5)
             Spacer()
-            HStack(spacing: 5) {
-                TallyGlyph()
-                Text(rendering.title)
-                    .font(.system(size: 11, design: .monospaced))
-            }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
-            .help(rendering.tooltip)
+            Image(nsImage: StatusComposer.compose(segments: rendering.segments))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
+                .help(rendering.tooltip)
         }
         .padding(.horizontal, 12)
         .frame(height: 30)
@@ -117,11 +118,20 @@ struct BuilderView: View {
 
     private var addMenu: some View {
         Menu("＋ Add item") {
-            Button("Quota %") { add(.quotaUsagePercentage) }
-            Button("Reset countdown") { add(.quotaReset) }
-            Button("Freshness") { add(.sourceFreshness) }
-            Button("Provider label") { add(.providerLabel) }
-            Button("Spacer") { add(.spacer) }
+            Section("Quota") {
+                Button("Quota %") { add(.quotaUsagePercentage) }
+                Button("Quota rails") { add(.quotaMiniBar) }
+                Button("Reset countdown") { add(.quotaReset) }
+            }
+            Section("History") {
+                Button("Token spark") { add(.consumedTokenHistory) }
+                Button("Actual cost spark") { add(.actualCostHistory) }
+            }
+            Section("Context") {
+                Button("Freshness") { add(.sourceFreshness) }
+                Button("Provider label") { add(.providerLabel) }
+                Button("Spacer") { add(.spacer) }
+            }
         }
         .menuStyle(.borderlessButton)
         .frame(maxWidth: .infinity)
@@ -145,11 +155,20 @@ struct BuilderView: View {
                             providerSection(item, index: index)
                             windowSection(item, index: index)
                         }
+                        if item.metric == .quotaMiniBar {
+                            pairSection(item, index: index)
+                        }
                         directionSection(item, index: index)
                         labelSection(item, index: index)
                     }
-                    if item.metric != .spacer {
+                    if isHistoryMetric(item.metric) {
+                        Text("Ledger history, last 7 daily buckets. Fewer than 2 real buckets renders the missing behaviour — never an invented trend.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if item.metric != .spacer && !isHistoryMetric(item.metric) {
                         identitySection(item, index: index)
+                    }
+                    if item.metric != .spacer {
                         missingSection(item, index: index)
                     }
                 }
@@ -220,6 +239,22 @@ struct BuilderView: View {
             .labelsHidden()
             if windowIds(of: provider).isEmpty {
                 Text("This source has not returned any windows yet.")
+                    .font(.caption2).foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func pairSection(_ item: MenuItemDescriptor, index: Int) -> some View {
+        let provider = pinProvider(item.binding) ?? firstProvider()
+        let pairSupported = supportsPairWindows(agent: provider, quota: quota)
+        return section("Window set") {
+            Toggle("5h + 7d pair", isOn: Binding(
+                get: { item.windowSet == "pair" },
+                set: { value in mutate { $0[index].windowSet = value ? "pair" : "single" } }))
+                .disabled(!pairSupported)
+            if !pairSupported {
+                // the pair never gets synthesized from a missing window
+                Text("\(agentDisplayName(provider)) does not return a 5h+7d pair right now. Daily/weekly-only stays a single rail.")
                     .font(.caption2).foregroundStyle(.orange)
             }
         }
@@ -327,11 +362,18 @@ struct BuilderView: View {
         mutate { current in
             let descriptor: MenuItemDescriptor
             switch metric {
-            case .quotaUsagePercentage, .quotaReset:
+            case .quotaUsagePercentage, .quotaReset, .quotaMiniBar:
                 let provider = firstProvider()
                 descriptor = MenuItemDescriptor(
-                    scope: .provider(provider), metric: metric, direction: "used",
-                    binding: .pin(provider: provider, nativeWindowId: firstWindowId(of: provider)))
+                    scope: .provider(provider), metric: metric,
+                    presentation: metric == .quotaMiniBar ? "mini_bar" : "text",
+                    direction: "used",
+                    binding: .pin(provider: provider, nativeWindowId: firstWindowId(of: provider)),
+                    windowSet: metric == .quotaMiniBar ? "single" : nil)
+            case .consumedTokenHistory, .actualCostHistory:
+                descriptor = MenuItemDescriptor(
+                    scope: .aggregate, metric: metric, presentation: "bar",
+                    timeRange: "last_7d", providerIdentityPresentation: nil)
             case .providerLabel:
                 descriptor = MenuItemDescriptor(scope: .provider(firstProvider()), metric: metric)
             default:
@@ -346,9 +388,13 @@ struct BuilderView: View {
     // MARK: capability catalog — only what the sources actually returned
 
     private func loadQuota() {
-        SidecarClient.shared.requestDecodable("quota", params: ["refresh": false], as: [QuotaSnapshotDTO].self) { result in
+        // read-only: the Builder never burns refresh budget
+        SidecarClient.shared.requestDecodable("overview", params: ["refresh": false], as: OverviewDTO.self) { result in
             DispatchQueue.main.async {
-                if case .success(let value) = result { quota = value }
+                if case .success(let value) = result {
+                    quota = value.quota
+                    buckets = value.report.buckets
+                }
             }
         }
     }
@@ -379,6 +425,10 @@ struct BuilderView: View {
 
     private func isQuotaMetric(_ metric: MenuItemMetric) -> Bool {
         metric == .quotaUsagePercentage || metric == .quotaReset || metric == .quotaMiniBar
+    }
+
+    private func isHistoryMetric(_ metric: MenuItemMetric) -> Bool {
+        metric == .consumedTokenHistory || metric == .actualCostHistory
     }
 
     private func isPin(_ binding: ItemBinding?) -> Bool {
@@ -421,22 +471,3 @@ struct BuilderView: View {
     }
 }
 
-/// Small tally mark for the preview chrome — same 4 strokes + slash.
-struct TallyGlyph: View {
-    var body: some View {
-        Canvas { context, size in
-            let scale = min(size.width, size.height) / 16
-            var path = Path()
-            for index in 0..<4 {
-                let x = (3.0 + CGFloat(index) * 3.4) * scale
-                path.move(to: CGPoint(x: x, y: 3 * scale))
-                path.addLine(to: CGPoint(x: x, y: 13 * scale))
-            }
-            path.move(to: CGPoint(x: 1.4 * scale, y: 12 * scale))
-            path.addLine(to: CGPoint(x: 14.6 * scale, y: 4 * scale))
-            context.stroke(path, with: .color(.primary),
-                           style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
-        }
-        .frame(width: 13, height: 13)
-    }
-}

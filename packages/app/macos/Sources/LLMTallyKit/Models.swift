@@ -62,6 +62,15 @@ public struct TokenTotalsDTO: Decodable {
     public let cacheWrite: Double
     public let cacheRead: Double
     public let reasoningTokens: Double
+
+    public init(inputTokens: Double, outputTokens: Double, cacheWrite: Double = 0,
+                cacheRead: Double = 0, reasoningTokens: Double = 0) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheWrite = cacheWrite
+        self.cacheRead = cacheRead
+        self.reasoningTokens = reasoningTokens
+    }
 }
 
 public struct CostResultDTO: Decodable {
@@ -69,6 +78,13 @@ public struct CostResultDTO: Decodable {
     public let pricedSubtotalUsd: Double
     public let pricedRows: Int
     public let unpricedRows: Int
+
+    public init(usd: Double?, pricedSubtotalUsd: Double, pricedRows: Int, unpricedRows: Int) {
+        self.usd = usd
+        self.pricedSubtotalUsd = pricedSubtotalUsd
+        self.pricedRows = pricedRows
+        self.unpricedRows = unpricedRows
+    }
 }
 
 public struct ReportBucketDTO: Decodable {
@@ -77,6 +93,15 @@ public struct ReportBucketDTO: Decodable {
     public let tokens: TokenTotalsDTO
     public let actual: CostResultDTO
     public let unpricedRows: Int
+
+    public init(key: String, rowCount: Int, tokens: TokenTotalsDTO,
+                actual: CostResultDTO, unpricedRows: Int = 0) {
+        self.key = key
+        self.rowCount = rowCount
+        self.tokens = tokens
+        self.actual = actual
+        self.unpricedRows = unpricedRows
+    }
 }
 
 public struct ReportSummaryDTO: Decodable {

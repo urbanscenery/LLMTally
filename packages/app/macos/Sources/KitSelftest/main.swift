@@ -241,6 +241,69 @@ do {
            "privacy notification uses the alias, not the provider name")
 }
 
+// MARK: graphical segments
+
+do {
+    let quota = [snapshot(agent: "claude-code", windows: [
+        QuotaWindowDTO(id: "five_hour", usedPercent: 33, resetsAtUtc: nil),
+        QuotaWindowDTO(id: "seven_day", usedPercent: 12, resetsAtUtc: nil),
+    ])]
+    func bucket(_ key: String, tokens: Double, usd: Double?) -> ReportBucketDTO {
+        ReportBucketDTO(key: key, rowCount: 1,
+                        tokens: TokenTotalsDTO(inputTokens: tokens, outputTokens: 0),
+                        actual: CostResultDTO(usd: usd, pricedSubtotalUsd: usd ?? 0,
+                                              pricedRows: usd == nil ? 0 : 1, unpricedRows: 0))
+    }
+    let buckets = [bucket("2026-08-12", tokens: 100, usd: 1.0),
+                   bucket("2026-08-13", tokens: 200, usd: 2.0)]
+
+    expect(supportsPairWindows(agent: "claude-code", quota: quota), "claude returns a 5h+7d pair")
+
+    // pair rails carry both native windows
+    let pair = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(
+            scope: .provider("claude-code"), metric: .quotaMiniBar, presentation: "mini_bar",
+            binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"), windowSet: "pair")],
+        quota: quota, buckets: buckets, activeAccounts: [:])
+    if case .rails(_, let bars) = pair.segments.first {
+        expectEqual(bars.map(\.windowId), ["five_hour", "seven_day"], "pair rails carry both native ids")
+    } else {
+        failures += 1
+        print("FAIL - pair mini bar did not render rails")
+    }
+
+    // a provider without the pair renders the missing behaviour, never a fake rail
+    let grokQuota = [snapshot(agent: "grok", windows: [
+        QuotaWindowDTO(id: "weekly", usedPercent: 26, resetsAtUtc: nil)])]
+    expect(!supportsPairWindows(agent: "grok", quota: grokQuota), "weekly-only grok has no pair")
+
+    // fewer than 2 buckets: placeholder, not a trend
+    let thin = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .consumedTokenHistory,
+                                         presentation: "bar", timeRange: "last_7d",
+                                         providerIdentityPresentation: nil)],
+        quota: quota, buckets: [buckets[0]], activeAccounts: [:])
+    expectEqual(thin.segments.first, StatusSegment.placeholder, "one bucket renders a placeholder, not a trend")
+
+    // cost spark disappears under privacy
+    let money = MenuItemDescriptor(scope: .aggregate, metric: .actualCostHistory,
+                                   presentation: "bar", timeRange: "last_7d",
+                                   providerIdentityPresentation: nil)
+    let visible = renderStatusSegments(descriptors: [money], quota: quota,
+                                       buckets: buckets, activeAccounts: [:])
+    if case .spark(let values, let isMoney)? = visible.segments.first {
+        expectEqual(values.count, 2, "cost spark renders the buckets")
+        expect(isMoney, "cost spark is marked as money")
+    } else {
+        failures += 1
+        print("FAIL - cost history did not render a spark")
+    }
+    let hidden = renderStatusSegments(descriptors: [money], quota: quota,
+                                      buckets: buckets, activeAccounts: [:], privacy: true)
+    expectEqual(hidden.segments.first, StatusSegment.placeholder, "privacy neutralizes the cost spark")
+    expect(hidden.tooltip.contains("Private metric hidden"), "privacy tooltip explains the hidden metric")
+}
+
 if failures > 0 {
     print("\(failures) failure(s)")
     exit(1)

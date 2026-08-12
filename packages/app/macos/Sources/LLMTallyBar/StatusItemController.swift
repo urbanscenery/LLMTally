@@ -23,6 +23,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var privacyObserver: NSObjectProtocol?
     // last-good inputs so a Builder edit re-renders without a new fetch
     private var lastQuota: [QuotaSnapshotDTO] = []
+    private var lastBuckets: [ReportBucketDTO] = []
     private var lastActive: [String: String?] = [:]
 
     override init() {
@@ -132,13 +133,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// into the button title. Failures keep the previous title —
     /// last-good stays visible, matching the popover's rule.
     private func refreshStatusText() {
-        var quota: [QuotaSnapshotDTO]?
+        var overview: OverviewDTO?
         var active: [String: String?]?
         let group = DispatchGroup()
 
         group.enter()
-        SidecarClient.shared.requestDecodable("quota", params: ["refresh": true], as: [QuotaSnapshotDTO].self) { result in
-            if case .success(let value) = result { quota = value }
+        SidecarClient.shared.requestDecodable("overview", params: ["refresh": true], as: OverviewDTO.self) { result in
+            if case .success(let value) = result { overview = value }
             group.leave()
         }
         group.enter()
@@ -148,28 +149,26 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         }
 
         group.notify(queue: .main) { [weak self] in
-            guard let self, let quota else { return }
-            self.lastQuota = quota
+            guard let self, let overview else { return }
+            self.lastQuota = overview.quota
+            self.lastBuckets = overview.report.buckets
             self.lastActive = active ?? self.lastActive
             self.renderFromCache()
-            NotificationManager.shared.process(quota: quota, privacy: PrivacySetting.enabled)
+            NotificationManager.shared.process(quota: overview.quota, privacy: PrivacySetting.enabled)
         }
     }
 
     private func renderFromCache() {
-        guard !lastQuota.isEmpty else { return }
-        apply(renderStatusItems(
+        guard !lastQuota.isEmpty, let button = statusItem.button else { return }
+        let rendering = renderStatusSegments(
             descriptors: descriptorStore.load(),
             quota: lastQuota,
+            buckets: lastBuckets,
             activeAccounts: lastActive,
-            privacy: PrivacySetting.enabled))
-    }
-
-    private func apply(_ rendering: StatusRendering) {
-        guard let button = statusItem.button else { return }
-        button.attributedTitle = NSAttributedString(
-            string: rendering.title.isEmpty ? "" : " \(rendering.title)",
-            attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)])
+            privacy: PrivacySetting.enabled)
+        button.image = StatusComposer.compose(segments: rendering.segments)
+        button.imagePosition = .imageOnly
+        button.attributedTitle = NSAttributedString(string: "")
         button.toolTip = rendering.tooltip
         button.setAccessibilityLabel("LLMTally. \(rendering.tooltip)")
     }

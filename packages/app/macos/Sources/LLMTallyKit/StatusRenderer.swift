@@ -197,6 +197,149 @@ private func identityText(_ descriptor: MenuItemDescriptor, code: String) -> Str
     }
 }
 
+// MARK: - segment renderer (graphical layer)
+
+/// One drawable unit of the status item. The app composes these into
+/// an image; the Builder preview composes the same segments — one
+/// renderer, two surfaces (03_design_spec §6.1).
+public enum StatusSegment: Equatable {
+    case text(String)
+    /// Vertical bottom-anchored rails — identity code + one bar per
+    /// actual native window (pair = 5h+7d).
+    case rails(identity: String, bars: [RailValue])
+    /// Ledger history sparkline; `money` obeys privacy.
+    case spark(values: [Double], money: Bool)
+    case placeholder
+}
+
+public struct RailValue: Equatable {
+    public let windowId: String
+    public let usedPercent: Double
+
+    public init(windowId: String, usedPercent: Double) {
+        self.windowId = windowId
+        self.usedPercent = usedPercent
+    }
+}
+
+/// Full catalog rendering: text metrics reuse the text renderer's
+/// rules; graphical metrics (rails, history sparks) become drawable
+/// segments fed by quota windows and ledger day buckets.
+public func renderStatusSegments(
+    descriptors: [MenuItemDescriptor],
+    quota: [QuotaSnapshotDTO],
+    buckets: [ReportBucketDTO],
+    activeAccounts: [String: String?],
+    privacy: Bool = false,
+    now: Date = Date()
+) -> (segments: [StatusSegment], tooltip: String) {
+    var segments: [StatusSegment] = []
+    var tooltip: [String] = []
+    let names = PrivacyNames(privacy: privacy, quota: quota)
+
+    var rowsByAgent: [String: AgentAttention] = [:]
+    for snapshot in quota {
+        let candidate = attention(for: snapshot, now: now)
+        let activeId = activeAccounts[snapshot.agent] ?? nil
+        if let existing = rowsByAgent[snapshot.agent] {
+            let existingIsActive = existing.snapshot.accountId != nil && existing.snapshot.accountId == activeId
+            let candidateIsActive = candidate.snapshot.accountId != nil && candidate.snapshot.accountId == activeId
+            if candidateIsActive || (!existingIsActive && candidate.rank < existing.rank) {
+                rowsByAgent[snapshot.agent] = candidate
+            }
+        } else {
+            rowsByAgent[snapshot.agent] = candidate
+        }
+    }
+    let rows = Array(rowsByAgent.values)
+    let recentBuckets = Array(buckets.suffix(7))
+
+    for descriptor in descriptors {
+        switch descriptor.metric {
+        case .quotaMiniBar:
+            guard let resolved = resolveQuotaBinding(descriptor, rows: rows),
+                  let bars = railBars(descriptor, item: resolved.0, resolvedWindow: resolved.1) else {
+                if descriptor.unavailableBehavior == "placeholder" { segments.append(.placeholder) }
+                tooltip.append("rails: window not returned by the source")
+                continue
+            }
+            let item = resolved.0
+            segments.append(.rails(
+                identity: identityText(descriptor, code: names.code(item.snapshot.agent)),
+                bars: bars))
+            for bar in bars {
+                tooltip.append(
+                    "\(names.display(item.snapshot.agent)) \(bar.windowId) used "
+                    + "\(Int(bar.usedPercent.rounded()))% · \(names.account(item.snapshot.account))")
+            }
+        case .consumedTokenHistory, .actualCostHistory:
+            let money = descriptor.metric == .actualCostHistory
+            if money && privacy {
+                // costs neutralize under privacy — no spark, no number
+                if descriptor.unavailableBehavior == "placeholder" { segments.append(.placeholder) }
+                tooltip.append("cost history: Private metric hidden")
+                continue
+            }
+            let values = recentBuckets.map { bucket in
+                money
+                    ? (bucket.actual.usd ?? bucket.actual.pricedSubtotalUsd)
+                    : bucket.tokens.inputTokens + bucket.tokens.outputTokens
+            }
+            if values.count < 2 {
+                // one sample is a snapshot, never a trend
+                if descriptor.unavailableBehavior == "placeholder" { segments.append(.placeholder) }
+                tooltip.append("history: not enough daily buckets")
+                continue
+            }
+            segments.append(.spark(values: values, money: money))
+            tooltip.append(money
+                ? "Actual cost, last \(values.count) days"
+                : "Consumed tokens, last \(values.count) days")
+        default:
+            // text metrics share the text renderer's exact rules
+            let rendering = renderStatusItems(
+                descriptors: [descriptor], quota: quota,
+                activeAccounts: activeAccounts, privacy: privacy, now: now)
+            if rendering.title != "tally" && !rendering.title.isEmpty {
+                segments.append(.text(rendering.title))
+            }
+            if !rendering.tooltip.isEmpty {
+                tooltip.append(rendering.tooltip)
+            }
+        }
+    }
+    return (segments, tooltip.joined(separator: "\n"))
+}
+
+/// Pair = the provider's 5h + 7d windows, only when both actually
+/// exist; a single rail otherwise. Missing windows are nil, never 0%.
+private func railBars(
+    _ descriptor: MenuItemDescriptor,
+    item: AgentAttention,
+    resolvedWindow: QuotaWindowDTO?
+) -> [RailValue]? {
+    let windows = item.snapshot.windows
+    if descriptor.windowSet == "pair" {
+        let fiveHour = windows.first { shortWindowLabel($0.id) == "5h" }
+        let sevenDay = windows.first { shortWindowLabel($0.id) == "7d" }
+        guard let fiveHour, let sevenDay else { return nil }
+        return [
+            RailValue(windowId: fiveHour.id, usedPercent: fiveHour.usedPercent),
+            RailValue(windowId: sevenDay.id, usedPercent: sevenDay.usedPercent),
+        ]
+    }
+    guard let window = resolvedWindow else { return nil }
+    return [RailValue(windowId: window.id, usedPercent: window.usedPercent)]
+}
+
+/// Whether the provider currently returns both a 5h and a 7d window —
+/// the Builder disables the pair option (with a reason) otherwise.
+public func supportsPairWindows(agent: String, quota: [QuotaSnapshotDTO]) -> Bool {
+    let windows = quota.filter { $0.agent == agent }.flatMap(\.windows)
+    return windows.contains { shortWindowLabel($0.id) == "5h" }
+        && windows.contains { shortWindowLabel($0.id) == "7d" }
+}
+
 /// Name resolution under privacy: real names normally, session-stable
 /// `P1/P2…` and `Account hidden` when privacy is on — in the visible
 /// text and in tooltips alike.
