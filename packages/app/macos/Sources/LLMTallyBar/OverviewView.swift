@@ -41,6 +41,13 @@ struct OverviewView: View {
             if let error = model.loadError {
                 Text(error).font(.caption2).foregroundStyle(.red).lineLimit(1)
             }
+            Button {
+                SettingsWindowController.shared.show()
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.plain)
+            .help("Settings (Builder lives there)")
         }
         .padding(.horizontal, 12)
         .frame(height: 40)
@@ -106,6 +113,8 @@ struct OverviewView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
+            Button("Open TUI") { OpenTUI.launch() }
+                .font(.caption)
             Button(model.loading ? "Refreshing…" : "Refresh") {
                 model.load(refresh: true)
             }

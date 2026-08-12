@@ -16,6 +16,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private let descriptorStore = DescriptorStore()
     private var refreshTimer: Timer?
+    private var descriptorObserver: NSObjectProtocol?
+    // last-good inputs so a Builder edit re-renders without a new fetch
+    private var lastQuota: [QuotaSnapshotDTO] = []
+    private var lastActive: [String: String?] = [:]
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -36,10 +40,18 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         ) { [weak self] _ in
             self?.refreshStatusText()
         }
+        descriptorObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyDescriptorsChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.renderFromCache()
+        }
     }
 
     deinit {
         refreshTimer?.invalidate()
+        if let descriptorObserver {
+            NotificationCenter.default.removeObserver(descriptorObserver)
+        }
     }
 
     @objc private func togglePopover() {
@@ -73,12 +85,18 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
         group.notify(queue: .main) { [weak self] in
             guard let self, let quota else { return }
-            let rendering = renderStatusItems(
-                descriptors: self.descriptorStore.load(),
-                quota: quota,
-                activeAccounts: active ?? [:])
-            self.apply(rendering)
+            self.lastQuota = quota
+            self.lastActive = active ?? self.lastActive
+            self.renderFromCache()
         }
+    }
+
+    private func renderFromCache() {
+        guard !lastQuota.isEmpty else { return }
+        apply(renderStatusItems(
+            descriptors: descriptorStore.load(),
+            quota: lastQuota,
+            activeAccounts: lastActive))
     }
 
     private func apply(_ rendering: StatusRendering) {
