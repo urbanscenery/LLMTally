@@ -36,6 +36,24 @@ export function defaultOpencodeAuthPath(home: string = homedir()): string {
   return join(base, 'opencode', 'auth.json');
 }
 
+/**
+ * The credential-bearing fields across OpenCode's auth shapes: api
+ * (`key`), oauth (`access`/`refresh`), wellknown (`key`/`token`). A
+ * usable provider must carry a real secret in one of these — not just a
+ * `type` discriminator or metadata like `accountId`/`enterpriseUrl` —
+ * otherwise it derives an identity and captures as an account whose
+ * credentials cannot be spent. The value is trimmed, so a whitespace-only
+ * secret does not qualify either.
+ */
+const OPENCODE_CREDENTIAL_FIELDS = ['key', 'access', 'refresh', 'token'] as const;
+
+function hasCredentialMaterial(entry: Record<string, unknown>): boolean {
+  return OPENCODE_CREDENTIAL_FIELDS.some((field) => {
+    const value = entry[field];
+    return typeof value === 'string' && value.trim().length > 0;
+  });
+}
+
 function parseProviders(text: string): Map<string, Record<string, unknown>> | null {
   let parsed: Record<string, unknown> | null;
   try {
@@ -49,7 +67,7 @@ function parseProviders(text: string): Map<string, Record<string, unknown>> | nu
   const providers = new Map<string, Record<string, unknown>>();
   for (const [provider, value] of Object.entries(parsed)) {
     const entry = asObject(value);
-    if (entry !== null) {
+    if (entry !== null && hasCredentialMaterial(entry)) {
       providers.set(provider, entry);
     }
   }

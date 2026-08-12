@@ -24,6 +24,15 @@ const MIGRATIONS: readonly Migration[] = [
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.id ?? 0;
 
+/**
+ * How many times to re-attempt `BEGIN IMMEDIATE` after the connection's
+ * busy_timeout expires. A slow migration on a peer process (e.g. a full
+ * table copy) can hold the write lock longer than one busy_timeout
+ * window, so a lost race waits out several windows before it becomes a
+ * hard error rather than failing the whole scan on first contention.
+ */
+const MIGRATION_LOCK_ATTEMPTS = 6;
+
 export class MigrationError extends Error {
   override readonly name = 'MigrationError';
 }
@@ -31,6 +40,9 @@ export class MigrationError extends Error {
 /** Applies pending migrations in order, each inside BEGIN IMMEDIATE / COMMIT. */
 export function migrate(db: Database): void {
   for (const migration of MIGRATIONS) {
+    // A cheap unlocked pre-check skips already-applied migrations without
+    // taking a write lock; applyMigration re-checks under the lock so the
+    // decision that actually mutates the schema is race-free.
     if (currentSchemaVersion(db) >= migration.id) {
       continue;
     }
@@ -61,8 +73,18 @@ export function currentSchemaVersion(db: Database): number {
 }
 
 function applyMigration(db: Database, migration: Migration): void {
-  db.exec('BEGIN IMMEDIATE;');
+  // BEGIN IMMEDIATE takes the write lock up front (waiting out a peer via
+  // busy_timeout), so the version we read next reflects whatever another
+  // process already committed. Without this in-lock re-check two workers
+  // that both passed the unlocked pre-check would each run the migration —
+  // the loser hitting "duplicate column" and leaving meta split from the
+  // real schema.
+  beginImmediate(db, migration);
   try {
+    if (currentSchemaVersion(db) >= migration.id) {
+      db.exec('COMMIT;');
+      return;
+    }
     db.exec(migration.sql);
     db.run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
       'schema_version',
@@ -70,8 +92,38 @@ function applyMigration(db: Database, migration: Migration): void {
     ]);
     db.exec('COMMIT;');
   } catch (error) {
-    db.exec('ROLLBACK;');
+    // Guard the rollback: if the failure was the COMMIT itself there may
+    // be no open transaction, and letting ROLLBACK throw would mask the
+    // original cause.
+    try {
+      db.exec('ROLLBACK;');
+    } catch {
+      // nothing to unwind
+    }
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(`migration ${migration.name} failed: ${cause}`);
+  }
+}
+
+/**
+ * Acquires the write lock, retrying on a busy database. busy_timeout is
+ * an upper bound on one wait, not a success guarantee, so a peer holding
+ * the lock past that window returns SQLITE_BUSY; only after several such
+ * windows do we give up. Each retry re-reads the version inside the lock,
+ * so a peer that finished in the meantime turns the retry into a no-op.
+ */
+function beginImmediate(db: Database, migration: Migration): void {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      db.exec('BEGIN IMMEDIATE;');
+      return;
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      if (attempt >= MIGRATION_LOCK_ATTEMPTS || !/lock|busy/i.test(cause)) {
+        throw new MigrationError(
+          `migration ${migration.name} could not acquire the write lock: ${cause}`,
+        );
+      }
+    }
   }
 }

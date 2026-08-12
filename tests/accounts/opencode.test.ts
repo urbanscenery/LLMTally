@@ -56,6 +56,33 @@ describe('opencode auth parsing', () => {
     expect(opencodeAccountId(a)).toMatch(/^cline-pass\.opencode-go\.[0-9a-f]{6}$/);
   });
 
+  test('a provider carrying no credential material is not a usable login', () => {
+    // Arrange — a shape discriminator without a secret authenticates
+    // nothing, so it must not derive an identity or count as a provider
+    const empty = JSON.stringify({ anthropic: {} });
+    const typeOnly = JSON.stringify({ anthropic: { type: 'api' } });
+    const emptyKey = JSON.stringify({ anthropic: { type: 'api', key: '' } });
+    const whitespaceKey = JSON.stringify({ anthropic: { type: 'api', key: '   ' } });
+    const oauthTypeOnly = JSON.stringify({ anthropic: { type: 'oauth' } });
+    const metadataOnly = JSON.stringify({
+      anthropic: { type: 'oauth', accountId: 'acct', enterpriseUrl: 'https://x' },
+    });
+    const mixed = JSON.stringify({ anthropic: {}, 'opencode-go': { type: 'api', key: 'sk-x' } });
+
+    // Act & Assert
+    expect(readOpencodeProviders(empty)).toEqual([]);
+    expect(readOpencodeProviders(typeOnly)).toEqual([]);
+    expect(readOpencodeProviders(emptyKey)).toEqual([]);
+    expect(readOpencodeProviders(whitespaceKey)).toEqual([]);
+    expect(readOpencodeProviders(oauthTypeOnly)).toEqual([]);
+    expect(readOpencodeProviders(metadataOnly)).toEqual([]);
+    // a real oauth secret still qualifies
+    expect(
+      readOpencodeProviders(JSON.stringify({ anthropic: { type: 'oauth', refresh: 'rt' } })),
+    ).toEqual(['anthropic']);
+    expect(readOpencodeProviders(mixed)).toEqual(['opencode-go']);
+  });
+
   test('an oauth entry fingerprints by refresh token, surviving access rotation', () => {
     // Arrange
     const before = JSON.stringify({
@@ -164,6 +191,11 @@ describe('captureOpencodeAccount', () => {
       /opencode auth login/,
     );
     writeFileSync(authPath, '{}');
+    expect(() => captureOpencodeAccount({ vault, authPath, nowUtc: NOW })).toThrow(
+      /opencode auth login/,
+    );
+    // a provider present but empty is still nothing to capture
+    writeFileSync(authPath, JSON.stringify({ anthropic: {} }));
     expect(() => captureOpencodeAccount({ vault, authPath, nowUtc: NOW })).toThrow(
       /opencode auth login/,
     );

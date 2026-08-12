@@ -171,8 +171,28 @@ describe('readVaultAccountsQuota', () => {
     expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBe(NOW);
   });
 
-  test('any non-429 4xx with a permanent marker quarantines, whatever the casing', async () => {
-    // Arrange — e.g. a proxy answering 422 with an uppercase marker
+  test.each([400, 401, 403])(
+    'a %i with a permanent marker quarantines the lineage, whatever the casing',
+    async (status) => {
+      // Arrange — only the token endpoint's own refusal statuses are permanent
+      const vault = makeVault([{ id: 'uuid-other', expiresAt: NOW_MS - 1000 }]);
+
+      // Act
+      await readVaultAccountsQuota({
+        vault,
+        activeContext: SIGNED_OUT,
+        nowUtc: NOW,
+        fetchFn: () =>
+          Promise.resolve(new Response('{"error":"INVALID_GRANT"}', { status })),
+      });
+
+      // Assert
+      expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBe(NOW);
+    },
+  );
+
+  test('a 429 is never permanent even when the body carries a grant marker', async () => {
+    // Arrange — throttling wins over the marker; 429 is not a grant verdict
     const vault = makeVault([{ id: 'uuid-other', expiresAt: NOW_MS - 1000 }]);
 
     // Act
@@ -181,12 +201,79 @@ describe('readVaultAccountsQuota', () => {
       activeContext: SIGNED_OUT,
       nowUtc: NOW,
       fetchFn: () =>
-        Promise.resolve(new Response('{"error":"INVALID_GRANT"}', { status: 422 })),
+        Promise.resolve(new Response('{"error":"invalid_grant"}', { status: 429 })),
+    });
+
+    // Assert
+    expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBeNull();
+  });
+
+  test('an invalid_client marker on an allowlisted status quarantines too', async () => {
+    // Arrange — the other permanent code, on a 401
+    const vault = makeVault([{ id: 'uuid-other', expiresAt: NOW_MS - 1000 }]);
+
+    // Act
+    await readVaultAccountsQuota({
+      vault,
+      activeContext: SIGNED_OUT,
+      nowUtc: NOW,
+      fetchFn: () =>
+        Promise.resolve(new Response('{"error":"invalid_client"}', { status: 401 })),
     });
 
     // Assert
     expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBe(NOW);
   });
+
+  test('a plain-text (non-JSON) marker still quarantines on an allowlisted status', async () => {
+    // Arrange — the classifier matches the raw body, JSON or not
+    const vault = makeVault([{ id: 'uuid-other', expiresAt: NOW_MS - 1000 }]);
+
+    // Act
+    await readVaultAccountsQuota({
+      vault,
+      activeContext: SIGNED_OUT,
+      nowUtc: NOW,
+      fetchFn: () =>
+        Promise.resolve(new Response('error=invalid_grant; lineage revoked', { status: 403 })),
+    });
+
+    // Assert
+    expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBe(NOW);
+  });
+
+  test.each([409, 418, 422, 500, 503])(
+    'a %i stays transient even with a permanent marker — a middlebox never quarantines a live lineage',
+    async (status) => {
+      // Arrange — a proxy/gateway/WAF speaking a non-grant status
+      const vault = makeVault([{ id: 'uuid-other', expiresAt: NOW_MS - 1000 }]);
+      let tokenCalls = 0;
+      const rejecting = () => {
+        tokenCalls += 1;
+        return Promise.resolve(new Response('{"error":"invalid_grant"}', { status }));
+      };
+
+      // Act — two polling cycles
+      const first = await readVaultAccountsQuota({
+        vault,
+        activeContext: SIGNED_OUT,
+        nowUtc: NOW,
+        fetchFn: rejecting,
+      });
+      const second = await readVaultAccountsQuota({
+        vault,
+        activeContext: SIGNED_OUT,
+        nowUtc: NOW + 180,
+        fetchFn: rejecting,
+      });
+
+      // Assert — retried each cycle, never marked dead
+      expect(tokenCalls).toBe(2);
+      expect(first[0]?.warnings[0]).toContain('will retry');
+      expect(second[0]?.warnings[0]).toContain('will retry');
+      expect(vault.get('uuid-other')?.refreshDeadAtUtc).toBeNull();
+    },
+  );
 
   test('a transient failure is retried next cycle, never quarantined', async () => {
     // Arrange — 5xx and a 4xx without a permanent marker

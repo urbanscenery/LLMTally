@@ -6,6 +6,8 @@ const BUSY_TIMEOUT_MS = 5000;
 const DIRECTORY_MODE = 0o700;
 const DATABASE_MODE = 0o600;
 const MEMORY_PATH = ':memory:';
+const WAL_SET_ATTEMPTS = 8;
+const WAL_RETRY_BACKOFF_MS = 40;
 
 export class DatabaseOpenError extends Error {
   override readonly name = 'DatabaseOpenError';
@@ -30,10 +32,53 @@ export function openDatabase(path: string): Database {
   const db = new Database(path, { create: true, strict: true });
   db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};`);
   if (!isMemory) {
-    db.exec('PRAGMA journal_mode = WAL;');
+    enableWal(db, path);
   }
   assertFts5Available(db, path);
   return db;
+}
+
+/**
+ * Switching a fresh rollback-journal file to WAL needs a brief exclusive
+ * moment, and `PRAGMA journal_mode` does not always honor busy_timeout —
+ * so when several processes open a brand-new ledger at once (first launch
+ * with a scanner, TUI, and quota pollers racing), the transition can
+ * either throw SQLITE_BUSY or, worse, silently return the unchanged mode
+ * without throwing. Both are retried with a short backoff until the
+ * PRAGMA actually reports `wal`; a caller must never proceed on a handle
+ * that is still in rollback-journal mode.
+ */
+function enableWal(db: Database, path: string): void {
+  for (let attempt = 1; ; attempt += 1) {
+    let mode: string | null = null;
+    try {
+      const row = db
+        .query<{ journal_mode: string }, []>('PRAGMA journal_mode = WAL;')
+        .get();
+      mode = row?.journal_mode ?? null;
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      if (attempt >= WAL_SET_ATTEMPTS || !/lock|busy/i.test(cause)) {
+        db.close();
+        throw new DatabaseOpenError(`could not enable WAL mode on ${path}: ${cause}`);
+      }
+      Bun.sleepSync(WAL_RETRY_BACKOFF_MS * attempt);
+      continue;
+    }
+    if (mode?.toLowerCase() === 'wal') {
+      return;
+    }
+    // the PRAGMA returned the old mode without throwing (a peer held a
+    // lock during the transition): retry rather than accept a non-WAL
+    // handle, whose rollback journal would defeat the concurrent access
+    if (attempt >= WAL_SET_ATTEMPTS) {
+      db.close();
+      throw new DatabaseOpenError(
+        `could not enable WAL mode on ${path}: still ${mode ?? 'unknown'} after ${attempt} attempts`,
+      );
+    }
+    Bun.sleepSync(WAL_RETRY_BACKOFF_MS * attempt);
+  }
 }
 
 export class LedgerUnavailableError extends Error {

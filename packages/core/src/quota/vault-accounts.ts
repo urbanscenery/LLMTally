@@ -31,9 +31,15 @@ const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 const REFRESH_TIMEOUT_MS = 10_000;
 
-/** Any client rejection can carry a permanent grant refusal — except a 429, which is throttling. */
+/**
+ * Only the statuses the OAuth token endpoint itself uses to refuse a
+ * grant — 400/401/403 — may quarantine a lineage. A 409/418/422 or any
+ * other 4xx is almost always a proxy, gateway, or WAF speaking, not the
+ * grant verdict; quarantining a live refresh token over a middlebox's
+ * odd status is the worse error (the code deliberately errs transient).
+ */
 function canCarryPermanentRejection(status: number): boolean {
-  return status >= 400 && status < 500 && status !== 429;
+  return status === 400 || status === 401 || status === 403;
 }
 
 interface StoredOauth {
