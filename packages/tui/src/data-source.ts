@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import { installDaemon, uninstallDaemon } from '@llmtally/core/daemon/service.ts';
+import { compactLedger } from '@llmtally/core/db/maintenance.ts';
 import { runDoctorChecks } from '@llmtally/core/doctor/checks.ts';
 import type { DoctorCheck } from '@llmtally/core/doctor/checks.ts';
 import { resolveActiveClaudeContext } from '@llmtally/core/accounts/active-claude.ts';
@@ -45,6 +46,8 @@ export interface TuiDataSource {
   loadPrompts(filter: { model: string | null; search: string | null }): Promise<PromptListResult>;
   installDaemon(): Promise<string>;
   uninstallDaemon(): Promise<string>;
+  /** VACUUMs the ledger under the scan lock; resolves to a size report. */
+  compactLedger(): Promise<string>;
   /** Account mutations; each resolves to a line to show the user. */
   addCurrentAccount(): Promise<string>;
   removeAccount(agent: string, accountId: string): Promise<string>;
@@ -215,6 +218,12 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
 
     async uninstallDaemon(): Promise<string> {
       return uninstallDaemon().message;
+    },
+
+    async compactLedger(): Promise<string> {
+      const result = compactLedger(options.databasePath);
+      const megabytes = (bytes: number): string => `${(bytes / 1048576).toFixed(1)} MB`;
+      return `compacted ${megabytes(result.beforeBytes)} → ${megabytes(result.afterBytes)} (reclaimed ${megabytes(result.reclaimedBytes)})`;
     },
 
     async loadReport(groupBy: ReportGroupBy): Promise<ReportSummary> {

@@ -12,7 +12,8 @@ export type ConfirmTopic =
   | 'account-remove'
   | 'account-switch'
   | 'daemon-install'
-  | 'daemon-uninstall';
+  | 'daemon-uninstall'
+  | 'ledger-compact';
 
 export interface PickerOption {
   readonly id: string;

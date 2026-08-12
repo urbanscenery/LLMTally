@@ -356,6 +356,21 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       });
       return true;
     }
+    if (key.name === 'V') {
+      controller.setOverlay({
+        kind: 'confirm',
+        topic: 'ledger-compact',
+        title: 'Compact ledger',
+        message:
+          'Rewrites the ledger to return the space freed by retention\n' +
+          'and deletes. Blocks collection while it runs (seconds for a\n' +
+          'few hundred MB) and needs about the current file size free.\n' +
+          '\n' +
+          'Compact the ledger now?',
+        payload: '',
+      });
+      return true;
+    }
     return false;
   }
 
@@ -579,6 +594,10 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
     }
     if (topic === 'daemon-uninstall') {
       await runAction('Background collection', () => options.dataSource.uninstallDaemon(), 'doctor');
+      return;
+    }
+    if (topic === 'ledger-compact') {
+      await runAction('Compact ledger', () => options.dataSource.compactLedger(), 'doctor');
       return;
     }
     const [agent, accountId] = splitAccountPayload(payload);

@@ -105,6 +105,9 @@ function makeFakes(options: FakeDataSourceOptions = {}) {
     async uninstallDaemon(): Promise<string> {
       return 'uninstalled';
     },
+    async compactLedger(): Promise<string> {
+      return 'compacted';
+    },
     async loadReport(groupBy: ReportGroupBy): Promise<ReportSummary> {
       calls.report.push(groupBy);
       return reportSummary(groupBy);

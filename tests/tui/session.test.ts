@@ -87,6 +87,9 @@ function makeDataSource(scan: () => Promise<ScanSummary>): TuiDataSource {
     async uninstallDaemon() {
       return 'uninstalled';
     },
+    async compactLedger() {
+      return 'compacted';
+    },
   };
 }
 
@@ -557,5 +560,48 @@ describe('account action routing', () => {
     // Assert — both actions carried (agent, accountId), codex included
     expect(switches).toEqual([['codex', 'uuid-x']]);
     expect(removals).toEqual([['codex', 'uuid-x']]);
+  });
+});
+
+describe('ledger compaction', () => {
+  test('V on the Doctor tab confirms, compacts, and reports sizes', async () => {
+    // Arrange
+    const screen = new FakeScreen();
+    let compactions = 0;
+    const source = makeDataSource(async () => scanSummary());
+    const session = await createTuiSession({
+      createScreen: async () => screen,
+      dataSource: {
+        ...source,
+        compactLedger: async () => {
+          compactions += 1;
+          return 'compacted 231.0 MB → 180.0 MB (reclaimed 51.0 MB)';
+        },
+      },
+      chartMode: 'block',
+      themeName: null,
+      refreshSeconds: null,
+      monoForced: true,
+      firstRun: false,
+      preferences: preferences(),
+    });
+
+    // Act — the confirm gate comes first: VACUUM blocks collection
+    const done = session.run();
+    await settle();
+    screen.pressKey('6');
+    screen.pressKey('V');
+    await settle();
+    const beforeConfirm = compactions;
+    screen.pressKey('y');
+    await settle();
+    const frame = screen.lastFrame().join('\n');
+    session.stop();
+    await done;
+
+    // Assert
+    expect(beforeConfirm).toBe(0);
+    expect(compactions).toBe(1);
+    expect(frame).toContain('reclaimed 51.0 MB');
   });
 });

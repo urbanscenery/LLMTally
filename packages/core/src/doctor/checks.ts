@@ -5,6 +5,7 @@ import { basename, join } from 'node:path';
 import { AccountVault, defaultVaultDir, vaultPaths } from '../accounts/vault.ts';
 
 import { LedgerUnavailableError, openReadOnlyDatabase } from '../db/connection.ts';
+import { ledgerSpaceReport } from '../db/maintenance.ts';
 import { LATEST_SCHEMA_VERSION } from '../db/migrate.ts';
 import { defaultAntigravityStoreDir, listAntigravityAccounts } from '../quota/antigravity.ts';
 import { defaultGrokCredentials, isGrokTokenExpired } from '../quota/grok.ts';
@@ -41,6 +42,7 @@ export function runDoctorChecks(options: DoctorOptions): readonly DoctorCheck[] 
   });
 
   checks.push(...ledgerChecks(options.databasePath));
+  checks.push(ledgerSpaceCheck(options.databasePath));
   checks.push(...permissionChecks(options.databasePath));
   checks.push(lockCheck(options.databasePath));
   checks.push(...claudeChecks(home));
@@ -63,6 +65,45 @@ export function runDoctorChecks(options: DoctorOptions): readonly DoctorCheck[] 
   checks.push(...vaultChecks(home));
   checks.push(daemonCheck(home));
   return checks;
+}
+
+/** Space thresholds for suggesting a compact (both must be exceeded). */
+const RECLAIMABLE_WARN_BYTES = 50 * 1024 * 1024;
+const RECLAIMABLE_WARN_RATIO = 0.2;
+
+function formatMb(bytes: number): string {
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+/**
+ * How big the ledger is and how much of it a compact would give back.
+ * Deletes and the prompt-retention pass free pages that SQLite reuses
+ * but never returns to the filesystem (D-07); past a threshold the user
+ * is pointed at the V action instead of us vacuuming behind their back.
+ */
+function ledgerSpaceCheck(databasePath: string): DoctorCheck {
+  let report: ReturnType<typeof ledgerSpaceReport>;
+  try {
+    report = ledgerSpaceReport(databasePath);
+  } catch {
+    return { id: 'ledger.space', status: 'skip', message: 'ledger space is unreadable' };
+  }
+  if (report === null) {
+    return { id: 'ledger.space', status: 'skip', message: 'no ledger yet' };
+  }
+  const detail = `ledger ${formatMb(report.fileBytes)} (reclaimable ${formatMb(report.reclaimableBytes)}, wal ${formatMb(report.walBytes)})`;
+  const shouldCompact =
+    report.reclaimableBytes > RECLAIMABLE_WARN_BYTES &&
+    report.reclaimableBytes > report.fileBytes * RECLAIMABLE_WARN_RATIO;
+  if (shouldCompact) {
+    return {
+      id: 'ledger.space',
+      status: 'warn',
+      message: detail,
+      remediation: 'press V to compact the ledger and return the space',
+    };
+  }
+  return { id: 'ledger.space', status: 'pass', message: detail };
 }
 
 /**
