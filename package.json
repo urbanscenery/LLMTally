@@ -18,11 +18,11 @@
     "claude-code",
     "codex",
     "opencode",
-    "cli",
+    "tui",
     "menubar"
   ],
   "bin": {
-    "llmtally": "packages/tui/src/main.ts"
+    "llmtally": "bin/llmtally.cjs"
   },
   "engines": {
     "bun": ">=1.3.0"
@@ -35,6 +35,7 @@
     "install:local": "bun scripts/install-local.ts"
   },
   "files": [
+    "bin",
     "packages",
     "tsconfig.json"
   ],

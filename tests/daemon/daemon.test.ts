@@ -14,7 +14,7 @@ describe('renderDaemonPlist', () => {
     // Act
     const plist = renderDaemonPlist({
       bunPath: '/opt/bun',
-      mainPath: '/apps/<llm>&"tally"/main.ts',
+      workerPath: '/apps/<llm>&"tally"/scan-worker.ts',
       ledgerPath: '/data/ledger.db',
       logDirectory: '/logs',
       intervalSeconds: 1800,
@@ -28,6 +28,22 @@ describe('renderDaemonPlist', () => {
     expect(plist).not.toContain('sh -c');
     expect(plist).toContain('<key>Umask</key>');
     expect(plist).not.toContain('RunAtLoad');
+  });
+
+  test('the program arguments run the headless worker, not a TUI subcommand', () => {
+    // llmtally has no subcommands: a plist that passed `scan` to the
+    // TUI entry made the daemon exit 2 on every tick (audit R-03)
+    const plist = renderDaemonPlist({
+      bunPath: '/opt/bun',
+      workerPath: '/install/packages/tui/src/scan-worker.ts',
+      ledgerPath: '/data/ledger.db',
+      logDirectory: '/logs',
+      intervalSeconds: 3600,
+    });
+
+    expect(plist).toContain('<string>/install/packages/tui/src/scan-worker.ts</string>');
+    expect(plist).not.toContain('<string>scan</string>');
+    expect(plist).not.toContain('main.ts');
   });
 });
 

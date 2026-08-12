@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('source tree hygiene (review regression)', () => {
@@ -48,13 +48,23 @@ describe('publishable package completeness', () => {
     bin: Record<string, string>;
   };
 
-  test('the files list ships the path map the entry point depends on', () => {
-    // Arrange — the entry really does use a cross-package specifier
-    const entry = readFileSync(join(root, manifest.bin.llmtally ?? ''), 'utf8');
+  test('the files list ships the launcher, entry point, and its path map', () => {
+    // Arrange — the bin is a node launcher that hands over to the real
+    // TS entry, which uses cross-package specifiers
+    const launcher = readFileSync(join(root, manifest.bin.llmtally ?? ''), 'utf8');
+    const entry = readFileSync(join(root, 'packages', 'tui', 'src', 'main.ts'), 'utf8');
 
     // Assert
+    expect(launcher).toContain(`join(__dirname, '..', 'packages', 'tui', 'src', 'main.ts')`);
     expect(entry).toContain('@llmtally/');
+    expect(manifest.files).toContain('bin');
     expect(manifest.files).toContain('tsconfig.json');
+  });
+
+  test('the daemon worker the plist points at ships next to the entry point', () => {
+    // Assert — an installed daemon crash-loops hourly if this is missing
+    expect(existsSync(join(root, 'packages', 'tui', 'src', 'scan-worker.ts'))).toBe(true);
+    expect(manifest.files).toContain('packages');
   });
 
   test('every packaged path map target is inside the packaged files', () => {

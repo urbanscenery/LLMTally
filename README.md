@@ -3,31 +3,38 @@
 > Tally up your LLM usage — 로컬 AI 코딩 에이전트들의 사용량을 한곳에서 세고, 기록하고, 지켜본다.
 
 LLMTally는 로컬에서 사용하는 AI 코딩 에이전트(Claude Code, Codex CLI, OpenCode, Cline, Antigravity, Grok Build)의
-세션 로그를 스캔하여 **per-prompt 사용 원장**을 만들고 **잔여 사용량과 멀티 계정을 macOS 메뉴바에서 모니터링**하는 도구입니다.
+세션 로그를 스캔하여 **per-prompt 사용 원장**을 만들고, **잔여 사용량과 멀티 계정을 터미널 대시보드(TUI)에서
+모니터링**하는 도구입니다. (macOS 메뉴바 앱은 로드맵에 있으며 아직 구현되지 않았습니다.)
 
-## 핵심 기능 (계획)
+## 핵심 기능
 
 - **Per-prompt 원장**: 프롬프트 원문, 토큰(input/output/cache read·write/reasoning), 모델명, effort,
   provider, 비용, 사용 시각(로컬 타임존)을 프롬프트 단위로 기록·검색
-- **메뉴바 모니터링**: 구독 잔여 사용량(쿼터) 대시보드, 모델별 멀티 계정 관리
-- **CLI**: 모델별·날짜별·시간별 집계 리포트, 프롬프트 전문 검색
+- **TUI 대시보드**: 구독 잔여 사용량(쿼터) 게이지, 멀티 계정 볼트·전환, 모델별·날짜별 집계
+  리포트와 프롬프트 전문 검색 — 전부 탭 안에 있습니다
 - **비침습 수집**: 각 에이전트가 이미 남기는 로컬 로그만 읽음 — 에이전트 쪽 설정 변경 불필요
 
 ## 아키텍처
 
 ```
 [에이전트 로컬 로그 6종] --(최초 풀스캔 + launchd 주기 증분 수집)--> [SQLite 원장]
-                                                                     ├── CLI (조회 직전 증분 수집)
-                                                                     └── macOS 메뉴바 앱
+                                                                     ├── TUI (조회 직전 증분 수집)
+                                                                     └── macOS 메뉴바 앱 (예정)
 ```
 
 - 비용은 저장하지 않고 조회 시점에 가격표(LiteLLM/models.dev/OpenRouter)를 곱해 계산
   (원본 로그에 비용이 기록되는 OpenCode/Cline은 예외)
 - 증분 수집은 파일 offset 커서 + 자연키 UNIQUE로 멱등하게 동작
 
-## 사용법
+## 설치와 사용법
 
-[Bun](https://bun.sh) 런타임이 필요합니다 (>= 1.3).
+[Bun](https://bun.sh) 런타임이 **필수**입니다 (>= 1.3) — 코어가 `bun:sqlite` 위에서 동작하므로
+node로는 실행되지 않습니다. npm으로 설치해도 실행에는 Bun이 필요하며, Bun이 없으면
+설치 안내를 출력하고 종료합니다.
+
+```bash
+bun install -g llmtally     # 또는 npm install -g llmtally (실행엔 Bun 필요)
+```
 
 ```bash
 llmtally                          # 대시보드 진입 (그 자체가 전부입니다)
@@ -132,8 +139,11 @@ projects·settings·히스토리는 그대로 유지됩니다.
   Codex 로컬 관측치, Antigravity 라이브/캐시 (`live` / `cached` / `stored` / `from local logs` 표기)
 - TTY가 아닌 환경(파이프/CI)에서는 실행을 거부합니다 — 현재 표면은 TUI 하나뿐이라
   헤드리스 조회용 서브커맨드는 없습니다
-- TUI는 `@opentui/core` 하나를 런타임 의존성으로 사용합니다 (그 외 의존성 0 정책 유지,
-  `bun build --compile` 단일 바이너리 지원)
+- TUI는 `@opentui/core` 하나를 런타임 의존성으로 사용합니다 (그 외 의존성 0 정책 유지).
+  `bun build --compile` 호환은 `verify:compile`로 검증하고 있으며, 단일 바이너리 **배포**는
+  CI 구축 후 예정입니다
+- 백그라운드 수집은 Doctor 탭의 `D`로 설치하는 launchd 에이전트가 담당하며, TUI가 아니라
+  전용 headless 워커(`scan-worker.ts`)를 주기 실행합니다
 
 ### 비용 표기의 의미
 

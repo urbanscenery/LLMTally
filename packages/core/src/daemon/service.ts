@@ -81,12 +81,19 @@ export function installDaemon(options: DaemonOptions = {}): DaemonResult {
         'refusing to install from a development checkout — the daemon would break if the checkout moves',
     };
   }
+  if (!existsSync(executable.workerPath)) {
+    // a plist pointing at a missing file would just crash-loop hourly
+    return {
+      ok: false,
+      message: `scan worker not found at ${executable.workerPath} — reinstall llmtally`,
+    };
+  }
 
   const logDirectory = defaultLogDirectory(home);
   mkdirSync(logDirectory, { recursive: true, mode: 0o700 });
   const plist = renderDaemonPlist({
     bunPath: executable.bunPath,
-    mainPath: executable.mainPath,
+    workerPath: executable.workerPath,
     ledgerPath: options.ledgerPath ?? defaultDatabasePath(home),
     logDirectory,
     intervalSeconds,
