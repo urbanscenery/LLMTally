@@ -18,6 +18,7 @@
 import { readFileSync } from 'node:fs';
 
 import { resolveActiveClaudeContext } from '../accounts/active-claude.ts';
+import { syncActiveCodexCredential } from '../accounts/codex-live-sync.ts';
 import { syncActiveClaudeCredential } from '../accounts/live-sync.ts';
 import type { ActiveClaudeContext } from '../accounts/active-claude.ts';
 import { createActiveCredentialStore } from '../accounts/credentials.ts';
@@ -45,7 +46,8 @@ import {
   listAntigravityAccounts,
   readAntigravityQuota,
 } from './antigravity.ts';
-import { fetchCodexLiveQuota } from './codex-live.ts';
+import { defaultCodexAuthPath, fetchCodexLiveQuota, readCodexAuth } from './codex-live.ts';
+import { readVaultCodexQuota } from './codex-vault.ts';
 import {
   defaultClaudeTokenReader,
   fetchClaudeQuota,
@@ -98,6 +100,8 @@ export async function loadAllQuota(options: {
   readonly opencodeAuthPath?: string;
   /** Injected in tests; production reads ~/.grok/auth.json. */
   readonly grokAuthPath?: string;
+  /** Injected in tests; production reads ~/.codex/auth.json. */
+  readonly codexAuthPath?: string;
 } = {}): Promise<QuotaSnapshot[]> {
   const agent = options.agent ?? null;
   const now = options.nowUtc ?? Math.floor(Date.now() / 1000);
@@ -119,6 +123,20 @@ export async function loadAllQuota(options: {
       });
     } catch {
       // self-healing is opportunistic; quota display must not depend on it
+    }
+  }
+  // The same hazard on the codex side, and free of charge: auth.json
+  // names its own owner, so mirroring a rotation needs no network at
+  // all. Runs even in read-only mode for that reason.
+  if (agent === null || agent === 'codex') {
+    try {
+      syncActiveCodexCredential({
+        vault,
+        authPath: options.codexAuthPath ?? defaultCodexAuthPath(),
+        nowUtc: now,
+      });
+    } catch {
+      // opportunistic, exactly like the Claude mirror above
     }
   }
 
@@ -212,6 +230,13 @@ export async function loadAllQuota(options: {
     }
     if (agent === null || agent === 'codex') {
       snapshots.push(codexSnapshot(codexLive, now));
+      try {
+        snapshots.push(
+          ...(await loadStoredCodexQuota(vault, options.codexAuthPath, now, options.allowRefresh)),
+        );
+      } catch {
+        // a vault problem must not take the live reading down with it
+      }
     }
     if (antigravity !== null) {
       snapshots.push(...antigravity);
@@ -611,6 +636,60 @@ async function throttledCodexLive(nowUtc: number): Promise<QuotaSnapshot | null>
     return live;
   });
   return unavailable ? null : snapshot;
+}
+
+/**
+ * One reading per codex account the vault holds that is not the one
+ * auth.json currently names. Each is throttled under its own key so a
+ * backoff on one account never starves the others, and each failure is
+ * attributed to the entry it belongs to rather than borrowing another
+ * account's numbers.
+ */
+async function loadStoredCodexQuota(
+  vault: AccountVault,
+  authPath: string | undefined,
+  nowUtc: number,
+  allowRefresh: boolean | undefined,
+): Promise<QuotaSnapshot[]> {
+  const activeAccountId = readCodexAuth(authPath ?? defaultCodexAuthPath())?.accountId ?? null;
+  const targets = vault
+    .list()
+    .filter((entry) => entry.agent === 'codex' && entry.accountId !== activeAccountId);
+  return Promise.all(
+    targets.map(async (entry) =>
+      throttledQuota(
+        {
+          key: `codex|ua=${LLMTALLY_USER_AGENT}|acct=${entry.accountId}`,
+          agent: 'codex',
+          accountId: entry.accountId,
+          account: entry.email ?? entry.accountId,
+        },
+        nowUtc,
+        async () => {
+          const [snapshot] = await readVaultCodexQuota({
+            vault,
+            activeAccountId,
+            nowUtc,
+            only: entry.accountId,
+            allowRefresh,
+          });
+          return (
+            snapshot ??
+            makeQuotaSnapshot({
+              agent: 'codex',
+              accountId: entry.accountId,
+              account: entry.email ?? entry.accountId,
+              source: 'vendor_api',
+              observedAtUtc: nowUtc,
+              windows: [],
+              failure: { kind: 'unavailable', failedAtUtc: nowUtc, retryAtUtc: null },
+              warnings: ['stored account produced no reading'],
+            })
+          );
+        },
+      ),
+    ),
+  );
 }
 
 /**

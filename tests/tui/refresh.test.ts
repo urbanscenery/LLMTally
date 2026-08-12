@@ -87,6 +87,9 @@ function makeFakes(options: FakeDataSourceOptions = {}) {
     async switchToAccount(): Promise<string> {
       return 'switched';
     },
+    async detachCodexAccount(): Promise<string> {
+      return 'detached';
+    },
     async loadDoctorChecks(): Promise<readonly []> {
       return [];
     },

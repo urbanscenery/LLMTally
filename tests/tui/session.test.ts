@@ -72,6 +72,9 @@ function makeDataSource(scan: () => Promise<ScanSummary>): TuiDataSource {
     async switchToAccount() {
       return 'switched';
     },
+    async detachCodexAccount() {
+      return 'detached';
+    },
     invalidateQuotaCache(): void {
       // nothing cached in tests
     },

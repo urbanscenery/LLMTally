@@ -61,21 +61,34 @@ function discoverClaudeActive(configPath: string): AccountProfile[] {
   ];
 }
 
-/** Base64url JWT payload decode — no verification, read-only email extraction. */
-export function jwtEmail(idToken: string | null): string | null {
-  if (idToken === null) {
+/** Base64url JWT payload decode — no verification, read-only. */
+function jwtPayload(token: string | null): Record<string, unknown> | null {
+  if (token === null) {
     return null;
   }
-  const payload = idToken.split('.')[1];
+  const payload = token.split('.')[1];
   if (payload === undefined) {
     return null;
   }
   try {
-    const decoded = Buffer.from(payload, 'base64url').toString('utf8');
-    return asString(asObject(JSON.parse(decoded))?.email ?? null);
+    return asObject(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')));
   } catch {
     return null;
   }
+}
+
+export function jwtEmail(idToken: string | null): string | null {
+  return asString(jwtPayload(idToken)?.email ?? null);
+}
+
+/**
+ * `exp` as epoch seconds. The only expiry signal codex credentials carry:
+ * auth.json stores no `expires_at` and the refresh response has no
+ * `expires_in`, so the token has to say when it dies itself.
+ */
+export function jwtExpiryUtc(token: string | null): number | null {
+  const exp = jwtPayload(token)?.exp;
+  return typeof exp === 'number' && Number.isFinite(exp) ? Math.floor(exp) : null;
 }
 
 function discoverCodex(authPath: string): AccountProfile[] {

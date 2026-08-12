@@ -188,7 +188,16 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
   });
 
   function notice(title: string, message: string, busy: boolean): void {
-    controller.setOverlay({ kind: 'notice', title, message: sanitizeTerminalLine(message), busy });
+    controller.setOverlay({
+      kind: 'notice',
+      title,
+      // Sanitize per line, not over the whole blob: a newline is a
+      // control character, so sanitizing the join would weld a result
+      // and its warnings into one unreadable run — which is exactly
+      // what a multi-warning account switch produces.
+      message: message.split('\n').map(sanitizeTerminalLine).join('\n'),
+      busy,
+    });
   }
 
   function openPicker(topic: PickerTopic): void {
@@ -264,11 +273,34 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
           '\n' +
           'To add a different account, sign in with it first:\n' +
           '  · claude-code: run "claude" and use /login\n' +
-          '  · codex: run "codex login"\n' +
+          '  · codex: press d here FIRST, then run "codex login"\n' +
           '  · opencode: run "opencode auth login"\n' +
           'then come back here and press n.\n' +
           '\n' +
+          'Codex is the odd one out: "codex login" revokes whatever login\n' +
+          'auth.json still holds, which kills the account you just stored.\n' +
+          'Pressing d first stores it and moves the file out of the way, so\n' +
+          'there is nothing left to revoke.\n' +
+          '\n' +
           'Store the current logins?',
+        payload: '',
+      });
+      return true;
+    }
+    if (key.name === 'd') {
+      controller.setOverlay({
+        kind: 'confirm',
+        topic: 'account-detach',
+        title: 'Detach codex login',
+        message:
+          'Stores the codex login that is active now, then signs codex out\n' +
+          'locally. Nothing is revoked — the login stays usable and you can\n' +
+          'bring it back here with s.\n' +
+          '\n' +
+          'Do this before "codex login" when adding a second codex account:\n' +
+          'that command revokes whatever auth.json still holds.\n' +
+          '\n' +
+          'Detach the current codex login?',
         payload: '',
       });
       return true;
@@ -534,6 +566,10 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
     }
     if (topic === 'account-switch') {
       await runAction('Switch account', () => options.dataSource.switchToAccount(payload));
+      return;
+    }
+    if (topic === 'account-detach') {
+      await runAction('Detach codex login', () => options.dataSource.detachCodexAccount());
       return;
     }
     if (topic === 'daemon-install') {

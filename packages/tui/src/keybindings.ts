@@ -161,13 +161,22 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
     priority: 28,
   },
   {
+    matches: [{ name: 'd' }],
+    action: 'noop',
+    scope: ['accounts'],
+    group: 'Data',
+    label: 'detach the codex login (store it, then sign out without revoking)',
+    keysLabel: 'd',
+    priority: 27,
+  },
+  {
     matches: [{ name: 'x' }],
     action: 'noop',
     scope: ['accounts'],
     group: 'Data',
     label: 'forget the selected account',
     keysLabel: 'x',
-    priority: 27,
+    priority: 26,
   },
   {
     matches: [{ name: 'escape' }],

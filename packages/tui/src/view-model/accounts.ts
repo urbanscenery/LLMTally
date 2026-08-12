@@ -208,6 +208,19 @@ function sameAccount(label: string | null, entry: VaultEntry): boolean {
 }
 
 /**
+ * A row with no vault entry cannot be switched to. For the agents that
+ * keep their whole login in one file, that is also why a second account
+ * appears to vanish on re-login: `codex login` (or opencode's auth
+ * write) overwrites the only copy, and nothing preserved the previous
+ * one. Saying so on the row is what turns a dead end into an action.
+ */
+function unstoredNote(agent: string): string | null {
+  return SWITCHABLE_AGENTS.includes(agent)
+    ? 'not stored yet — press n to keep this login for switching'
+    : null;
+}
+
+/**
  * Quota readings first (they carry the most information), then stored
  * accounts we have no reading for, then anything discovery found that
  * neither covered — so nothing the user has is silently missing.
@@ -259,9 +272,11 @@ export function toAccountsTabViewModel(input: AccountsInput): AccountsTabViewMod
       refreshDead: entry !== undefined && entry.refreshDeadAtUtc !== null,
       quota: provider,
       note:
-        entry === undefined && matches.length > 1
-          ? `${matches.length} stored accounts share this address — select the one you want and press s`
-          : null,
+        entry !== undefined
+          ? null
+          : matches.length > 1
+            ? `${matches.length} stored accounts share this address — select the one you want and press s`
+            : unstoredNote(provider.agent),
     });
   }
 
@@ -290,6 +305,7 @@ export function toAccountsTabViewModel(input: AccountsInput): AccountsTabViewMod
       continue;
     }
     covered.add(`${agent} ${label}`);
+    const storable = unstoredNote(agent);
     rows.push({
       agent,
       label,
@@ -297,7 +313,10 @@ export function toAccountsTabViewModel(input: AccountsInput): AccountsTabViewMod
       isActive: false,
       refreshDead: false,
       quota: null,
-      note: `discovered via ${sanitizeTerminalLine(profile.discoveredVia)}`,
+      note:
+        storable === null
+          ? `discovered via ${sanitizeTerminalLine(profile.discoveredVia)}`
+          : `${storable} (discovered via ${sanitizeTerminalLine(profile.discoveredVia)})`,
     });
   }
 

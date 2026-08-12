@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
   captureCodexAccount,
   codexCredentialFingerprint,
+  detachCodexLogin,
   switchCodexAccount,
 } from '@llmtally/core/accounts/codex.ts';
 import { createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
@@ -98,6 +99,46 @@ describe('captureCodexAccount', () => {
     // ...and a file without usable tokens
     writeFileSync(authPath, JSON.stringify({ tokens: {} }));
     expect(() => captureCodexAccount({ vault, authPath, nowUtc: NOW })).toThrow(/codex login/);
+  });
+});
+
+describe('detachCodexLogin', () => {
+  test('stores the live login and removes auth.json', () => {
+    // Arrange
+    const { authPath, vault } = harness();
+    writeFileSync(authPath, authJson('acc-1', 'rt-1'));
+
+    // Act
+    const result = detachCodexLogin({ vault, authPath, nowUtc: NOW });
+
+    // Assert — preserved in the vault, gone from the file
+    expect(result.entry.accountId).toBe('acc-1');
+    expect(vault.loadCredentials('acc-1')).toBe(authJson('acc-1', 'rt-1'));
+    expect(existsSync(authPath)).toBe(false);
+  });
+
+  test('refuses when there is no usable login to preserve', () => {
+    // Arrange — an API-key auth.json carries no oauth login
+    const { authPath, vault } = harness();
+    writeFileSync(authPath, JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'sk-test' }));
+
+    // Act & Assert — the file must survive a refusal
+    expect(() => detachCodexLogin({ vault, authPath, nowUtc: NOW })).toThrow(/codex login/);
+    expect(existsSync(authPath)).toBe(true);
+  });
+
+  test('a detached login can still be switched back in', async () => {
+    // Arrange
+    const { authPath, vault } = harness();
+    writeFileSync(authPath, authJson('acc-1', 'rt-1'));
+    detachCodexLogin({ vault, authPath, nowUtc: NOW });
+
+    // Act
+    const result = await switchCodexAccount('acc-1', { vault, authPath, nowUtc: NOW });
+
+    // Assert
+    expect(result.target.accountId).toBe('acc-1');
+    expect(readFileSync(authPath, 'utf8')).toBe(authJson('acc-1', 'rt-1'));
   });
 });
 

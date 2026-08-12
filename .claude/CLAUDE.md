@@ -49,7 +49,17 @@ cross-package import는 `@llmtally/*` 지정자를 쓰고 tsconfig `paths`로 �
      동일 순서로 잡고 락 보유 중 네트워크 호출 금지, ② 나가는 크레덴셜은 먼저 볼트에 백업하되
      소유자를 특정할 수 없으면 `unclaimed/`에 보존(덮어쓰기 금지), ③ 빈 읽기는 실패로 간주해 중단,
      ④ 실패 시 역순 롤백이 **필수**다. 그 외 어떤 코드도 에이전트 저장소에 쓰지 않는다
+   - **두 번째 예외 (2026-08-13 사용자 승인)**: codex의 `detach`(TUI `d`).
+     `~/.codex/auth.json`을 **삭제**한다. `codex login`이 새 로그인을 쓰기 전에
+     기존 auth.json의 refresh token을 revoke하고(`login/src/auth/revoke.rs`),
+     refresh token revoke는 토큰 패밀리 전체를 죽이므로 — 파일을 그대로 두면
+     두 번째 계정 로그인 순간 첫 계정이 `token_revoked`가 된다. 실측(2026-08-13):
+     파일을 둔 채 로그인하면 이전 계정 401, 먼저 치우고 로그인하면 200 유지.
+     반드시 ① 볼트에 캡처하고 ② 저장된 바이트가 라이브와 **완전히 일치함을 확인한 뒤**
+     삭제한다. 불일치면 파일을 건드리지 않고 중단한다
    - Antigravity 토큰 갱신은 메모리 내에서만 수행하며 antigravity-usage 저장소에 되쓰지 않는다
+   - codex 크레덴셜 갱신(`quota/codex-vault.ts`)은 **볼트에만** 쓴다. `~/.codex/auth.json`은
+     갱신 대상이 아니다 (활성 로그인은 codex CLI가 스스로 갱신한다)
 5. **시각은 로컬 머신 타임존으로 표기, 저장은 UTC epoch** — 날짜 경계·일별 버킷 변환은
    SQLite `localtime`으로 통일 (JS 런타임의 TZ 오버라이드와 무관하게 일관)
 

@@ -4,7 +4,11 @@ import { installDaemon, uninstallDaemon } from '@llmtally/core/daemon/service.ts
 import { runDoctorChecks } from '@llmtally/core/doctor/checks.ts';
 import type { DoctorCheck } from '@llmtally/core/doctor/checks.ts';
 import { resolveActiveClaudeContext } from '@llmtally/core/accounts/active-claude.ts';
-import { captureCodexAccount, switchCodexAccount } from '@llmtally/core/accounts/codex.ts';
+import {
+  captureCodexAccount,
+  detachCodexLogin,
+  switchCodexAccount,
+} from '@llmtally/core/accounts/codex.ts';
 import {
   captureOpencodeAccount,
   defaultOpencodeAuthPath,
@@ -45,6 +49,8 @@ export interface TuiDataSource {
   addCurrentAccount(): Promise<string>;
   removeAccount(accountId: string): Promise<string>;
   switchToAccount(accountId: string): Promise<string>;
+  /** Stores the live codex login, then signs codex out without revoking. */
+  detachCodexAccount(): Promise<string>;
 }
 
 /** Identity of the live opencode credential set; null when none. */
@@ -134,6 +140,14 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
         throw new Error(skipped.join('\n'));
       }
       return [`stored ${stored.join(', ')}`, ...skipped].join('\n');
+    },
+
+    async detachCodexAccount(): Promise<string> {
+      const result = detachCodexLogin({ vault: new AccountVault() });
+      return [
+        `stored ${result.entry.email ?? result.entry.accountId} and signed codex out locally`,
+        ...result.warnings,
+      ].join('\n');
     },
 
     async removeAccount(accountId: string): Promise<string> {

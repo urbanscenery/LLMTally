@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { readCodexTokens } from '../accounts/codex.ts';
 import { jwtEmail } from '../accounts/discovery.ts';
 import { asObject, asString } from '../parsers/shared.ts';
 import { makeQuotaSnapshot } from './providers.ts';
@@ -37,21 +38,20 @@ interface CodexAuth {
 }
 
 export function readCodexAuth(path: string = defaultCodexAuthPath()): CodexAuth | null {
-  let tokens: Record<string, unknown> | null;
+  let text: string;
   try {
-    const parsed = asObject(JSON.parse(readFileSync(path, 'utf8')));
-    tokens = parsed === null ? null : asObject(parsed.tokens);
+    text = readFileSync(path, 'utf8');
   } catch {
     return null;
   }
-  const accessToken = tokens === null ? null : asString(tokens.access_token);
-  if (tokens === null || accessToken === null) {
+  const tokens = readCodexTokens(text);
+  if (tokens === null || tokens.accessToken === null) {
     return null;
   }
   return {
-    accessToken,
-    accountId: asString(tokens.account_id),
-    email: jwtEmail(asString(tokens.id_token)),
+    accessToken: tokens.accessToken,
+    accountId: tokens.accountId,
+    email: jwtEmail(tokens.idToken),
   };
 }
 
@@ -133,32 +133,34 @@ export function parseCodexUsageBody(
   return { plan: root === null ? null : asString(root.plan_type), windows };
 }
 
-/**
- * Returns null when the source is unavailable (no credentials) so the
- * caller can fall back silently; a reachable-but-failing endpoint
- * returns a warning-only snapshot instead.
- */
-export async function fetchCodexLiveQuota(options: {
-  readonly authPath?: string;
-  readonly nowUtc?: number;
+export interface CodexUsageRequest {
+  readonly accessToken: string;
+  /** Sent as `ChatGPT-Account-Id`; what scopes the reading to an account. */
+  readonly accountId: string | null;
+  readonly account: string | null;
+  readonly nowUtc: number;
   readonly fetchFn?: FetchLike;
   readonly url?: string;
-}): Promise<QuotaSnapshot | null> {
-  const now = options.nowUtc ?? Math.floor(Date.now() / 1000);
-  const auth = readCodexAuth(options.authPath ?? defaultCodexAuthPath());
-  if (auth === null) {
-    return null;
-  }
+}
+
+/**
+ * One usage read for whichever account the token belongs to. Taking the
+ * token as an argument is what lets a stored (non-active) account be
+ * read through exactly the same request the live path uses — the only
+ * difference between them is where the bytes came from.
+ */
+export async function fetchCodexUsage(request: CodexUsageRequest): Promise<QuotaSnapshot> {
+  const now = request.nowUtc;
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${auth.accessToken}`,
+    Authorization: `Bearer ${request.accessToken}`,
     Accept: 'application/json',
   };
-  if (auth.accountId !== null) {
-    headers['ChatGPT-Account-Id'] = auth.accountId;
+  if (request.accountId !== null) {
+    headers['ChatGPT-Account-Id'] = request.accountId;
   }
   try {
-    const fetchFn = options.fetchFn ?? fetch;
-    const response = await fetchFn(options.url ?? CODEX_USAGE_URL, {
+    const fetchFn = request.fetchFn ?? fetch;
+    const response = await fetchFn(request.url ?? CODEX_USAGE_URL, {
       headers,
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
@@ -167,8 +169,8 @@ export async function fetchCodexLiveQuota(options: {
       const retryAfterSeconds = Number.isFinite(header) && header > 0 ? header : null;
       return makeQuotaSnapshot({
         agent: 'codex',
-        accountId: auth.accountId,
-        account: auth.email,
+        accountId: request.accountId,
+        account: request.account,
         source: 'vendor_api',
         observedAtUtc: now,
         windows: [],
@@ -181,6 +183,34 @@ export async function fetchCodexLiveQuota(options: {
         warnings: ['codex usage endpoint returned 429 (rate limited)'],
       });
     }
+    // A codex token dies by revocation far more often than by expiry:
+    // `codex login` revokes whatever auth.json held before writing the
+    // new login (its logout path targets the refresh token, which takes
+    // the whole family with it). The `exp` claim keeps saying "valid"
+    // for days afterwards, so a rejection here is the only reliable
+    // signal — and it must not be reported as a transport hiccup.
+    if (response.status === 401 || response.status === 403) {
+      let revoked = false;
+      try {
+        revoked = (await response.text()).toLowerCase().includes('token_revoked');
+      } catch {
+        // an unreadable body only costs us the more specific wording
+      }
+      return makeQuotaSnapshot({
+        agent: 'codex',
+        accountId: request.accountId,
+        account: request.account,
+        source: 'vendor_api',
+        observedAtUtc: now,
+        windows: [],
+        failure: { kind: 'auth_invalid', failedAtUtc: now, retryAtUtc: null },
+        warnings: [
+          revoked
+            ? 'this codex token was revoked (signing in as another account revokes the previous one) — run "codex login" as this account again'
+            : `codex rejected this token (http ${response.status}) — run "codex login" as this account again`,
+        ],
+      });
+    }
     if (!response.ok) {
       throw new Error(`http ${response.status}`);
     }
@@ -190,8 +220,8 @@ export async function fetchCodexLiveQuota(options: {
     }
     return makeQuotaSnapshot({
       agent: 'codex',
-      accountId: auth.accountId,
-      account: auth.email,
+      accountId: request.accountId,
+      account: request.account,
       plan: parsed.plan,
       source: 'vendor_api',
       observedAtUtc: now,
@@ -200,8 +230,8 @@ export async function fetchCodexLiveQuota(options: {
   } catch (error) {
     return makeQuotaSnapshot({
       agent: 'codex',
-      accountId: auth.accountId,
-      account: auth.email,
+      accountId: request.accountId,
+      account: request.account,
       source: 'vendor_api',
       observedAtUtc: now,
       windows: [],
@@ -211,4 +241,29 @@ export async function fetchCodexLiveQuota(options: {
       ],
     });
   }
+}
+
+/**
+ * Returns null when the source is unavailable (no credentials) so the
+ * caller can fall back silently; a reachable-but-failing endpoint
+ * returns a warning-only snapshot instead.
+ */
+export async function fetchCodexLiveQuota(options: {
+  readonly authPath?: string;
+  readonly nowUtc?: number;
+  readonly fetchFn?: FetchLike;
+  readonly url?: string;
+}): Promise<QuotaSnapshot | null> {
+  const auth = readCodexAuth(options.authPath ?? defaultCodexAuthPath());
+  if (auth === null) {
+    return null;
+  }
+  return fetchCodexUsage({
+    accessToken: auth.accessToken,
+    accountId: auth.accountId,
+    account: auth.email,
+    nowUtc: options.nowUtc ?? Math.floor(Date.now() / 1000),
+    fetchFn: options.fetchFn,
+    url: options.url,
+  });
 }

@@ -41,20 +41,81 @@ interface CodexIdentity {
   readonly email: string | null;
 }
 
-/** Identity carried inside the auth.json bytes; null when unusable. */
-export function readCodexIdentity(text: string): CodexIdentity | null {
+/** The `tokens` block codex writes; every field optional as read. */
+export interface CodexTokens {
+  readonly accessToken: string | null;
+  readonly refreshToken: string | null;
+  readonly idToken: string | null;
+  readonly accountId: string | null;
+}
+
+/** The token block inside auth.json; null when the file is unparseable. */
+export function readCodexTokens(text: string): CodexTokens | null {
   let tokens: Record<string, unknown> | null;
   try {
     tokens = asObject(asObject(JSON.parse(text))?.tokens ?? null);
   } catch {
     return null;
   }
-  const accountId = tokens === null ? null : asString(tokens.account_id);
-  const accessToken = tokens === null ? null : asString(tokens.access_token);
-  if (tokens === null || accountId === null || accessToken === null) {
+  if (tokens === null) {
     return null;
   }
-  return { accountId, email: jwtEmail(asString(tokens.id_token)) };
+  return {
+    accessToken: asString(tokens.access_token),
+    refreshToken: asString(tokens.refresh_token),
+    idToken: asString(tokens.id_token),
+    accountId: asString(tokens.account_id),
+  };
+}
+
+/** Identity carried inside the auth.json bytes; null when unusable. */
+export function readCodexIdentity(text: string): CodexIdentity | null {
+  const tokens = readCodexTokens(text);
+  if (tokens === null || tokens.accountId === null || tokens.accessToken === null) {
+    return null;
+  }
+  return { accountId: tokens.accountId, email: jwtEmail(tokens.idToken) };
+}
+
+/**
+ * A rotated generation in codex's own auth.json shape: every field the
+ * file already had is preserved and only what the token endpoint
+ * actually returned is replaced, so a refreshed file stays something
+ * the codex CLI itself can read back. Null when the text is not
+ * auth.json or the response carried no access token.
+ */
+export function withRotatedCodexTokens(
+  text: string,
+  rotated: {
+    readonly accessToken: string | null;
+    readonly refreshToken: string | null;
+    readonly idToken: string | null;
+  },
+  nowUtc: number,
+): string | null {
+  if (rotated.accessToken === null) {
+    return null;
+  }
+  let parsed: Record<string, unknown> | null;
+  try {
+    parsed = asObject(JSON.parse(text));
+  } catch {
+    return null;
+  }
+  const tokens = parsed === null ? null : asObject(parsed.tokens);
+  if (parsed === null || tokens === null) {
+    return null;
+  }
+  return JSON.stringify({
+    ...parsed,
+    tokens: {
+      ...tokens,
+      id_token: rotated.idToken ?? tokens.id_token,
+      access_token: rotated.accessToken,
+      refresh_token: rotated.refreshToken ?? tokens.refresh_token,
+    },
+    last_refresh: new Date(nowUtc * 1000).toISOString(),
+  });
 }
 
 /**
@@ -63,13 +124,7 @@ export function readCodexIdentity(text: string): CodexIdentity | null {
  * login compare equal. Content hash when there is no refresh token.
  */
 export function codexCredentialFingerprint(text: string): string {
-  let refresh: string | null = null;
-  try {
-    const tokens = asObject(asObject(JSON.parse(text))?.tokens ?? null);
-    refresh = tokens === null ? null : asString(tokens.refresh_token);
-  } catch {
-    refresh = null;
-  }
+  const refresh = readCodexTokens(text)?.refreshToken ?? null;
   const hash = new Bun.CryptoHasher('sha256')
     .update(refresh ?? text)
     .digest('hex');
@@ -115,6 +170,61 @@ export function captureCodexAccount(ports: {
     },
     live,
   );
+}
+
+export interface CodexDetachResult {
+  readonly entry: VaultEntry;
+  readonly warnings: readonly string[];
+}
+
+/**
+ * Stores the live codex login and then removes auth.json, leaving codex
+ * signed out locally **without revoking anything**.
+ *
+ * This exists because of how `codex login` treats the file it is about
+ * to overwrite: it runs its logout path first, which revokes the
+ * refresh token found there — and revoking a refresh token kills the
+ * whole family, so the previous account's stored credentials become
+ * `token_revoked` the instant a second account signs in. Measured
+ * 2026-08-13: with auth.json in place, the previous account answered
+ * HTTP 401 `token_revoked`; with auth.json moved aside first, the same
+ * stored account still answered 200 after the new login. Nothing is
+ * revoked when there is no file to read, so detaching before signing in
+ * is what makes two live codex logins possible at all.
+ *
+ * The order is the safety property: the credentials are captured and
+ * verified byte-for-byte against the vault before the only other copy
+ * is destroyed. A capture that does not land aborts the detach.
+ */
+export function detachCodexLogin(ports: {
+  readonly vault: AccountVault;
+  readonly authPath?: string;
+  readonly nowUtc?: number;
+}): CodexDetachResult {
+  const authPath = ports.authPath ?? defaultCodexAuthPath();
+  // throws when there is no usable login — nothing to preserve, and
+  // deleting an unreadable file would destroy a login we cannot restore
+  const entry = captureCodexAccount({
+    vault: ports.vault,
+    authPath,
+    nowUtc: ports.nowUtc,
+  });
+  const stored = ports.vault.loadCredentials(entry.accountId);
+  const live = readAuthFile(authPath);
+  if (stored === null || live === null || stored !== live) {
+    throw new CodexAccountError(
+      'refusing to detach: the vault copy does not match the live login — auth.json was left alone',
+    );
+  }
+  rmSync(authPath, { force: true });
+  return {
+    entry,
+    warnings: [
+      'codex is signed out locally, but nothing was revoked',
+      `run "codex login" as another account and press n to store it, or press s to bring ${entry.email ?? entry.accountId} back`,
+      'a running codex session keeps its old token until restarted',
+    ],
+  };
 }
 
 /** Resolves an id, alias, or email — among codex entries only. */

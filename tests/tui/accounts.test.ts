@@ -248,6 +248,69 @@ describe('account matching (review regression)', () => {
     expect(model.rows[0]).toMatchObject({ accountId: 'uuid-1', isActive: true });
   });
 
+  test('an unstored switchable login says how to keep it', () => {
+    // Arrange — codex is logged in but was never captured, so nothing
+    // preserves it when the next "codex login" overwrites auth.json
+    const snapshot = snapshotFixture({
+      agent: 'codex',
+      accountId: 'acc-1',
+      account: 'me@test.dev',
+    });
+
+    // Act
+    const model = toAccountsTabViewModel(
+      inputFor([snapshot], { activeByAgent: { codex: 'acc-1' } }),
+    );
+
+    // Assert
+    expect(model.rows[0]).toMatchObject({ accountId: null, isActive: true });
+    expect(model.rows[0]?.note).toContain('press n');
+  });
+
+  test('a stored login carries no such prompt', () => {
+    // Act
+    const model = toAccountsTabViewModel(
+      inputFor([snapshotFixture({ account: 'me@test.dev' })], {
+        vault: [vaultEntry('uuid-1', 'me@test.dev')],
+        activeAccountId: 'uuid-1',
+      }),
+    );
+
+    // Assert
+    expect(model.rows[0]?.note).toBeNull();
+  });
+
+  test('discovery rows for switchable agents say how to keep them', () => {
+    // Act
+    const model = toAccountsTabViewModel(
+      inputFor([], {
+        discovered: [
+          {
+            agent: 'codex',
+            accountId: 'acc-1',
+            displayLabel: 'me@test.dev',
+            email: 'me@test.dev',
+            organizationId: null,
+            discoveredVia: 'codex-auth',
+          },
+          {
+            agent: 'antigravity',
+            accountId: 'me@test.dev',
+            displayLabel: 'me@test.dev',
+            email: 'me@test.dev',
+            organizationId: null,
+            discoveredVia: 'antigravity-store',
+          },
+        ],
+      }),
+    );
+
+    // Assert — only the agents llmtally can switch get the prompt
+    expect(model.rows[0]?.note).toContain('press n');
+    expect(model.rows[0]?.note).toContain('codex-auth');
+    expect(model.rows[1]?.note).toBe('discovered via antigravity-store');
+  });
+
   test('two accounts sharing an address never bind to the wrong one', () => {
     // Arrange — personal and organization logins with the same address
     const vault = [vaultEntry('uuid-personal', 'me@test.dev'), vaultEntry('uuid-org', 'me@test.dev')];
