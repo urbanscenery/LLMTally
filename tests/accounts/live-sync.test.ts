@@ -8,6 +8,7 @@ import { createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
 import {
   resetLiveCredentialProbes,
   syncActiveClaudeCredential,
+  verifyLiveCredentialOwner,
 } from '@llmtally/core/accounts/live-sync.ts';
 import { AccountVault } from '@llmtally/core/accounts/vault.ts';
 import { makeTempDir } from '../helpers.ts';
@@ -266,5 +267,43 @@ describe('syncActiveClaudeCredential', () => {
         }),
       ).toBe('not_needed');
     }
+  });
+});
+
+describe('probe memo bound', () => {
+  test('the memo evicts its oldest lineage instead of growing forever', async () => {
+    // Arrange — a long-lived TUI sees a new lineage per token rotation
+    resetLiveCredentialProbes();
+    let calls = 0;
+    const fetchFn = async (): Promise<Response> => {
+      calls += 1;
+      return new Response(JSON.stringify({ account: { uuid: 'uuid-1' } }));
+    };
+
+    // Act — 300 distinct lineages, then re-verify the very first one
+    for (let index = 0; index < 300; index += 1) {
+      await verifyLiveCredentialOwner({
+        accountId: 'uuid-1',
+        credentials: JSON.stringify({
+          claudeAiOauth: { accessToken: `access-${index}`, refreshToken: `refresh-${index}` },
+        }),
+        nowUtc: 1_786_400_000,
+        fetchFn,
+      });
+    }
+    const before = calls;
+    await verifyLiveCredentialOwner({
+      accountId: 'uuid-1',
+      credentials: JSON.stringify({
+        claudeAiOauth: { accessToken: 'access-0', refreshToken: 'refresh-0' },
+      }),
+      nowUtc: 1_786_400_000,
+      fetchFn,
+    });
+
+    // Assert — the first lineage aged out of the memo (a re-probe fired),
+    // proving the map is bounded rather than append-only
+    expect(before).toBe(300);
+    expect(calls).toBe(301);
   });
 });

@@ -31,6 +31,13 @@ import type { AccountVault } from './vault.ts';
 
 /** How long an unresolvable probe suppresses re-probing that lineage. */
 const PROBE_RETRY_SECONDS = 300;
+/**
+ * Cap on memoized verdicts. Every token rotation mints a new lineage
+ * key, so a long-lived TUI would otherwise grow this map forever
+ * (accounts × rotations). Insertion-order eviction is enough: old
+ * lineages never come back, so evicting the oldest is free.
+ */
+const PROBE_MEMO_MAX = 256;
 
 export type LiveCredentialSyncOutcome =
   /** Nothing to do: no identified login, no stored slot, or no drift. */
@@ -51,6 +58,16 @@ type ProbeMemo =
   | { readonly kind: 'inconclusive'; readonly retryAtUtc: number };
 
 const probes = new Map<string, ProbeMemo>();
+
+function rememberProbe(key: string, memo: ProbeMemo): void {
+  if (!probes.has(key) && probes.size >= PROBE_MEMO_MAX) {
+    const oldest = probes.keys().next();
+    if (!oldest.done) {
+      probes.delete(oldest.value);
+    }
+  }
+  probes.set(key, memo);
+}
 
 /** Test seam: drops every memoized ownership verdict. */
 export function resetLiveCredentialProbes(): void {
@@ -181,13 +198,13 @@ export async function verifyLiveCredentialOwner(options: {
       ? null
       : await fetchClaudeAccountIdentity(accessToken, options.fetchFn);
   if (identity === null) {
-    probes.set(key, {
+    rememberProbe(key, {
       kind: 'inconclusive',
       retryAtUtc: options.nowUtc + PROBE_RETRY_SECONDS,
     });
     return 'unresolved';
   }
   const ownsSlot = identity.accountUuid === options.accountId;
-  probes.set(key, { kind: 'verdict', ownsSlot });
+  rememberProbe(key, { kind: 'verdict', ownsSlot });
   return ownsSlot ? 'own' : 'foreign';
 }
