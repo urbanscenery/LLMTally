@@ -2,7 +2,12 @@ import { describe, expect, test } from 'bun:test';
 
 import type { QuotaSnapshot } from '@llmtally/core/quota/providers.ts';
 import { buildQuotaBar, describeReset, severityMarker } from '@llmtally/tui/components/quota-bar.ts';
-import { createInitialState, withActiveTab, withTabResource } from '@llmtally/tui/state.ts';
+import {
+  createInitialState,
+  withAccountsCursor,
+  withActiveTab,
+  withTabResource,
+} from '@llmtally/tui/state.ts';
 import { isSwitchable, toAccountsTabViewModel } from '@llmtally/tui/view-model/accounts.ts';
 import type { AccountRowViewModel, AccountsInput } from '@llmtally/tui/view-model/accounts.ts';
 import { accountsTabView } from '@llmtally/tui/views/accounts.ts';
@@ -221,6 +226,86 @@ describe('accountsTabView', () => {
     expect(text).toContain('claude-code');
     expect(text).toContain('(current login) (team)');
     expect(text).toContain('refresh failed: timeout (showing last data)');
+  });
+});
+
+describe('scrolling', () => {
+  function stateWith(model: ReturnType<typeof toAccountsTabViewModel>, cursor: number) {
+    return withAccountsCursor(
+      withTabResource(withActiveTab(createInitialState(), 'accounts'), 'accounts', {
+        phase: 'ready' as const,
+        data: model,
+        error: null,
+        updatedAtUtc: NOW,
+        invalidated: false,
+      }),
+      cursor,
+    );
+  }
+
+  /** Enough blocks that no realistic terminal shows them all at once. */
+  function manyAccounts(count: number) {
+    return toAccountsTabViewModel(
+      inputFor(
+        Array.from({ length: count }, (_, index) =>
+          snapshotFixture({
+            agent: index % 2 === 0 ? 'claude-code' : 'codex',
+            account: `acc-${index}@test.dev`,
+            accountId: `acc-${index}`,
+          }),
+        ),
+      ),
+    );
+  }
+
+  test('never returns more lines than the height it was given', () => {
+    // Arrange — the shell truncates the overflow, so the view must not
+    // produce any: that is exactly how the last block went missing
+    const model = manyAccounts(8);
+
+    // Act & Assert — at both ends of the list
+    for (const cursor of [0, model.rows.length - 1]) {
+      const lines = accountsTabView(stateWith(model, cursor), 90, 20, NOW);
+      expect(lines.length).toBeLessThanOrEqual(20);
+    }
+  });
+
+  test('keeps the selected block on screen and reports what is hidden', () => {
+    // Arrange
+    const model = manyAccounts(8);
+    const last = model.rows.length - 1;
+
+    // Act
+    const text = viewText(accountsTabView(stateWith(model, last), 90, 20, NOW)).join('\n');
+
+    // Assert — the selected account is visible, and the fold is named
+    expect(text).toContain(model.rows[last]?.label ?? '');
+    expect(text).toContain('↑');
+    expect(text).toContain('more');
+  });
+
+  test('the action hints survive scrolling', () => {
+    // Arrange — pinned above the scroll region, never windowed away
+    const model = manyAccounts(8);
+
+    // Act
+    const text = viewText(accountsTabView(stateWith(model, model.rows.length - 1), 90, 20, NOW))
+      .join('\n');
+
+    // Assert
+    expect(text).toContain('[n]');
+    expect(text).toContain('[↑↓]');
+  });
+
+  test('a list that fits carries no scroll hint', () => {
+    // Arrange
+    const model = toAccountsTabViewModel(inputFor([snapshotFixture({ account: 'only@test.dev' })]));
+
+    // Act
+    const text = viewText(accountsTabView(stateWith(model, 0), 90, 30, NOW)).join('\n');
+
+    // Assert
+    expect(text).not.toContain('more');
   });
 });
 

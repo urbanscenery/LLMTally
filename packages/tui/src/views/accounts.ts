@@ -184,6 +184,42 @@ function groupLines(
   ];
 }
 
+/**
+ * Keeps the block under the cursor on screen. There is no scrollback:
+ * the shell truncates whatever a view returns beyond the height it was
+ * given, so anything past the fold is simply lost unless the view
+ * windows it here. Blocks are variable height (a card grows with its
+ * gauges), so the window is measured in lines rather than in rows the
+ * way the prompt list can afford to.
+ */
+function scrolled(
+  body: readonly TabViewLine[],
+  focus: { readonly start: number; readonly end: number },
+  viewport: number,
+): TabViewLine[] {
+  if (viewport <= 0) {
+    return [];
+  }
+  if (body.length <= viewport) {
+    return [...body];
+  }
+  // one line goes to the hint, so the user knows there is more
+  const room = Math.max(1, viewport - 1);
+  // show as much of the focused block as fits, its top winning when the
+  // block is taller than the viewport
+  let offset = focus.end > room ? focus.end - room : 0;
+  if (focus.start < offset) {
+    offset = focus.start;
+  }
+  offset = Math.max(0, Math.min(offset, body.length - room));
+  const above = offset;
+  const below = body.length - (offset + room);
+  const hint = [above > 0 ? `↑ ${above} more` : null, below > 0 ? `↓ ${below} more` : null]
+    .filter((part): part is string => part !== null)
+    .join('   ');
+  return [...body.slice(offset, offset + room), joinLine(' ', span(hint, 'muted'))];
+}
+
 /** Hints are dimmed when the selected row does not support the action. */
 function actionLine(row: AccountRowViewModel | undefined): RichLine {
   const parts: StyledSpan[] = [];
@@ -203,7 +239,7 @@ function actionLine(row: AccountRowViewModel | undefined): RichLine {
 export const accountsTabView: TabView = (
   state: TuiState,
   width: number,
-  _height: number,
+  height: number,
   nowUtc: number,
 ): readonly TabViewLine[] => {
   const resource = state.accounts;
@@ -219,23 +255,11 @@ export const accountsTabView: TabView = (
   }
   const cursor = clampCursor(state.accountsCursor, model.rows.length);
   const selectedRow = model.rows[cursor];
-  const lines: TabViewLine[] = [joinLine(' ', ...actionLine(selectedRow)), ''];
-  for (const group of model.groups) {
-    lines.push(...groupLines(group, selectedRow, width, nowUtc));
-  }
-  if (model.rows.length === 0) {
-    lines.push(fitLine('  no accounts found — press n to store the current login', width));
-    lines.push(
-      joinLine(
-        span(
-          fitLine('  (log in inside Claude Code first: run "claude", then /login)', width),
-          'muted',
-        ),
-      ),
-    );
-  }
+  // pinned above the scroll region: a failure notice that scrolls out of
+  // sight is worse than no notice at all
+  const header: TabViewLine[] = [joinLine(' ', ...actionLine(selectedRow))];
   if (resource.phase === 'error') {
-    lines.push(
+    header.push(
       joinLine(
         span(
           fitLine(`  ! refresh failed: ${resource.error ?? 'unknown'} (showing last data)`, width),
@@ -244,5 +268,27 @@ export const accountsTabView: TabView = (
       ),
     );
   }
-  return lines;
+  header.push('');
+
+  const body: TabViewLine[] = [];
+  let focus = { start: 0, end: 0 };
+  for (const group of model.groups) {
+    const start = body.length;
+    body.push(...groupLines(group, selectedRow, width, nowUtc));
+    if (selectedRow !== undefined && group.rows.includes(selectedRow)) {
+      focus = { start, end: body.length };
+    }
+  }
+  if (model.rows.length === 0) {
+    body.push(fitLine('  no accounts found — press n to store the current login', width));
+    body.push(
+      joinLine(
+        span(
+          fitLine('  (log in inside Claude Code first: run "claude", then /login)', width),
+          'muted',
+        ),
+      ),
+    );
+  }
+  return [...header, ...scrolled(body, focus, height - header.length)];
 };
