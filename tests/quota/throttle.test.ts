@@ -517,3 +517,81 @@ describe('throttledQuota and a rejected credential', () => {
     storeB.close();
   });
 });
+
+/**
+ * ClinePass only learns whose numbers it read by resolving `/users/me`
+ * during the call. A cold process whose first pass is deferred by the
+ * shared cadence therefore holds nothing but a credential label — and
+ * the stored history, written under the real account, became
+ * unreachable, so the card rendered with no gauge.
+ */
+describe('identity learned during a read outlives the process', () => {
+  const subject = {
+    key: 'cline-pass|ua=test|key=sha256:abc',
+    agent: 'cline',
+    accountId: null,
+    account: 'cline-pass.opencode-go.84bf4d',
+  };
+
+  function identified(nowUtc: number): QuotaSnapshot {
+    return makeQuotaSnapshot({
+      agent: 'cline',
+      accountId: 'usr-01KYV',
+      account: 'me@test.dev',
+      source: 'vendor_api',
+      observedAtUtc: nowUtc,
+      windows: [{ id: 'weekly', usedPercent: 4, resetsAtUtc: nowUtc + 86_400 }],
+    });
+  }
+
+  beforeEach(() => {
+    resetQuotaThrottle();
+  });
+
+  test('a deferred read in a fresh process is labelled with the account, not the credential', async () => {
+    // Arrange — one successful read records the identity it resolved
+    const stateStore = openQuotaFetchStateStore(join(makeTempDir(), 'ledger.db'), NOW);
+    const first = await throttledQuota(subject, NOW, async () => identified(NOW), { stateStore });
+    expect(first.accountId).toBe('usr-01KYV');
+
+    // Act — a new process shares the store but has no in-memory cache,
+    // and the cadence defers it before it can call
+    resetQuotaThrottle();
+    const deferred = await throttledQuota(
+      subject,
+      NOW + 5,
+      async () => {
+        throw new Error('must not call the vendor inside the cadence');
+      },
+      { stateStore },
+    );
+
+    // Assert — the empty snapshot can still find its own history
+    expect(deferred.failure?.kind).toBe('deferred');
+    expect(deferred.windows).toEqual([]);
+    expect(deferred.accountId).toBe('usr-01KYV');
+    expect(deferred.account).toBe('me@test.dev');
+    stateStore.close();
+  });
+
+  test('a placeholder never overwrites an identity a read already recorded', async () => {
+    // Arrange
+    const stateStore = openQuotaFetchStateStore(join(makeTempDir(), 'ledger.db'), NOW);
+    await throttledQuota(subject, NOW, async () => identified(NOW), { stateStore });
+
+    // Act — a later claim carries the credential label again
+    resetQuotaThrottle();
+    await throttledQuota(subject, NOW + 10_000, async () => identified(NOW + 10_000), {
+      stateStore,
+    });
+    resetQuotaThrottle();
+    const deferred = await throttledQuota(subject, NOW + 10_005, async () => identified(NOW), {
+      stateStore,
+    });
+
+    // Assert
+    expect(deferred.accountId).toBe('usr-01KYV');
+    expect(deferred.account).toBe('me@test.dev');
+    stateStore.close();
+  });
+});

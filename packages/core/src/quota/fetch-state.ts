@@ -52,7 +52,13 @@ export type QuotaClaimDecision =
     };
 
 export type QuotaFetchCompletion =
-  | { readonly kind: 'success' }
+  /**
+   * A successful read is the only thing that knows whose numbers these
+   * were. Some vendors only reveal that during the call (ClinePass
+   * resolves `/users/me`), so the identity is recorded here and reused
+   * to label reads that never get to make the call.
+   */
+  | { readonly kind: 'success'; readonly accountId?: string | null; readonly account?: string | null }
   | { readonly kind: 'rate_limited'; readonly retryAfterSeconds: number | null }
   /** The vendor refused the credential itself; remembered numbers die with it. */
   | { readonly kind: 'auth_invalid' }
@@ -198,9 +204,16 @@ export function openQuotaFetchStateStore(
           return { kind: 'deferred', reason, retryAtUtc, state: toState(row) };
         }
 
+        // A subject names its budget, not always its account: a vendor
+        // whose identity only arrives with the response passes null (or
+        // a credential label) here. Once a read has recorded the real
+        // id, the placeholder must not overwrite it, or the row loses
+        // the only link between this budget and its stored history.
         const updated = db.run(
           `UPDATE quota_fetch_state
-           SET agent = ?, account_id = ?, account_label = ?,
+           SET agent = ?,
+               account_id = COALESCE(account_id, ?),
+               account_label = CASE WHEN account_id IS NULL THEN ? ELSE account_label END,
                blocked_until_utc = CASE WHEN blocked_until_utc <= ? THEN 0 ELSE blocked_until_utc END,
                consecutive_429 = CASE
                  WHEN last_429_utc IS NULL OR ? - last_429_utc >= ${POST_429_WINDOW_SECONDS}
@@ -273,7 +286,9 @@ export function openQuotaFetchStateStore(
         if (completion.kind === 'success') {
           db.run(
             `UPDATE quota_fetch_state
-             SET blocked_until_utc = 0,
+             SET account_id = COALESCE(?, account_id),
+                 account_label = COALESCE(?, account_label),
+                 blocked_until_utc = 0,
                  consecutive_429 = CASE
                    WHEN last_429_utc IS NOT NULL AND ? - last_429_utc < ${POST_429_WINDOW_SECONDS}
                      THEN consecutive_429 ELSE 0 END,
@@ -283,7 +298,15 @@ export function openQuotaFetchStateStore(
                  auth_invalid_at_utc = NULL,
                  claim_owner = NULL, claim_until_utc = NULL, updated_at_utc = ?
              WHERE key = ? AND claim_owner = ?`,
-            [nowUtc_, nowUtc_, nowUtc_, key, owner],
+            [
+              completion.accountId ?? null,
+              completion.account ?? null,
+              nowUtc_,
+              nowUtc_,
+              nowUtc_,
+              key,
+              owner,
+            ],
           );
         } else if (completion.kind === 'auth_invalid') {
           // the slot stays spent and the refusal is recorded, so a

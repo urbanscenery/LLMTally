@@ -43,7 +43,7 @@ describe('recordQuotaSamples / readStoredLastGood', () => {
 
     // Act
     const inserted = recordQuotaSamples(db, [claudeSnapshot()], NOW);
-    const stored = readStoredLastGood(db, { agent: 'claude-code', accountId: null, account: 'me@test.dev', nowUtc: NOW + 7200, failure: null });
+    const stored = readStoredLastGood(db, { agent: 'claude-code', accountId: null, account: 'me@test.dev', nowUtc: NOW + 1800, failure: null });
 
     // Assert
     expect(inserted).toBe(2);
@@ -53,6 +53,25 @@ describe('recordQuotaSamples / readStoredLastGood', () => {
       { id: 'five_hour', usedPercent: 42, resetsAtUtc: NOW + 3600 },
       { id: 'seven_day', usedPercent: 10, resetsAtUtc: null },
     ]);
+  });
+
+  test('drops a window whose own period already rolled over', () => {
+    // Arrange — the five_hour window resets an hour before this read
+    const db = openMigrated();
+    recordQuotaSamples(db, [claudeSnapshot()], NOW);
+
+    // Act
+    const stored = readStoredLastGood(db, {
+      agent: 'claude-code',
+      accountId: null,
+      account: 'me@test.dev',
+      nowUtc: NOW + 7200,
+      failure: null,
+    });
+
+    // Assert — utilization went to zero at the boundary, so serving the
+    // old percentage next to "resets soon" would read as current
+    expect(stored?.windows.map((window) => window.id)).toEqual(['seven_day']);
     expect(stored?.warnings.some((warning) => warning.includes('h old'))).toBe(true);
   });
 
@@ -315,6 +334,7 @@ describe('discoverAccounts', () => {
       codexAuthPath: codexAuth,
       antigravityStoreDir: antigravityStore,
       opencodeAuthPath: opencodeAuth,
+      grokAuthPath: join(home, 'grok-auth.json'),
     });
 
     // Assert
@@ -342,6 +362,7 @@ describe('discoverAccounts', () => {
         codexAuthPath: join(home, 'none-auth.json'),
         antigravityStoreDir: join(home, 'none-store'),
         opencodeAuthPath: join(home, 'none-opencode.json'),
+        grokAuthPath: join(home, 'none-grok.json'),
       }),
     ).toEqual([]);
   });

@@ -35,7 +35,6 @@ const MARK_DEAD_LOCK_WAIT_MS = 0;
 // must exceed the worst legitimate hold: a Keychain #storeEntry can
 // chain several `security` calls (~5s each) plus recovery/removal
 const REPLACE_LOCK_WAIT_MS = 60_000;
-const RECAPTURE_LOCK_WAIT_MS = 1_000;
 const PUT_LOCK_WAIT_MS = 10_000;
 
 export class VaultError extends Error {
@@ -308,28 +307,6 @@ export class AccountVault {
         },
         credentialsText,
       );
-      return 'updated';
-    });
-  }
-
-  /**
-   * Overwrites stored credentials with a fresh live capture and lifts
-   * the quarantine — the live login proves the account works again.
-   * Guarded like a CAS on the quarantine itself: if the entry was
-   * already healed (by a refresh or an earlier re-capture), a delayed
-   * re-capture must not overwrite the possibly-newer generation.
-   */
-  recaptureCredentials(accountId: string, credentialsText: string): VaultCredentialMutation {
-    return this.#withMutationLock(RECAPTURE_LOCK_WAIT_MS, () => {
-      const entry = this.get(accountId);
-      if (entry === null) {
-        return 'missing';
-      }
-      if (entry.refreshDeadAtUtc === null) {
-        return 'changed';
-      }
-      const { backend: _backend, ...rest } = entry;
-      this.#storeEntry({ ...rest, refreshDeadAtUtc: null }, credentialsText);
       return 'updated';
     });
   }

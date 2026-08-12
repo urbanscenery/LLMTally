@@ -113,10 +113,21 @@ export interface StoredLastGoodRequest {
  * live read failed with a 429 the sample stays trustworthy until its
  * own `resets_at`: a usage-endpoint 429 is a polling throttle, not a
  * quota change, and utilization only rises within a window — the last
- * good number is a valid lower bound right up to the reset. A missing,
- * past, or absurdly-far reset falls back to the 24h policy.
+ * good number is a valid lower bound right up to the reset. A missing
+ * or absurdly-far reset falls back to the 24h policy.
+ *
+ * Once a window's own reset has passed, though, no policy saves it:
+ * utilization went to zero at that boundary, so the stored number no
+ * longer bounds anything — it describes a period that ended. Serving it
+ * would pair a stale percentage with "resets soon", which reads as
+ * current. This binds hardest where polling stops for a whole period:
+ * Grok's token sleeps after ~6h, so a week away would otherwise show
+ * last week's number all the way through the new week.
  */
 function isWindowTrusted(row: SampleRow, request: StoredLastGoodRequest): boolean {
+  if (row.resets_at_utc !== null && row.resets_at_utc <= request.nowUtc) {
+    return false;
+  }
   if (row.observed_at_utc >= request.nowUtc - STORED_FALLBACK_MAX_AGE_SECONDS) {
     return true;
   }

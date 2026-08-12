@@ -7,6 +7,7 @@ import { AccountVault, defaultVaultDir, vaultPaths } from '../accounts/vault.ts'
 import { LedgerUnavailableError, openReadOnlyDatabase } from '../db/connection.ts';
 import { LATEST_SCHEMA_VERSION } from '../db/migrate.ts';
 import { defaultAntigravityStoreDir, listAntigravityAccounts } from '../quota/antigravity.ts';
+import { defaultGrokCredentials, isGrokTokenExpired } from '../quota/grok.ts';
 
 export type CheckStatus = 'pass' | 'warn' | 'fail' | 'skip';
 
@@ -58,6 +59,7 @@ export function runDoctorChecks(options: DoctorOptions): readonly DoctorCheck[] 
   checks.push(directoryCheck('source.grok', join(home, '.grok', 'sessions'), 'Grok Build'));
   checks.push(...pricingChecks(home));
   checks.push(quotaAntigravityCheck(home));
+  checks.push(quotaGrokCheck(home));
   checks.push(...vaultChecks(home));
   checks.push(daemonCheck(home));
   return checks;
@@ -158,6 +160,39 @@ function quotaAntigravityCheck(home: string): DoctorCheck {
     id: 'quota.antigravity',
     status: 'pass',
     message: `${accounts.length} account(s), ${validTokens} with a valid token`,
+  };
+}
+
+/**
+ * The Grok session token lives ~6 hours and the CLI renews it lazily,
+ * so a machine that has not run `grok` for a while simply holds an
+ * expired one. That is the ordinary reason the gauge stops updating,
+ * and the fix is to run `grok` — not to sign in again.
+ */
+function quotaGrokCheck(home: string): DoctorCheck {
+  const credentials = defaultGrokCredentials(home);
+  if (credentials.length === 0) {
+    return {
+      id: 'quota.grok',
+      status: 'skip',
+      message: 'no Grok login',
+      remediation: 'run "grok login" to read subscription quota',
+    };
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const live = credentials.filter((credential) => !isGrokTokenExpired(credential, now)).length;
+  if (live === 0) {
+    return {
+      id: 'quota.grok',
+      status: 'warn',
+      message: `${credentials.length} login(s), every session token expired — quota shows stored values only`,
+      remediation: 'run "grok" once; the CLI renews its own token (no re-login needed)',
+    };
+  }
+  return {
+    id: 'quota.grok',
+    status: 'pass',
+    message: `${credentials.length} login(s), ${live} with a live session token`,
   };
 }
 

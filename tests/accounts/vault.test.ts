@@ -389,20 +389,6 @@ describe('refresh quarantine and credential CAS', () => {
     expect(released).toBe('updated');
   });
 
-  test('recapture only heals a quarantined entry and never touches a healthy one', () => {
-    // Arrange
-    const vault = makeVault();
-    vault.put(entry('uuid-1'), credentials('refresh-current'));
-
-    // Act — the entry is healthy, so a (delayed) re-capture is a no-op
-    const untouched = vault.recaptureCredentials('uuid-1', credentials('refresh-late'));
-
-    // Assert
-    expect(untouched).toBe('changed');
-    expect(JSON.parse(vault.loadCredentials('uuid-1') ?? '{}').claudeAiOauth.refreshToken).toBe(
-      'refresh-current',
-    );
-  });
 });
 
 describe('registry mutations under the lock', () => {

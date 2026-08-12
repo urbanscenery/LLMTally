@@ -12,9 +12,15 @@ import { join } from 'node:path';
 import { asObject, asString } from '../parsers/shared.ts';
 import { defaultAntigravityStoreDir, listAntigravityAccounts } from '../quota/antigravity.ts';
 import { defaultClaudeConfigPath, readClaudeActiveIdentity } from './claude.ts';
+import { GROK_AGENT, defaultGrokAuthPath, readGrokIdentities } from './grok.ts';
 import { defaultOpencodeAuthPath, opencodeAccountId, readOpencodeProviders } from './opencode.ts';
 
-export type DiscoverySource = 'claude-config' | 'codex-auth' | 'antigravity-store' | 'opencode-auth';
+export type DiscoverySource =
+  | 'claude-config'
+  | 'codex-auth'
+  | 'antigravity-store'
+  | 'opencode-auth'
+  | 'grok-auth';
 
 export interface AccountProfile {
   readonly agent: string;
@@ -134,11 +140,23 @@ function discoverAntigravity(storeDir: string): AccountProfile[] {
   }));
 }
 
+function discoverGrok(authPath: string): AccountProfile[] {
+  return readGrokIdentities(authPath).map((identity) => ({
+    agent: GROK_AGENT,
+    accountId: identity.accountId,
+    displayLabel: identity.email ?? identity.accountId,
+    email: identity.email,
+    organizationId: identity.teamId,
+    discoveredVia: 'grok-auth' as const,
+  }));
+}
+
 export interface DiscoveryOptions {
   readonly claudeConfigPath?: string;
   readonly codexAuthPath?: string;
   readonly antigravityStoreDir?: string;
   readonly opencodeAuthPath?: string;
+  readonly grokAuthPath?: string;
 }
 
 /** Later sources never overwrite an earlier profile for the same (agent, id). */
@@ -149,6 +167,7 @@ export function discoverAccounts(options: DiscoveryOptions = {}): AccountProfile
     ...discoverCodex(options.codexAuthPath ?? join(home, '.codex', 'auth.json')),
     ...discoverAntigravity(options.antigravityStoreDir ?? defaultAntigravityStoreDir(home)),
     ...discoverOpencode(options.opencodeAuthPath ?? defaultOpencodeAuthPath(home)),
+    ...discoverGrok(options.grokAuthPath ?? defaultGrokAuthPath(home)),
   ];
   const seen = new Map<string, AccountProfile>();
   for (const profile of profiles) {

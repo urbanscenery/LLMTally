@@ -155,9 +155,9 @@ projects·settings·히스토리는 그대로 유지됩니다.
 | Claude Code | `~/.claude/projects/**/*.jsonl` | ✅ 구현 완료 |
 | Codex CLI | `~/.codex/sessions/**/rollout-*.jsonl` | ✅ 구현 완료 |
 | OpenCode | `~/.local/share/opencode/opencode.db` | ✅ 구현 완료 |
-| Cline (CLI) | `~/.cline/data/sessions/` | 설계 완료 |
-| Antigravity CLI | `~/.gemini/antigravity-cli/conversations/` | 조사 완료 |
-| Grok Build | `~/.grok/sessions` | 포맷 미확인 |
+| Cline (CLI) | `~/.cline/data/sessions/` | ✅ 구현 완료 |
+| Antigravity CLI | `~/.gemini/antigravity-cli/conversations/` | ✅ 구현 완료 |
+| Grok Build | `~/.grok/sessions/**/updates.jsonl` | ✅ 구현 완료 |
 
 ### 토큰 필드 의미 (중요)
 
@@ -166,6 +166,8 @@ projects·settings·히스토리는 그대로 유지됩니다.
 - `claude-code`: `input_tokens`는 캐시 미포함 (cache read/write 별도 컬럼)
 - `codex`: `input_tokens`에 cached input **포함** (`cache_read` 컬럼과 중첩), `output_tokens`에 reasoning 포함
 - `opencode`: 소스가 기록한 실비 `cost_usd`를 그대로 보존
+- `grok`: codex와 같은 의미 (`input_tokens`에 cache read 포함, `output_tokens`에 reasoning 포함).
+  소스가 턴마다 `costUsdTicks`(1e10 ticks = 1 USD)를 남기므로 그 값을 `cost_usd`로 보존
 
 비용 계산은 조회 시점에 에이전트별 semantics를 적용해 수행합니다.
 

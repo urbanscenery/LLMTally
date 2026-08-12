@@ -17,7 +17,8 @@
  */
 import { readFileSync } from 'node:fs';
 
-import { resolveActiveClaudeContext, recaptureRefreshDeadActiveAccount } from '../accounts/active-claude.ts';
+import { resolveActiveClaudeContext } from '../accounts/active-claude.ts';
+import { syncActiveClaudeCredential } from '../accounts/live-sync.ts';
 import type { ActiveClaudeContext } from '../accounts/active-claude.ts';
 import { createActiveCredentialStore } from '../accounts/credentials.ts';
 import type { ActiveCredentialStore } from '../accounts/credentials.ts';
@@ -54,6 +55,12 @@ import {
 import type { QuotaSnapshot } from './providers.ts';
 import { openQuotaFetchStateStore } from './fetch-state.ts';
 import type { QuotaFetchStateStore, QuotaThrottleSubject } from './fetch-state.ts';
+import {
+  defaultGrokCredentials,
+  fetchGrokQuota,
+  grokQuotaSubject,
+  readGrokCredentials,
+} from './grok.ts';
 import { readStoredLastGood, recordQuotaSamples } from './store.ts';
 import { LLMTALLY_USER_AGENT } from '../version.ts';
 import { accessTokenFingerprint, claudeQuotaSubject, throttledQuota } from './throttle.ts';
@@ -64,6 +71,7 @@ export type QuotaAgentFilter =
   | 'antigravity'
   | 'opencode'
   | 'cline'
+  | 'grok'
   | null;
 
 /**
@@ -88,15 +96,22 @@ export async function loadAllQuota(options: {
   readonly activeStore?: ActiveCredentialStore;
   /** Injected in tests; production reads the XDG opencode auth file. */
   readonly opencodeAuthPath?: string;
+  /** Injected in tests; production reads ~/.grok/auth.json. */
+  readonly grokAuthPath?: string;
 } = {}): Promise<QuotaSnapshot[]> {
   const agent = options.agent ?? null;
   const now = options.nowUtc ?? Math.floor(Date.now() / 1000);
   const vault = options.vault ?? new AccountVault();
   const context = options.activeContext ?? resolveActiveClaudeContext({ vault });
 
+  // Before any stored account is refreshed: Claude Code rotates the
+  // active account's lineage during normal use, and a vault still
+  // holding the consumed predecessor would spend the next refresh on a
+  // grant the server already killed. Mirroring costs no token-endpoint
+  // request and lifts a stale quarantine on the way through.
   if (options.allowRefresh !== false) {
     try {
-      recaptureRefreshDeadActiveAccount({
+      await syncActiveClaudeCredential({
         context,
         vault,
         activeStore: options.activeStore ?? createActiveCredentialStore(),
@@ -128,7 +143,7 @@ export async function loadAllQuota(options: {
       : [];
 
   try {
-    const [claude, codexLive, antigravity, opencode, cline] = await Promise.all([
+    const [claude, codexLive, antigravity, opencode, cline, grok] = await Promise.all([
       agent === null || agent === 'claude-code'
         ? loadActiveClaudeQuota(context, now, stateStore, stateStoreUnavailable)
         : null,
@@ -141,6 +156,9 @@ export async function loadAllQuota(options: {
         : null,
       agent === null || agent === 'cline'
         ? loadClineQuota(bundles, now, stateStore, stateStoreUnavailable)
+        : null,
+      agent === null || agent === 'grok'
+        ? loadGrokQuota(now, stateStore, stateStoreUnavailable, options.grokAuthPath)
         : null,
     ]);
 
@@ -203,6 +221,9 @@ export async function loadAllQuota(options: {
     }
     if (cline !== null) {
       snapshots.push(...cline);
+    }
+    if (grok !== null) {
+      snapshots.push(...grok);
     }
     const withHistory =
       options.databasePath === undefined
@@ -441,6 +462,40 @@ async function loadClineQuota(
         },
       );
     }),
+  );
+}
+
+/**
+ * One row per Grok login. The token is read from `auth.json` on every
+ * pass rather than held: the Grok CLI renews it in place, so a cached
+ * copy would go stale mid-session (and llmtally must never renew it
+ * itself — that would rotate the lineage out from under the CLI).
+ */
+async function loadGrokQuota(
+  nowUtc: number,
+  stateStore: QuotaFetchStateStore | null,
+  stateStoreUnavailable: boolean,
+  authPath: string | undefined,
+): Promise<QuotaSnapshot[]> {
+  const credentials =
+    authPath === undefined ? defaultGrokCredentials() : readGrokCredentials(authPath);
+  return Promise.all(
+    credentials.map((credential) =>
+      throttledQuota(
+        grokQuotaSubject({
+          accessToken: credential.accessToken,
+          accountId: credential.accountId,
+          account: credential.account,
+        }),
+        nowUtc,
+        () => fetchGrokQuota({ credential, nowUtc }),
+        {
+          ttlSeconds: SUBSCRIPTION_CADENCE_SECONDS,
+          stateStore,
+          stateStoreUnavailable,
+        },
+      ),
+    ),
   );
 }
 

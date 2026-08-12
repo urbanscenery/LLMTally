@@ -8,6 +8,7 @@ import { AntigravityCliAdapter } from '../parsers/antigravity/adapter.ts';
 import { ClaudeCodeAdapter } from '../parsers/claude-code/adapter.ts';
 import { ClineAdapter } from '../parsers/cline/adapter.ts';
 import { CodexAdapter } from '../parsers/codex/adapter.ts';
+import { GrokAdapter } from '../parsers/grok/adapter.ts';
 import { OpenCodeAdapter } from '../parsers/opencode/adapter.ts';
 import type { SourceAdapter } from '../parsers/types.ts';
 import { acquireScanLock } from './lock.ts';
@@ -73,6 +74,7 @@ export function createDefaultCoordinator(): DefaultScanCoordinator {
       new OpenCodeAdapter(),
       new ClineAdapter(),
       new AntigravityCliAdapter(),
+      new GrokAdapter(),
     ],
   });
 }

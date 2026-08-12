@@ -105,6 +105,9 @@ export const AGENT_TOKEN_SEMANTICS: Readonly<Record<string, AgentTokenSemantics>
   codex: { version: 1, formula: 'codex_input_includes_cache_read' },
   opencode: { version: 1, formula: 'source_authoritative' },
   cline: { version: 1, formula: 'source_authoritative' },
+  // grok_build stamps every turn with costUsdTicks (1e10 ticks = 1 USD),
+  // so its own accounting is the price — no table lookup can beat it
+  grok: { version: 1, formula: 'source_authoritative' },
   // antigravity stores reasoning separately from text output (verified
   // invariant output+reasoning==total); reasoning bills at output rates
   'antigravity-cli': { version: 1, formula: 'separate_reasoning' },

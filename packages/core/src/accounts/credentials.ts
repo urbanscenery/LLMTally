@@ -160,6 +160,33 @@ export function isWipedCredential(text: string): boolean {
   );
 }
 
+/**
+ * True when the OAuth blob carries both halves of a usable grant. A
+ * snapshot missing either half is worthless as a backup — restoring it
+ * would sign the account out — so it must never overwrite a stored one.
+ */
+export function hasCompleteOauthTokens(text: string): boolean {
+  const parsed = asObject(safeParse(text));
+  const oauth = parsed === null ? null : asObject(parsed.claudeAiOauth);
+  if (oauth === null) {
+    return false;
+  }
+  return (
+    typeof oauth.accessToken === 'string' &&
+    oauth.accessToken.length > 0 &&
+    typeof oauth.refreshToken === 'string' &&
+    oauth.refreshToken.length > 0
+  );
+}
+
+/** The access token of a stored blob, or null when it carries none. */
+export function oauthAccessToken(text: string): string | null {
+  const parsed = asObject(safeParse(text));
+  const oauth = parsed === null ? null : asObject(parsed.claudeAiOauth);
+  const token = oauth === null ? null : oauth.accessToken;
+  return typeof token === 'string' && token.length > 0 ? token : null;
+}
+
 function safeParse(text: string): unknown {
   try {
     return JSON.parse(text);

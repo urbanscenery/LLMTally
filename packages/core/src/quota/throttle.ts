@@ -155,16 +155,25 @@ function withCurrentFailure(
   };
 }
 
+/**
+ * A read that never happened still has to say whose it would have been,
+ * or the stored-history fallback cannot find its own rows. The subject
+ * only names the budget: for a vendor that reveals identity during the
+ * call (ClinePass resolves `/users/me`), a cold process holds nothing
+ * but a credential label. The persisted state remembers what the last
+ * successful read saw, so it wins over the placeholder.
+ */
 function emptySnapshot(
   subject: QuotaThrottleSubject,
   nowUtc: number,
   failure: QuotaFailure,
   warnings: readonly string[],
+  known?: { readonly accountId: string | null; readonly accountLabel: string | null },
 ): QuotaSnapshot {
   return makeQuotaSnapshot({
     agent: subject.agent,
-    accountId: subject.accountId,
-    account: subject.account,
+    accountId: known?.accountId ?? subject.accountId,
+    account: known?.accountLabel ?? subject.account,
     source: 'vendor_api',
     observedAtUtc: nowUtc,
     windows: [],
@@ -257,6 +266,7 @@ export async function throttledQuota(
             retryAtUtc: decision.retryAtUtc,
           },
           ['the vendor rejected this credential; sign in again to restore the reading'],
+          decision.state,
         );
       }
       // mirror the shared verdict locally so repeat reads stay cheap
@@ -276,7 +286,7 @@ export async function throttledQuota(
         retryAtUtc: decision.retryAtUtc,
       };
       return entry.snapshot === null
-        ? emptySnapshot(subject, nowUtc, failure, [])
+        ? emptySnapshot(subject, nowUtc, failure, [], decision.state)
         : withCurrentFailure(entry.snapshot, failure, []);
     }
     owner = decision.owner;
@@ -317,7 +327,9 @@ export async function throttledQuota(
       entry.cachedAtUtc = nowUtc;
       entry.blockedUntilUtc = 0;
       entry.deferUntilUtc = 0;
-      complete({ kind: 'success' });
+      // teach the shared row whose numbers these were, so a later
+      // deferred read in any process can still find their history
+      complete({ kind: 'success', accountId: snapshot.accountId, account: snapshot.account });
       return snapshot;
     }
 

@@ -12,8 +12,6 @@
  */
 import { readClaudeActiveIdentityState } from './claude.ts';
 import type { ClaudeActiveIdentity } from './claude.ts';
-import { compactJson, isWipedCredential } from './credentials.ts';
-import type { ActiveCredentialStore } from './credentials.ts';
 import type { AccountVault } from './vault.ts';
 
 export type ActiveClaudeContext =
@@ -94,47 +92,6 @@ export function resolveActiveClaudeContext(options: {
 }
 
 /**
- * The self-healing half of the refresh quarantine: when the account the
- * user just logged into is one whose stored refresh lineage died, the
- * live credentials are the proof it works again — copy them into the
- * vault and lift the quarantine. Read-only toward every agent store;
- * only llmtally's own vault is written.
+ * Mirroring the live credential into the vault — and the quarantine
+ * lift that rides along with it — lives in `live-sync.ts`.
  */
-export function recaptureRefreshDeadActiveAccount(options: {
-  readonly context: ActiveClaudeContext;
-  readonly vault: AccountVault;
-  readonly activeStore: ActiveCredentialStore;
-  readonly nowUtc: number;
-}): 'not_needed' | 'recaptured' | 'unavailable' | 'busy' {
-  if (options.context.status !== 'identified') {
-    return 'not_needed';
-  }
-  const entry = options.vault.get(options.context.activeAccountId);
-  if (entry === null || entry.refreshDeadAtUtc === null) {
-    return 'not_needed';
-  }
-  let live: string | null;
-  try {
-    live = options.activeStore.read();
-  } catch {
-    return 'unavailable';
-  }
-  if (live === null || isWipedCredential(live)) {
-    return 'unavailable';
-  }
-  let compact: string;
-  try {
-    compact = compactJson(live);
-  } catch {
-    return 'unavailable';
-  }
-  const result = options.vault.recaptureCredentials(entry.accountId, compact);
-  if (result === 'updated') {
-    return 'recaptured';
-  }
-  if (result === 'changed') {
-    // someone healed it first — the goal is already met
-    return 'not_needed';
-  }
-  return result === 'busy' ? 'busy' : 'unavailable';
-}

@@ -3,11 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { readClaudeActiveIdentityState } from '@llmtally/core/accounts/claude.ts';
-import {
-  recaptureRefreshDeadActiveAccount,
-  resolveActiveClaudeContext,
-} from '@llmtally/core/accounts/active-claude.ts';
-import { credentialFingerprint } from '@llmtally/core/accounts/credentials.ts';
+import { resolveActiveClaudeContext } from '@llmtally/core/accounts/active-claude.ts';
 import { createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
 import { AccountVault } from '@llmtally/core/accounts/vault.ts';
 import { makeTempDir } from '../helpers.ts';
@@ -157,100 +153,5 @@ describe('resolveActiveClaudeContext', () => {
 
     // Assert
     expect(context.activeAccountId).toBe('never-stored');
-  });
-});
-
-describe('recaptureRefreshDeadActiveAccount', () => {
-  const LIVE = JSON.stringify({
-    claudeAiOauth: { accessToken: 'live-token', refreshToken: 'live-refresh', expiresAt: 9e12 },
-  });
-
-  function storeWith(text: string | null) {
-    return {
-      backend: 'file' as const,
-      read: () => text,
-      write: () => undefined,
-      clear: () => undefined,
-      touch: () => undefined,
-    };
-  }
-
-  function quarantine(vault: AccountVault, accountId: string): void {
-    storedEntry(vault, accountId);
-    const stored = vault.loadCredentials(accountId) ?? '';
-    vault.markRefreshDeadIfFingerprint(accountId, credentialFingerprint(stored), NOW - 100);
-  }
-
-  test('logging back into a quarantined account heals it from the live credentials', () => {
-    // Arrange
-    const vault = makeVault();
-    quarantine(vault, 'acc-dead');
-    const configPath = configWith({ accountUuid: 'acc-dead' });
-    const context = resolveActiveClaudeContext({ vault, configPath });
-
-    // Act
-    const result = recaptureRefreshDeadActiveAccount({
-      context,
-      vault,
-      activeStore: storeWith(LIVE),
-      nowUtc: NOW,
-    });
-
-    // Assert — credentials replaced, quarantine lifted
-    expect(result).toBe('recaptured');
-    expect(vault.get('acc-dead')?.refreshDeadAtUtc).toBeNull();
-    expect(JSON.parse(vault.loadCredentials('acc-dead') ?? '{}').claudeAiOauth.accessToken).toBe(
-      'live-token',
-    );
-  });
-
-  test('a healthy or unrelated active account changes nothing', () => {
-    // Arrange
-    const vault = makeVault();
-    storedEntry(vault, 'acc-healthy');
-    const context = resolveActiveClaudeContext({
-      vault,
-      configPath: configWith({ accountUuid: 'acc-healthy' }),
-    });
-
-    // Act & Assert
-    expect(
-      recaptureRefreshDeadActiveAccount({
-        context,
-        vault,
-        activeStore: storeWith(LIVE),
-        nowUtc: NOW,
-      }),
-    ).toBe('not_needed');
-  });
-
-  test('wiped or unreadable live credentials never overwrite the stored copy', () => {
-    // Arrange
-    const vault = makeVault();
-    quarantine(vault, 'acc-dead');
-    const context = resolveActiveClaudeContext({
-      vault,
-      configPath: configWith({ accountUuid: 'acc-dead' }),
-    });
-    const wiped = JSON.stringify({ claudeAiOauth: { accessToken: '', refreshToken: '' } });
-
-    // Act & Assert
-    expect(
-      recaptureRefreshDeadActiveAccount({
-        context,
-        vault,
-        activeStore: storeWith(wiped),
-        nowUtc: NOW,
-      }),
-    ).toBe('unavailable');
-    expect(
-      recaptureRefreshDeadActiveAccount({
-        context,
-        vault,
-        activeStore: storeWith(null),
-        nowUtc: NOW,
-      }),
-    ).toBe('unavailable');
-    expect(vault.get('acc-dead')?.refreshDeadAtUtc).not.toBeNull();
   });
 });
