@@ -45,8 +45,25 @@ export interface AccountRowViewModel {
   readonly note: string | null;
 }
 
-export interface AccountsTabViewModel {
+/**
+ * One agent's accounts, drawn as a block. The agent IS the switching
+ * boundary — `s` only ever moves between logins of the same agent — so
+ * grouping by it puts the accounts that compete for one slot next to
+ * each other, and lets the block say "switchable" once instead of every
+ * row repeating it.
+ */
+export interface AccountGroupViewModel {
+  readonly agent: string;
+  readonly switchable: boolean;
+  /** Accounts whose stored login is dead and needs a fresh sign-in. */
+  readonly needsReloginCount: number;
   readonly rows: readonly AccountRowViewModel[];
+}
+
+export interface AccountsTabViewModel {
+  /** Flattened `groups`, in display order: the cursor indexes this. */
+  readonly rows: readonly AccountRowViewModel[];
+  readonly groups: readonly AccountGroupViewModel[];
   /** Agents whose accounts llmtally can switch between. */
   readonly switchableAgents: readonly string[];
 }
@@ -320,9 +337,64 @@ export function toAccountsTabViewModel(input: AccountsInput): AccountsTabViewMod
     });
   }
 
-  return { rows, switchableAgents: SWITCHABLE_AGENTS };
+  const groups = groupRows(rows);
+  // the cursor indexes `rows`, so it must be the reading order of the
+  // blocks — not the order the sources happened to produce
+  return {
+    rows: groups.flatMap((group) => group.rows),
+    groups,
+    switchableAgents: SWITCHABLE_AGENTS,
+  };
 }
 
 export function isSwitchable(row: AccountRowViewModel): boolean {
   return row.accountId !== null && SWITCHABLE_AGENTS.includes(row.agent);
+}
+
+/**
+ * The login itself is dead, not just unread: switching to it would
+ * install credentials that cannot work. `auth_invalid` counts because a
+ * revoked codex token reports exactly that before the renewal that
+ * quarantines it has run.
+ */
+function needsRelogin(row: AccountRowViewModel): boolean {
+  return row.refreshDead || row.quota?.failure?.kind === 'auth_invalid';
+}
+
+/** Switchable agents first, in their canonical order; then the rest. */
+function compareAgents(a: string, b: string): number {
+  const rank = (agent: string): number => {
+    const index = SWITCHABLE_AGENTS.indexOf(agent);
+    return index === -1 ? SWITCHABLE_AGENTS.length : index;
+  };
+  return rank(a) - rank(b) || a.localeCompare(b);
+}
+
+/**
+ * Groups by agent, active account first within each block. Sorting is
+ * stable, so accounts that are neither active keep the order the
+ * sources produced them in — a repaint must not reshuffle the list
+ * under a cursor that is pointing at one of them.
+ */
+function groupRows(rows: readonly AccountRowViewModel[]): AccountGroupViewModel[] {
+  const byAgent = new Map<string, AccountRowViewModel[]>();
+  for (const row of rows) {
+    const existing = byAgent.get(row.agent);
+    if (existing === undefined) {
+      byAgent.set(row.agent, [row]);
+    } else {
+      existing.push(row);
+    }
+  }
+  return [...byAgent.keys()].sort(compareAgents).map((agent) => {
+    const ordered = [...(byAgent.get(agent) ?? [])].sort(
+      (a, b) => Number(b.isActive) - Number(a.isActive),
+    );
+    return {
+      agent,
+      switchable: SWITCHABLE_AGENTS.includes(agent),
+      needsReloginCount: ordered.filter(needsRelogin).length,
+      rows: ordered,
+    };
+  });
 }

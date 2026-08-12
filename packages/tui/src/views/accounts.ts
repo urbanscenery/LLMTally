@@ -5,7 +5,11 @@ import type { RichLine, StyledSpan } from '../rich-text.ts';
 import type { TuiState } from '../state.ts';
 import { fitLine, padEndWidth, truncateToWidth, wrapToWidth } from '../text.ts';
 import { isSwitchable } from '../view-model/accounts.ts';
-import type { AccountRowViewModel, QuotaProviderViewModel } from '../view-model/accounts.ts';
+import type {
+  AccountGroupViewModel,
+  AccountRowViewModel,
+  QuotaProviderViewModel,
+} from '../view-model/accounts.ts';
 import type { TabView, TabViewLine } from './shell.ts';
 
 const WIDE_GAUGE = 24;
@@ -50,17 +54,40 @@ export function clampCursor(cursor: number, rowCount: number): number {
   return Math.max(0, Math.min(cursor, rowCount - 1));
 }
 
-function rowTitle(row: AccountRowViewModel, selected: boolean, nowUtc: number): string {
+/**
+ * The account line inside its agent's block. Neither the agent name nor
+ * "switchable" appears here — the block header carries both, once.
+ */
+function accountHeadline(
+  row: AccountRowViewModel,
+  selected: boolean,
+  nowUtc: number,
+): RichLine {
   const marks = [
     row.isActive ? 'active' : null,
     // the loudest mark comes first: a dead login invalidates everything
     // else the row appears to offer
     row.refreshDead ? '⚠ re-login needed' : null,
-    isSwitchable(row) && !row.refreshDead ? 'switchable' : null,
     row.quota === null ? row.note : describeSource(row.quota, nowUtc),
   ].filter((part): part is string => part !== null && part !== '');
   const plan = row.quota?.plan == null ? '' : ` (${row.quota.plan})`;
-  return `${selected ? '▸ ' : '  '}${row.agent} · ${row.label}${plan} — ${marks.join(' · ')}`;
+  return joinLine(
+    span(selected ? '▸ ' : '  ', 'accent'),
+    span(`${row.label}${plan}`, selected ? 'accent' : 'default', { bold: selected }),
+    span(` — ${marks.join(' · ')}`, 'muted'),
+  );
+}
+
+function groupTitle(group: AccountGroupViewModel): string {
+  const count = group.rows.length;
+  const parts = [
+    group.agent,
+    // a count of one says nothing the block does not already show
+    count > 1 ? `${count} accounts` : null,
+    group.switchable ? 'switchable' : null,
+    group.needsReloginCount > 0 ? `${group.needsReloginCount} needs re-login` : null,
+  ].filter((part): part is string => part !== null);
+  return parts.join(' · ');
 }
 
 function quotaLines(
@@ -95,37 +122,63 @@ function quotaLines(
   return lines;
 }
 
-function rowLines(
+/** An account's gauges, indented one level under its headline. */
+function accountBody(
   row: AccountRowViewModel,
-  selected: boolean,
+  narrow: boolean,
+  gauge: number,
+  nowUtc: number,
+  innerWidth: number,
+): RichLine[] {
+  const body: RichLine[] =
+    row.quota === null
+      ? [joinLine(span(row.note ?? 'no quota reading', 'muted'))]
+      : quotaLines(row.quota, narrow, gauge, nowUtc);
+  if (body.length === 0) {
+    body.push(joinLine(span('no quota windows reported', 'muted')));
+  }
+  if (row.refreshDead) {
+    // recovery instructions must never be elided — wrap, don't truncate
+    body.unshift(
+      ...wrapToWidth(
+        '⚠ stored refresh token is dead — sign in as this account once (llmtally re-captures it)',
+        Math.max(8, innerWidth - 4),
+      ).map((line): RichLine => joinLine(span(line, 'danger'))),
+    );
+  }
+  return body.map((line): RichLine => joinLine('  ', line));
+}
+
+function groupLines(
+  group: AccountGroupViewModel,
+  selectedRow: AccountRowViewModel | undefined,
   width: number,
   nowUtc: number,
 ): TabViewLine[] {
   const narrow = width < NARROW_BREAKPOINT;
   const gauge = narrow ? NARROW_GAUGE : WIDE_GAUGE;
-  const content: RichLine[] =
-    row.quota === null
-      ? [joinLine(span(row.note ?? 'no quota reading', 'muted'))]
-      : quotaLines(row.quota, narrow, gauge, nowUtc);
-  if (content.length === 0) {
-    content.push(joinLine(span('no quota windows reported', 'muted')));
-  }
   const cardWidth = Math.min(width - 2, narrow ? width - 2 : 78);
-  if (row.refreshDead) {
-    // recovery instructions must never be elided — wrap, don't truncate
-    content.unshift(
-      ...wrapToWidth(
-        '⚠ stored refresh token is dead — run "claude", /login as this account once (llmtally auto-heals)',
-        cardWidth - 4,
-      ).map((line): RichLine => joinLine(span(line, 'danger'))),
-    );
+  // a lone account needs no separators; several need room to breathe
+  const spaced = group.rows.length > 1;
+  const content: RichLine[] = [];
+  for (const [index, row] of group.rows.entries()) {
+    if (spaced && index > 0) {
+      content.push([]);
+    }
+    content.push(accountHeadline(row, row === selectedRow, nowUtc));
+    content.push(...accountBody(row, narrow, gauge, nowUtc, cardWidth - 2));
+  }
+  if (spaced) {
+    content.unshift([]);
+    content.push([]);
   }
   return [
     ...renderCard({
-      title: rowTitle(row, selected, nowUtc),
+      title: groupTitle(group),
       content,
       width: cardWidth,
-      active: selected,
+      // the block is highlighted for whichever account the cursor is on
+      active: selectedRow !== undefined && group.rows.includes(selectedRow),
     }).map((line): TabViewLine => joinLine(' ', line)),
     '',
   ];
@@ -139,6 +192,9 @@ function actionLine(row: AccountRowViewModel | undefined): RichLine {
   };
   push('[n]', ' add login', true);
   push('[s]', ' switch', row !== undefined && isSwitchable(row) && !row.isActive && !row.refreshDead);
+  // codex-only: the other agents do not revoke on sign-in, so they need
+  // no detach step before adding a second account
+  push('[d]', ' detach', row?.agent === 'codex');
   push('[x]', ' remove', row !== undefined && row.accountId !== null);
   push('[↑↓]', ' select', true);
   return parts;
@@ -162,10 +218,11 @@ export const accountsTabView: TabView = (
     return [fitLine('  accounts not loaded yet', width)];
   }
   const cursor = clampCursor(state.accountsCursor, model.rows.length);
-  const lines: TabViewLine[] = [joinLine(' ', ...actionLine(model.rows[cursor])), ''];
-  model.rows.forEach((row, index) => {
-    lines.push(...rowLines(row, index === cursor, width, nowUtc));
-  });
+  const selectedRow = model.rows[cursor];
+  const lines: TabViewLine[] = [joinLine(' ', ...actionLine(selectedRow)), ''];
+  for (const group of model.groups) {
+    lines.push(...groupLines(group, selectedRow, width, nowUtc));
+  }
   if (model.rows.length === 0) {
     lines.push(fitLine('  no accounts found — press n to store the current login', width));
     lines.push(

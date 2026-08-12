@@ -145,8 +145,11 @@ describe('accountsTabView', () => {
     const text = frame.join('\n');
 
     // Assert
-    expect(text).toContain('claude-code · (current login) (team) — live');
-    expect(text).toContain('codex · (current login) (prolite) — from local logs, as of 2m ago');
+    // the agent names its block; the account line carries only itself
+    expect(text).toContain('claude-code · switchable');
+    expect(text).toContain('(current login) (team) — live');
+    expect(text).toContain('codex · switchable');
+    expect(text).toContain('(current login) (prolite) — from local logs, as of 2m ago');
     expect(text).toContain('[!] ');
     expect(text).toContain('[!!]');
     expect(text).toContain('resets 4h 11m');
@@ -173,7 +176,8 @@ describe('accountsTabView', () => {
     const text = viewText(accountsTabView(stateWith(model), 100, 24, NOW)).join('\n');
 
     // Assert
-    expect(text).toContain('antigravity · a@test.dev — cached, as of 2h ago');
+    expect(text).toContain('antigravity');
+    expect(text).toContain('a@test.dev — cached, as of 2h ago');
   });
 
   test('shows loading and error states without data', () => {
@@ -214,8 +218,79 @@ describe('accountsTabView', () => {
     const text = viewText(accountsTabView(state, 100, 24, NOW)).join('\n');
 
     // Assert
-    expect(text).toContain('claude-code · (current login) (team)');
+    expect(text).toContain('claude-code');
+    expect(text).toContain('(current login) (team)');
     expect(text).toContain('refresh failed: timeout (showing last data)');
+  });
+});
+
+describe('account grouping', () => {
+  function row(agent: string, account: string, overrides: Partial<QuotaSnapshot> = {}) {
+    return snapshotFixture({ agent, account, accountId: account, ...overrides });
+  }
+
+  test('groups by agent, switchable agents first, active account on top', () => {
+    // Arrange — deliberately out of display order
+    const model = toAccountsTabViewModel(
+      inputFor(
+        [
+          row('antigravity', 'anti@test.dev'),
+          row('codex', 'second@test.dev'),
+          row('claude-code', 'claude@test.dev'),
+          row('codex', 'first@test.dev'),
+        ],
+        { activeByAgent: { codex: 'first@test.dev' } },
+      ),
+    );
+
+    // Assert — switching order for the blocks, active first inside one
+    expect(model.groups.map((group) => group.agent)).toEqual([
+      'claude-code',
+      'codex',
+      'antigravity',
+    ]);
+    expect(model.groups[1]?.rows.map((r) => r.label)).toEqual([
+      'first@test.dev',
+      'second@test.dev',
+    ]);
+    expect(model.groups[0]?.switchable).toBe(true);
+    expect(model.groups[2]?.switchable).toBe(false);
+  });
+
+  test('rows are the blocks flattened, so the cursor matches the screen', () => {
+    // Arrange
+    const model = toAccountsTabViewModel(
+      inputFor([
+        row('antigravity', 'anti@test.dev'),
+        row('codex', 'codex@test.dev'),
+        row('claude-code', 'claude@test.dev'),
+      ]),
+    );
+
+    // Assert — walking rows visits the blocks in reading order
+    expect(model.rows.map((r) => r.label)).toEqual([
+      'claude@test.dev',
+      'codex@test.dev',
+      'anti@test.dev',
+    ]);
+    expect(model.rows).toEqual(model.groups.flatMap((group) => group.rows));
+  });
+
+  test('counts the accounts whose login is dead, not merely unread', () => {
+    // Arrange — one revoked login, one that simply failed to read
+    const model = toAccountsTabViewModel(
+      inputFor([
+        row('codex', 'revoked@test.dev', {
+          failure: { kind: 'auth_invalid', failedAtUtc: NOW, retryAtUtc: null },
+        }),
+        row('codex', 'offline@test.dev', {
+          failure: { kind: 'transport', failedAtUtc: NOW, retryAtUtc: null },
+        }),
+      ]),
+    );
+
+    // Assert
+    expect(model.groups[0]?.needsReloginCount).toBe(1);
   });
 });
 
@@ -423,7 +498,9 @@ describe('dead-token warning', () => {
 
     // Assert — visible in the title marks AND as a body warning
     expect(text).toContain('re-login needed');
-    expect(text).toContain('/login as this account once');
+    expect(text).toContain('sign in as this account once');
+    // the block warns too, so a collapsed glance still catches it
+    expect(text).toContain('1 needs re-login');
   });
 
   test('a quarantined row with a quota reading still warns', () => {
