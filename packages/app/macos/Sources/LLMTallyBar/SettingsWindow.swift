@@ -1,5 +1,6 @@
 import AppKit
 import LLMTallyKit
+import ServiceManagement
 import SwiftUI
 
 extension Notification.Name {
@@ -92,6 +93,9 @@ struct SettingsView: View {
 }
 
 private struct GeneralPane: View {
+    @State private var launchAtLogin = false
+    private var isBundled: Bool { Bundle.main.bundleIdentifier != nil }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("General").font(.title2.weight(.semibold))
@@ -101,9 +105,25 @@ private struct GeneralPane: View {
             HStack {
                 Text("Launch at login")
                 Spacer()
-                Toggle("", isOn: .constant(false)).disabled(true)
+                Toggle("", isOn: $launchAtLogin)
+                    .disabled(!isBundled)
+                    .onChange(of: launchAtLogin) { enabled in
+                        guard isBundled else { return }
+                        do {
+                            if enabled {
+                                try SMAppService.mainApp.register()
+                            } else {
+                                try SMAppService.mainApp.unregister()
+                            }
+                        } catch {
+                            // roll the toggle back so the UI matches reality
+                            launchAtLogin = SMAppService.mainApp.status == .enabled
+                        }
+                    }
             }
-            Text("Available once the app ships as a bundle (SMAppService needs a bundle identifier).")
+            Text(isBundled
+                 ? "Registers with macOS login items."
+                 : "Available when running as the bundled app (scripts/bundle.sh).")
                 .font(.caption2).foregroundStyle(.secondary)
             Divider()
             HStack {
@@ -113,6 +133,9 @@ private struct GeneralPane: View {
             }
         }
         .padding(20)
+        .onAppear {
+            if isBundled { launchAtLogin = SMAppService.mainApp.status == .enabled }
+        }
     }
 }
 

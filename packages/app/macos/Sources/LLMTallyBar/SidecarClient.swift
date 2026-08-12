@@ -42,8 +42,15 @@ final class SidecarClient {
                 .deletingLastPathComponent()  // macos
                 .appendingPathComponent("src/sidecar-main.ts").path
 
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["bun", sidecarPath]
+        // A bundled app launched from Finder inherits a bare PATH, so
+        // `/usr/bin/env bun` fails there; probe the usual install spots.
+        if let bun = Self.findBun() {
+            process.executableURL = URL(fileURLWithPath: bun)
+            process.arguments = [sidecarPath]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["bun", sidecarPath]
+        }
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
 
@@ -52,6 +59,17 @@ final class SidecarClient {
         }
         try process.run()
         running = true
+    }
+
+    private static func findBun() -> String? {
+        var candidates: [String] = []
+        if let override = ProcessInfo.processInfo.environment["LLMTALLY_BUN"] {
+            candidates.append(override)
+        }
+        candidates.append(NSHomeDirectory() + "/.bun/bin/bun")
+        candidates.append("/opt/homebrew/bin/bun")
+        candidates.append("/usr/local/bin/bun")
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     func stop() {

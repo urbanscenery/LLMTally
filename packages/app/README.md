@@ -36,6 +36,17 @@ cd packages/app/macos && swift build && .build/debug/LLMTallyBar
 swift run kit-selftest    # headless checks for LLMTallyKit
 ```
 
+Or as a real bundle (unlocks the app icon, notifications, launch at
+login — all gated on a bundle identifier):
+
+```bash
+sh packages/app/scripts/bundle.sh && open packages/app/build/LLMTally.app
+```
+
+The dev bundle still runs the sidecar from this checkout and probes
+bun at its usual install paths (`LLMTALLY_BUN` / `LLMTALLY_SIDECAR`
+override); embedding both is a later distribution phase.
+
 The status item renders the user's ordered `MenuItemDescriptor[]`
 (`menuBarBuilderV1` in UserDefaults, Auto-seeded on first run) against
 live quota every 15 minutes; the popover and the status text share the

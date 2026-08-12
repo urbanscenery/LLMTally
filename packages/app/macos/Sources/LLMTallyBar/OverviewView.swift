@@ -112,6 +112,7 @@ struct OverviewView: View {
                 TodaySection(bucket: model.todayBucket(),
                              totals: model.overview?.report.totals,
                              privacy: privacy)
+                WeeklyChart(buckets: model.overview?.report.buckets ?? [], privacy: privacy)
             }
         }
     }
@@ -384,6 +385,96 @@ struct TodaySection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+    }
+}
+
+// MARK: - Weekly chart
+
+/// "This week" dual line (03_design_spec §3): tokens + Actual over the
+/// last 7 real daily buckets. Each series normalizes to its own max —
+/// never one shared axis. Fewer than 2 real buckets shows
+/// `Not enough history` instead of inventing a trend.
+struct WeeklyChart: View {
+    let buckets: [ReportBucketDTO]
+    var privacy = false
+
+    private var recent: [ReportBucketDTO] { Array(buckets.suffix(7)) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("THIS WEEK").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                if recent.count >= 2 {
+                    legendSwatch(color: .accentColor, label: "tokens")
+                    if !privacy {
+                        legendSwatch(color: .orange, label: "Actual")
+                    }
+                }
+            }
+            if recent.count < 2 {
+                Text("Not enough history · snapshot only")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                GeometryReader { geometry in
+                    let tokens = recent.map { $0.tokens.inputTokens + $0.tokens.outputTokens }
+                    let prices = recent.map { $0.actual.usd ?? $0.actual.pricedSubtotalUsd }
+                    ZStack {
+                        linePath(values: tokens, in: geometry.size)
+                            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                        if !privacy {
+                            linePath(values: prices, in: geometry.size)
+                                .stroke(Color.orange, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                        }
+                    }
+                }
+                .frame(height: 64)
+                HStack {
+                    ForEach(recent, id: \.key) { bucket in
+                        Text(String(bucket.key.suffix(5)))
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    private func legendSwatch(color: Color, label: String) -> some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 1).fill(color).frame(width: 10, height: 2)
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Each series against its own max — the two lines share a canvas,
+    /// not an axis.
+    private func linePath(values: [Double], in size: CGSize) -> Path {
+        let maximum = max(values.max() ?? 1, 0.000_001)
+        let count = values.count
+        return Path { path in
+            for (index, value) in values.enumerated() {
+                let x = count == 1 ? 0 : CGFloat(index) / CGFloat(count - 1) * size.width
+                let y = size.height - CGFloat(value / maximum) * (size.height - 4) - 2
+                if index == 0 {
+                    path.move(to: CGPoint(x: x, y: y))
+                } else {
+                    path.addLine(to: CGPoint(x: x, y: y))
+                }
+            }
+        }
+    }
+
+    private var accessibilityText: String {
+        guard recent.count >= 2, let last = recent.last else { return "Not enough history" }
+        let tokens = formatTokens(last.tokens.inputTokens + last.tokens.outputTokens)
+        return privacy
+            ? "Weekly tokens, latest \(tokens). Cost hidden."
+            : "Weekly tokens and actual cost, latest \(tokens)."
     }
 }
 
