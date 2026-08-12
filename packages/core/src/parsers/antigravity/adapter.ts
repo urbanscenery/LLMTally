@@ -107,9 +107,13 @@ export class AntigravityCliAdapter implements SourceAdapter {
       return;
     }
 
-    let rows: { idx: number; data: Uint8Array }[];
-    let trajectoryId: string | null;
-    let cascadeId: string | null;
+    const warnings: ScanWarning[] = [];
+    const entries: LedgerEntry[] = [];
+    let missingTrajectory = false;
+    let invalidRows = 0;
+    let fallbackIds = 0;
+    let duplicateResponses = 0;
+    const seenResponseIds = new Set<string>();
     try {
       const db = new Database(target.path, { readonly: true, strict: true });
       try {
@@ -120,13 +124,72 @@ export class AntigravityCliAdapter implements SourceAdapter {
             'SELECT trajectory_id, cascade_id FROM trajectory_meta LIMIT 1',
           )
           .get();
-        trajectoryId = meta === null ? null : asString(meta.trajectory_id);
-        cascadeId = meta === null ? null : asString(meta.cascade_id);
-        rows = db
-          .query<{ idx: number; data: Uint8Array }, []>(
-            'SELECT idx, data FROM gen_metadata ORDER BY idx',
-          )
-          .all();
+        const trajectoryId = meta === null ? null : asString(meta.trajectory_id);
+        const cascadeId = meta === null ? null : asString(meta.cascade_id);
+        if (trajectoryId === null) {
+          missingTrajectory = true;
+        } else {
+          // one blob in memory at a time (audit D-04) — the entries this
+          // loop keeps are small parsed numbers, never the blobs. No
+          // yield happens while the source connection is open.
+          for (const row of db
+            .query<{ idx: number; data: Uint8Array }, []>(
+              'SELECT idx, data FROM gen_metadata ORDER BY idx',
+            )
+            .iterate()) {
+            if (row.data.byteLength > MAX_BLOB_BYTES) {
+              invalidRows += 1;
+              continue;
+            }
+            const parsed = parseGenMetadataBlob(row.data);
+            if (parsed.kind === 'skipped') {
+              continue;
+            }
+            if (parsed.kind === 'invalid') {
+              invalidRows += 1;
+              continue;
+            }
+            const responseId =
+              parsed.responseId !== null && parsed.responseId.trim().length > 0
+                ? parsed.responseId
+                : null;
+            let naturalId: string;
+            if (responseId !== null) {
+              if (seenResponseIds.has(responseId)) {
+                // a replayed duplicate of the SAME logical response —
+                // counting it again would double the usage; skip it
+                duplicateResponses += 1;
+                continue;
+              }
+              seenResponseIds.add(responseId);
+              naturalId = `${trajectoryId}:response:${responseId}`;
+            } else {
+              fallbackIds += 1;
+              naturalId = `${trajectoryId}:idx:${row.idx}`;
+            }
+            entries.push({
+              tsUtc: parsed.tsUtc,
+              agent: this.agent,
+              account: null,
+              provider: ANTIGRAVITY_PROVIDER,
+              model: parsed.model,
+              effort: null,
+              promptText: null,
+              inputTokens: parsed.inputTokens,
+              outputTokens: parsed.outputTokens,
+              cacheWrite: 0,
+              cacheRead: parsed.cacheRead,
+              reasoningTokens: parsed.reasoningTokens,
+              costUsd: null,
+              sessionId: cascadeId ?? trajectoryId,
+              cwd: null,
+              naturalId,
+              parserVersion: this.parserVersion,
+              isSidechain: false,
+              parentUuid: null,
+            });
+          }
+        }
       } finally {
         db.close();
       }
@@ -136,71 +199,11 @@ export class AntigravityCliAdapter implements SourceAdapter {
       ]);
       return;
     }
-
-    const warnings: ScanWarning[] = [];
-    const entries: LedgerEntry[] = [];
-    if (trajectoryId === null) {
+    if (missingTrajectory) {
       yield emptyBatch([
         warning(this.agent, target.path, 'invalid_record', 'conversation db has no trajectory id'),
       ]);
       return;
-    }
-    let invalidRows = 0;
-    let fallbackIds = 0;
-    let duplicateResponses = 0;
-    const seenResponseIds = new Set<string>();
-    for (const row of rows) {
-      if (row.data.byteLength > MAX_BLOB_BYTES) {
-        invalidRows += 1;
-        continue;
-      }
-      const parsed = parseGenMetadataBlob(row.data);
-      if (parsed.kind === 'skipped') {
-        continue;
-      }
-      if (parsed.kind === 'invalid') {
-        invalidRows += 1;
-        continue;
-      }
-      const responseId =
-        parsed.responseId !== null && parsed.responseId.trim().length > 0
-          ? parsed.responseId
-          : null;
-      let naturalId: string;
-      if (responseId !== null) {
-        if (seenResponseIds.has(responseId)) {
-          // a replayed duplicate of the SAME logical response — counting
-          // it again would double the usage; skip and surface a warning
-          duplicateResponses += 1;
-          continue;
-        }
-        seenResponseIds.add(responseId);
-        naturalId = `${trajectoryId}:response:${responseId}`;
-      } else {
-        fallbackIds += 1;
-        naturalId = `${trajectoryId}:idx:${row.idx}`;
-      }
-      entries.push({
-        tsUtc: parsed.tsUtc,
-        agent: this.agent,
-        account: null,
-        provider: ANTIGRAVITY_PROVIDER,
-        model: parsed.model,
-        effort: null,
-        promptText: null,
-        inputTokens: parsed.inputTokens,
-        outputTokens: parsed.outputTokens,
-        cacheWrite: 0,
-        cacheRead: parsed.cacheRead,
-        reasoningTokens: parsed.reasoningTokens,
-        costUsd: null,
-        sessionId: cascadeId ?? trajectoryId,
-        cwd: null,
-        naturalId,
-        parserVersion: this.parserVersion,
-        isSidechain: false,
-        parentUuid: null,
-      });
     }
     if (invalidRows > 0) {
       warnings.push(

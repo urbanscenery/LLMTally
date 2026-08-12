@@ -196,3 +196,47 @@ describe('OpenCodeAdapter.scan', () => {
     ]);
   });
 });
+
+describe('windowed collection (D-04)', () => {
+  test('a history larger than one window is ingested completely, window by window', async () => {
+    // Arrange — 4,100 completed assistants: more than two 2,000-message
+    // windows, with a run of identical timestamps crossing a boundary
+    const path = createOpenCodeFixtureDb();
+    const { Database } = await import('bun:sqlite');
+    const db = new Database(path, { strict: true });
+    const insert = db.prepare(
+      'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
+    );
+    db.exec('BEGIN;');
+    insert.run('user-1', 'ses-1', 100, 100, '{"role":"user","time":{"created":100}}');
+    for (let index = 0; index < 4100; index += 1) {
+      // ids sort lexicographically in insertion order; a plateau of
+      // equal time_updated values spans the first window boundary
+      const timeUpdated = index < 2100 ? 1000 : 1000 + index;
+      insert.run(
+        `asst-${String(index).padStart(5, '0')}`,
+        'ses-1',
+        500,
+        timeUpdated,
+        `{"role":"assistant","tokens":{"input":1,"output":2},"modelID":"m","providerID":"opencode-go","time":{"created":500,"completed":900000},"parentID":"user-1"}`,
+      );
+    }
+    db.exec('COMMIT;');
+    db.close();
+
+    // Act
+    const { entries, batches } = await scanAll(path);
+
+    // Assert — nothing lost or doubled across window boundaries
+    expect(entries).toHaveLength(4100);
+    const seen = new Set(entries.map((entry) => entry.naturalId));
+    expect(seen.size).toBe(4100);
+    expect(batches.length).toBeGreaterThan(2);
+    // a resume from the final cursor may re-read the boundary
+    // millisecond (`>=` semantics; the ledger natural key absorbs it)
+    // but must never surface a row the first pass missed
+    const resumed = await scanAll(path, stateFromLastBatch(path, batches));
+    expect(resumed.entries.length).toBeLessThanOrEqual(1);
+    expect(resumed.entries.every((entry) => seen.has(entry.naturalId))).toBe(true);
+  });
+});

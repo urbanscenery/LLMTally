@@ -19,6 +19,13 @@ export const CLINE_PARSER_VERSION = 1;
 const CLINE_CURSOR_VERSION = 1;
 const MESSAGES_SUFFIX = '.messages.json';
 const MILLISECONDS_PER_SECOND = 1000;
+/**
+ * A session file must be parsed as one JSON document, so its size IS
+ * the parse's peak memory (audit D-04). Files past this cap are skipped
+ * with a warning instead of taking the whole scan down; the largest
+ * session measured in the wild is a few MB, so 64MB is pathological.
+ */
+const MAX_SESSION_FILE_BYTES = 64 * 1024 * 1024;
 
 export interface ClineAdapterOptions {
   /** Overrides ~/.cline/data/sessions; used by tests. */
@@ -100,6 +107,18 @@ export class ClineAdapter implements SourceAdapter {
         tailPending: false,
         warnings: [],
       };
+      return;
+    }
+
+    if (before.size > MAX_SESSION_FILE_BYTES) {
+      yield emptyBatch([
+        warning(
+          this.agent,
+          target.path,
+          'runtime',
+          `session file is ${Math.round(before.size / 1048576)}MB (cap ${MAX_SESSION_FILE_BYTES / 1048576}MB); skipped to bound scan memory`,
+        ),
+      ]);
       return;
     }
 

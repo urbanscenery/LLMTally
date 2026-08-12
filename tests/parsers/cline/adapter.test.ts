@@ -6,6 +6,7 @@ import type { LedgerEntry } from '@llmtally/core/domain/types.ts';
 import { ClineAdapter } from '@llmtally/core/parsers/cline/adapter.ts';
 import type { ScanBatch, StoredScanState } from '@llmtally/core/scan/types.ts';
 import { makeTempDir } from '../../helpers.ts';
+import { closeSync, ftruncateSync, openSync } from 'node:fs';
 
 function sessionDocument() {
   return {
@@ -170,5 +171,28 @@ describe('ClineAdapter', () => {
     // Assert
     expect(discovery.targets).toHaveLength(0);
     expect(discovery.warnings[0]?.code).toBe('source_missing');
+  });
+});
+
+describe('session file size cap (D-04)', () => {
+  test('a pathologically large session file is skipped with a warning, not parsed', async () => {
+    // Arrange — a sparse 65MB file: the whole document would have to sit
+    // in memory to parse, so the stat gate must refuse before reading
+    const root = makeTempDir();
+    writeSession(root, 'session-ok', sessionDocument());
+    const hugeDir = join(root, 'session-huge');
+    mkdirSync(hugeDir, { recursive: true });
+    const hugePath = join(hugeDir, 'session-huge.messages.json');
+    const handle = openSync(hugePath, 'w');
+    ftruncateSync(handle, 65 * 1024 * 1024);
+    closeSync(handle);
+
+    // Act
+    const { entries, batches } = await scanAll(root);
+
+    // Assert — the healthy session still ingests; the huge one warns
+    expect(entries.length).toBeGreaterThan(0);
+    const warnings = batches.flatMap((batch) => batch.warnings.map((item) => item.message));
+    expect(warnings.some((message) => message.includes('cap 64MB'))).toBe(true);
   });
 });

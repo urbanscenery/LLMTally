@@ -10,8 +10,29 @@ const REQUIRED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
  * message -> part rows in one statement. json_valid guards keep a single
  * corrupted row from failing the whole SELECT: invalid candidates are
  * returned so the caller can surface a warning per row.
+ *
+ * The window CTE bounds how much lands in memory at once (audit D-04:
+ * a first full scan used to materialize the whole history). The keyset
+ * is `(time_updated, id)`; an empty id makes the window inclusive of
+ * everything at the boundary millisecond, which is exactly the `>=`
+ * resume semantics the persisted cursor relies on — re-read overlap at
+ * the boundary is deduplicated by the ledger's natural key.
  */
-const COLLECT_SQL = `SELECT
+const COLLECT_WINDOW_SQL = `WITH win AS (
+  SELECT a.id, a.session_id, a.time_updated, a.data
+  FROM message AS a
+  WHERE (a.time_updated > ? OR (a.time_updated = ? AND a.id > ?))
+    AND CASE
+      WHEN json_valid(a.data) = 0 THEN 1
+      WHEN json_extract(a.data, '$.role') = 'assistant'
+        AND json_extract(a.data, '$.time.completed') IS NOT NULL
+      THEN 1
+      ELSE 0
+    END = 1
+  ORDER BY a.time_updated, a.id
+  LIMIT ?
+)
+SELECT
   a.id           AS assistantId,
   a.session_id   AS assistantSessionId,
   a.time_updated AS assistantTimeUpdated,
@@ -19,7 +40,7 @@ const COLLECT_SQL = `SELECT
   u.id           AS userId,
   p.id           AS partId,
   p.data         AS partData
-FROM message AS a
+FROM win AS a
 LEFT JOIN message AS u
   ON u.id = CASE
     WHEN json_valid(a.data) THEN json_extract(a.data, '$.parentID')
@@ -27,14 +48,6 @@ LEFT JOIN message AS u
   END
 LEFT JOIN part AS p
   ON p.message_id = u.id
-WHERE a.time_updated >= ?
-  AND CASE
-    WHEN json_valid(a.data) = 0 THEN 1
-    WHEN json_extract(a.data, '$.role') = 'assistant'
-      AND json_extract(a.data, '$.time.completed') IS NOT NULL
-    THEN 1
-    ELSE 0
-  END = 1
 ORDER BY a.time_updated, a.id, p.id`;
 
 export interface OpenCodeJoinedRow {
@@ -65,6 +78,24 @@ export function validateOpenCodeSchema(db: Database): string | null {
   return null;
 }
 
-export function fetchJoinedRows(db: Database, sinceUpdatedMs: number): OpenCodeJoinedRow[] {
-  return db.query<OpenCodeJoinedRow, [number]>(COLLECT_SQL).all(sinceUpdatedMs);
+export interface OpenCodeWindowKeyset {
+  readonly updatedMs: number;
+  /** Last assistant id at that millisecond; '' includes the whole ms. */
+  readonly id: string;
+}
+
+/**
+ * One window of at most `limitAssistants` candidate messages (each may
+ * join several part rows), strictly after the keyset — except that an
+ * empty keyset id is inclusive of the boundary millisecond, matching
+ * the persisted cursor's `>=` resume.
+ */
+export function fetchJoinedRowsWindow(
+  db: Database,
+  keyset: OpenCodeWindowKeyset,
+  limitAssistants: number,
+): OpenCodeJoinedRow[] {
+  return db
+    .query<OpenCodeJoinedRow, [number, number, string, number]>(COLLECT_WINDOW_SQL)
+    .all(keyset.updatedMs, keyset.updatedMs, keyset.id, limitAssistants);
 }
