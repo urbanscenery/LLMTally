@@ -74,6 +74,12 @@ export interface CommitBatchResult {
 export interface LedgerRepository {
   getScanState(agent: string, path: string): StoredScanState | null;
   commitBatch(input: CommitBatchInput): CommitBatchResult;
+  /**
+   * Ages out prompt TEXT observed before `cutoffUtc` (sets it to NULL,
+   * which the FTS triggers propagate); every aggregate column stays.
+   * Optional so repository fakes need not care. Returns aged row count.
+   */
+  agePrompts?(cutoffUtc: number): number;
   migrate(): void;
   close(): void;
 }

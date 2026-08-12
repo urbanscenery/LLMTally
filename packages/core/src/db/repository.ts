@@ -55,6 +55,34 @@ export class SqliteLedgerRepository implements LedgerRepository {
   }
 
   /**
+   * Ages out prompt text observed before the cutoff. Only the words go:
+   * `prompt_text` becomes NULL (the AU trigger removes the FTS entry in
+   * the same statement) while tokens, model, cost, and timing stay
+   * forever. Re-scanning an old source cannot resurrect the text — the
+   * natural-key INSERT OR IGNORE leaves the aged row untouched.
+   */
+  agePrompts(cutoffUtc: number): number {
+    // count first, in the same transaction: the changes counter is
+    // inflated by the FTS triggers (see commitBatch)
+    const run = this.#db.transaction((): number => {
+      const eligible = this.#db
+        .query<{ n: number }, [number]>(
+          'SELECT COUNT(*) AS n FROM usage_ledger WHERE ts_utc < ? AND prompt_text IS NOT NULL',
+        )
+        .get(cutoffUtc);
+      if (eligible === null || eligible.n === 0) {
+        return 0;
+      }
+      this.#db.run(
+        'UPDATE usage_ledger SET prompt_text = NULL WHERE ts_utc < ? AND prompt_text IS NOT NULL',
+        [cutoffUtc],
+      );
+      return eligible.n;
+    });
+    return run();
+  }
+
+  /**
    * Inserts a batch of entries and advances the source cursor in one
    * transaction so a crash can never persist rows without their offset
    * (or the other way round). Duplicate natural ids are counted as

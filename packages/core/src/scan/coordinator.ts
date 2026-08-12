@@ -2,6 +2,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
+import { loadPrivacyConfig } from '../config/privacy.ts';
 import { openDatabase } from '../db/connection.ts';
 import { SqliteLedgerRepository } from '../db/repository.ts';
 import { AntigravityCliAdapter } from '../parsers/antigravity/adapter.ts';
@@ -64,6 +65,8 @@ export interface CoordinatorOptions {
   readonly adapters: readonly SourceAdapter[];
   readonly homeDirectory?: string;
   readonly openRepository?: (databasePath: string) => LedgerRepository;
+  /** Test seam: where `privacy.promptRetentionDays` is read from. */
+  readonly privacyConfigPath?: string;
 }
 
 export function createDefaultCoordinator(): DefaultScanCoordinator {
@@ -83,6 +86,7 @@ export class DefaultScanCoordinator implements ScanCoordinator {
   readonly #adapters: readonly SourceAdapter[];
   readonly #homeDirectory: string;
   readonly #openRepository: (databasePath: string) => LedgerRepository;
+  readonly #privacyConfigPath: string | undefined;
 
   constructor(options: CoordinatorOptions) {
     this.#adapters = options.adapters;
@@ -90,6 +94,7 @@ export class DefaultScanCoordinator implements ScanCoordinator {
     this.#openRepository =
       options.openRepository ??
       ((databasePath: string) => new SqliteLedgerRepository(openDatabase(databasePath)));
+    this.#privacyConfigPath = options.privacyConfigPath;
   }
 
   async run(request: ScanRequest): Promise<ScanSummary> {
@@ -128,12 +133,43 @@ export class DefaultScanCoordinator implements ScanCoordinator {
             }
           }
         }
+        this.#applyPromptRetention(repository, tally);
         return tally.toSummary(request, startedAtUtc, nowUtcSeconds());
       } finally {
         repository.close();
       }
     } finally {
       lock.release();
+    }
+  }
+
+  /**
+   * Prompt-text retention (D-06): after every scan, text older than the
+   * configured shelf life is aged out — the words go, the numbers stay.
+   * Best-effort: a failed aging pass must never fail the scan that just
+   * collected fresh data, so it degrades to a warning.
+   */
+  #applyPromptRetention(repository: LedgerRepository, tally: SummaryTally): void {
+    if (repository.agePrompts === undefined) {
+      return;
+    }
+    const { promptRetentionDays } = loadPrivacyConfig(this.#privacyConfigPath);
+    if (promptRetentionDays <= 0) {
+      return;
+    }
+    try {
+      repository.agePrompts(nowUtcSeconds() - promptRetentionDays * 86_400);
+    } catch (error) {
+      tally.addWarnings([
+        {
+          code: 'runtime',
+          agent: 'ledger',
+          path: null,
+          offset: null,
+          message: `prompt retention pass failed: ${error instanceof Error ? error.message : String(error)}`,
+          recoverable: true,
+        },
+      ]);
     }
   }
 
