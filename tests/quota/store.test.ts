@@ -214,6 +214,65 @@ describe('recordQuotaSamples / readStoredLastGood', () => {
     ).toBeNull();
   });
 
+  test('the latest-window lookup walks the covering index, not a quadratic re-scan', () => {
+    // Arrange — enough history that the correlated-MAX form visibly
+    // degraded (delta review D-03: 1.3s p95 at 40k rows)
+    const db = openMigrated();
+    const insert = db.prepare(
+      `INSERT INTO quota_samples
+        (agent, account, account_id, window_id, used_percent, resets_at_utc, source, observed_at_utc, recorded_at_utc)
+       VALUES (?, ?, ?, ?, ?, ?, 'vendor_api', ?, ?)`,
+    );
+    db.exec('BEGIN;');
+    for (let account = 0; account < 40; account += 1) {
+      for (const window of ['five_hour', 'seven_day', 'monthly', '7d Fable']) {
+        for (let reading = 0; reading < 250; reading += 1) {
+          const observed = NOW - 23 * 3600 + reading * 60;
+          insert.run(
+            'claude-code',
+            `acct-${account}@test.dev`,
+            `uuid-${account}`,
+            window,
+            reading % 100,
+            NOW + 7200,
+            observed,
+            observed,
+          );
+        }
+      }
+    }
+    db.exec('COMMIT;');
+
+    // Act
+    const startedAt = performance.now();
+    const stored = readStoredLastGood(db, {
+      agent: 'claude-code',
+      accountId: 'uuid-7',
+      account: 'acct-7@test.dev',
+      nowUtc: NOW,
+      failure: null,
+    });
+    const elapsedMs = performance.now() - startedAt;
+
+    // Assert — newest reading per window, and the plan is index-driven
+    expect(stored?.windows).toHaveLength(4);
+    expect(stored?.observedAtUtc).toBe(NOW - 23 * 3600 + 249 * 60);
+    expect(elapsedMs).toBeLessThan(500);
+    const plan = db
+      .query<{ detail: string }, [string, string]>(
+        `EXPLAIN QUERY PLAN
+         SELECT window_id FROM (
+           SELECT window_id,
+                  ROW_NUMBER() OVER (PARTITION BY window_id ORDER BY observed_at_utc DESC) AS recency
+           FROM quota_samples WHERE agent = ? AND account_id = ?
+         ) WHERE recency = 1`,
+      )
+      .all('claude-code', 'uuid-7')
+      .map((row) => row.detail)
+      .join(' | ');
+    expect(plan).toContain('idx_quota_samples_latest_by_id');
+  });
+
   test('an id-carrying reader never inherits id-less rows via the label', () => {
     // Arrange — samples recorded before ids existed carry '' and share
     // the display label; the same label can belong to another account

@@ -161,33 +161,39 @@ export function readStoredLastGood(
   // accounts (personal and organization), so that fallback could serve
   // another account's numbers. Id-less rows age out with the 30-day
   // retention instead.
+  //
+  // "Newest row per window" is a single ordered pass over the covering
+  // index (007), not a correlated MAX — that form re-scanned the whole
+  // account history per row and went quadratic with sample count.
   const rows = (
     request.accountId !== null
       ? db
-          .query<SampleRow, [string, string, string]>(
+          .query<SampleRow, [string, string]>(
             `SELECT window_id, used_percent, resets_at_utc, observed_at_utc
-             FROM quota_samples
-             WHERE agent = ?
-               AND account_id = ?
-               AND observed_at_utc = (
-                 SELECT MAX(s2.observed_at_utc) FROM quota_samples s2
-                 WHERE s2.agent = quota_samples.agent
-                   AND s2.window_id = quota_samples.window_id
-                   AND s2.account_id = ?
-               )
+             FROM (
+               SELECT window_id, used_percent, resets_at_utc, observed_at_utc,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY window_id ORDER BY observed_at_utc DESC
+                      ) AS recency
+               FROM quota_samples
+               WHERE agent = ? AND account_id = ?
+             )
+             WHERE recency = 1
              ORDER BY window_id`,
           )
-          .all(request.agent, request.accountId, request.accountId)
+          .all(request.agent, request.accountId)
       : db
           .query<SampleRow, [string, string]>(
             `SELECT window_id, used_percent, resets_at_utc, observed_at_utc
-             FROM quota_samples
-             WHERE agent = ? AND account = ?
-               AND observed_at_utc = (
-                 SELECT MAX(s2.observed_at_utc) FROM quota_samples s2
-                 WHERE s2.agent = quota_samples.agent AND s2.account = quota_samples.account
-                   AND s2.window_id = quota_samples.window_id
-               )
+             FROM (
+               SELECT window_id, used_percent, resets_at_utc, observed_at_utc,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY window_id ORDER BY observed_at_utc DESC
+                      ) AS recency
+               FROM quota_samples
+               WHERE agent = ? AND account = ?
+             )
+             WHERE recency = 1
              ORDER BY window_id`,
           )
           .all(request.agent, request.account ?? '')
