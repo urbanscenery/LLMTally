@@ -630,3 +630,39 @@ describe('quota window normalization and ordering', () => {
     expect(bars.map((bar) => bar.id)).toEqual(['5hours', '7days', 'extra usage $13/$100']);
   });
 });
+
+describe('opencode accounts', () => {
+  function opencodeVaultEntry(accountId: string) {
+    return {
+      agent: 'opencode',
+      accountId,
+      email: null,
+      organizationUuid: null,
+      organizationName: 'opencode-go',
+      alias: null,
+      addedAtUtc: NOW,
+      backend: 'keychain' as const,
+      refreshDeadAtUtc: null,
+    };
+  }
+
+  test('a stored opencode credential set is switchable with an active marker', () => {
+    // Act
+    const model = toAccountsTabViewModel(
+      inputFor([], {
+        vault: [
+          opencodeVaultEntry('opencode-go.aaaaaa'),
+          opencodeVaultEntry('opencode-go.bbbbbb'),
+        ],
+        activeByAgent: { opencode: 'opencode-go.aaaaaa' },
+      }),
+    );
+
+    // Assert
+    expect(model.switchableAgents).toContain('opencode');
+    const active = model.rows.find((row) => row.accountId === 'opencode-go.aaaaaa');
+    const stored = model.rows.find((row) => row.accountId === 'opencode-go.bbbbbb');
+    expect(active?.isActive).toBe(true);
+    expect(stored?.isActive).toBe(false);
+  });
+});

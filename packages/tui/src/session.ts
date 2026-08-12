@@ -260,11 +260,12 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         topic: 'account-add',
         title: 'Add account',
         message:
-          'Stores the logins Claude Code and Codex are using right now.\n' +
+          'Stores the logins Claude Code, Codex, and OpenCode are using right now.\n' +
           '\n' +
           'To add a different account, sign in with it first:\n' +
           '  · claude-code: run "claude" and use /login\n' +
           '  · codex: run "codex login"\n' +
+          '  · opencode: run "opencode auth login"\n' +
           'then come back here and press n.\n' +
           '\n' +
           'Store the current logins?',
@@ -581,7 +582,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       if (state.refresh.scanStatus === 'error') {
         notice(
           'First launch',
-          'Could not import your agent logs. Press r to retry, or check tab 5 (Doctor).',
+          'Could not import your agent logs. Press r to retry, or check tab 6 (Doctor).',
           false,
         );
         return;

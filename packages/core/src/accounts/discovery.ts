@@ -12,8 +12,9 @@ import { join } from 'node:path';
 import { asObject, asString } from '../parsers/shared.ts';
 import { defaultAntigravityStoreDir, listAntigravityAccounts } from '../quota/antigravity.ts';
 import { defaultClaudeConfigPath, readClaudeActiveIdentity } from './claude.ts';
+import { defaultOpencodeAuthPath, opencodeAccountId, readOpencodeProviders } from './opencode.ts';
 
-export type DiscoverySource = 'claude-config' | 'codex-auth' | 'antigravity-store';
+export type DiscoverySource = 'claude-config' | 'codex-auth' | 'antigravity-store' | 'opencode-auth';
 
 export interface AccountProfile {
   readonly agent: string;
@@ -94,6 +95,34 @@ function discoverCodex(authPath: string): AccountProfile[] {
   ];
 }
 
+/**
+ * OpenCode's auth.json carries no email or uuid — the whole credential
+ * set is the identity (`<providers>.<fp6>`), matching what capture and
+ * switch use, so a stored set and its discovery row are one account.
+ */
+function discoverOpencode(authPath: string): AccountProfile[] {
+  let text: string;
+  try {
+    text = readFileSync(authPath, 'utf8');
+  } catch {
+    return [];
+  }
+  if (readOpencodeProviders(text).length === 0) {
+    return [];
+  }
+  const accountId = opencodeAccountId(text);
+  return [
+    {
+      agent: 'opencode',
+      accountId,
+      displayLabel: accountId,
+      email: null,
+      organizationId: null,
+      discoveredVia: 'opencode-auth',
+    },
+  ];
+}
+
 function discoverAntigravity(storeDir: string): AccountProfile[] {
   return listAntigravityAccounts(storeDir).map((account) => ({
     agent: 'antigravity',
@@ -109,6 +138,7 @@ export interface DiscoveryOptions {
   readonly claudeConfigPath?: string;
   readonly codexAuthPath?: string;
   readonly antigravityStoreDir?: string;
+  readonly opencodeAuthPath?: string;
 }
 
 /** Later sources never overwrite an earlier profile for the same (agent, id). */
@@ -118,6 +148,7 @@ export function discoverAccounts(options: DiscoveryOptions = {}): AccountProfile
     ...discoverClaudeActive(options.claudeConfigPath ?? defaultClaudeConfigPath(home)),
     ...discoverCodex(options.codexAuthPath ?? join(home, '.codex', 'auth.json')),
     ...discoverAntigravity(options.antigravityStoreDir ?? defaultAntigravityStoreDir(home)),
+    ...discoverOpencode(options.opencodeAuthPath ?? defaultOpencodeAuthPath(home)),
   ];
   const seen = new Map<string, AccountProfile>();
   for (const profile of profiles) {

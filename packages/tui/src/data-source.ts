@@ -1,8 +1,16 @@
+import { readFileSync } from 'node:fs';
+
 import { installDaemon, uninstallDaemon } from '@llmtally/core/daemon/service.ts';
 import { runDoctorChecks } from '@llmtally/core/doctor/checks.ts';
 import type { DoctorCheck } from '@llmtally/core/doctor/checks.ts';
 import { resolveActiveClaudeContext } from '@llmtally/core/accounts/active-claude.ts';
 import { captureCodexAccount, switchCodexAccount } from '@llmtally/core/accounts/codex.ts';
+import {
+  captureOpencodeAccount,
+  defaultOpencodeAuthPath,
+  opencodeAccountId,
+  switchOpencodeAccount,
+} from '@llmtally/core/accounts/opencode.ts';
 import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
 import { createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import { captureActiveAccount, switchAccount } from '@llmtally/core/accounts/switch.ts';
@@ -37,6 +45,16 @@ export interface TuiDataSource {
   addCurrentAccount(): Promise<string>;
   removeAccount(accountId: string): Promise<string>;
   switchToAccount(accountId: string): Promise<string>;
+}
+
+/** Identity of the live opencode credential set; null when none. */
+function readLiveOpencodeId(): string | null {
+  try {
+    const text = readFileSync(defaultOpencodeAuthPath(), 'utf8');
+    return text.length === 0 ? null : opencodeAccountId(text);
+  } catch {
+    return null;
+  }
 }
 
 export interface DefaultDataSourceOptions {
@@ -79,6 +97,7 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
         activeByAgent: {
           codex: readCodexAuth()?.accountId ?? null,
           antigravity: resolveActiveAccount(defaultAntigravityStoreDir())?.email ?? null,
+          opencode: readLiveOpencodeId(),
         },
       };
     },
@@ -105,6 +124,12 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
       } catch (error) {
         skipped.push(`codex: ${error instanceof Error ? error.message : String(error)}`);
       }
+      try {
+        const entry = captureOpencodeAccount({ vault });
+        stored.push(`${entry.accountId} (opencode)`);
+      } catch (error) {
+        skipped.push(`opencode: ${error instanceof Error ? error.message : String(error)}`);
+      }
       if (stored.length === 0) {
         throw new Error(skipped.join('\n'));
       }
@@ -127,6 +152,13 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
         const result = await switchCodexAccount(accountId, { vault });
         return [
           `switched codex to ${result.target.email ?? result.target.accountId}`,
+          ...result.warnings,
+        ].join('\n');
+      }
+      if (agent === 'opencode') {
+        const result = await switchOpencodeAccount(accountId, { vault });
+        return [
+          `switched opencode to ${result.target.alias ?? result.target.accountId}`,
           ...result.warnings,
         ].join('\n');
       }

@@ -61,7 +61,7 @@ export interface AccountsInput {
   readonly activeByAgent?: Readonly<Record<string, string | null>>;
 }
 
-export const SWITCHABLE_AGENTS: readonly string[] = ['claude-code', 'codex'];
+export const SWITCHABLE_AGENTS: readonly string[] = ['claude-code', 'codex', 'opencode'];
 
 /** Which account id counts as "active" for rows of this agent. */
 function activeIdFor(agent: string, input: AccountsInput): string | null {
@@ -255,7 +255,7 @@ export function toAccountsTabViewModel(input: AccountsInput): AccountsTabViewMod
       quota: provider,
       note:
         entry === undefined && matches.length > 1
-          ? `${matches.length} stored accounts share this address — use "llmtally switch <id>"`
+          ? `${matches.length} stored accounts share this address — select the one you want and press s`
           : null,
     });
   }

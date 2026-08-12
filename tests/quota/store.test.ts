@@ -303,20 +303,29 @@ describe('discoverAccounts', () => {
     const antigravityStore = join(home, 'antigravity');
     mkdirSync(join(antigravityStore, 'accounts', 'agy@test.dev'), { recursive: true });
 
+    const opencodeAuth = join(home, 'opencode-auth.json');
+    writeFileSync(
+      opencodeAuth,
+      JSON.stringify({ 'opencode-go': { type: 'api', key: 'sk-test' } }),
+    );
+
     // Act
     const profiles = discoverAccounts({
       claudeConfigPath: claudeConfig,
       codexAuthPath: codexAuth,
       antigravityStoreDir: antigravityStore,
+      opencodeAuthPath: opencodeAuth,
     });
 
     // Assert
     const keys = profiles.map((profile) => `${profile.agent}:${profile.accountId}`);
-    expect(keys).toEqual([
+    expect(keys).toHaveLength(4);
+    expect(keys.slice(0, 3)).toEqual([
       'claude-code:uuid-active',
       'codex:codex-acc-1',
       'antigravity:agy@test.dev',
     ]);
+    expect(keys[3]).toMatch(/^opencode:opencode-go\.[0-9a-f]{6}$/);
     expect(profiles[0]?.discoveredVia).toBe('claude-config');
     expect(profiles[0]?.displayLabel).toBe('active@test.dev');
     expect(profiles[1]?.email).toBe('codex@test.dev');
@@ -332,6 +341,7 @@ describe('discoverAccounts', () => {
         claudeConfigPath: join(home, 'none.json'),
         codexAuthPath: join(home, 'none-auth.json'),
         antigravityStoreDir: join(home, 'none-store'),
+        opencodeAuthPath: join(home, 'none-opencode.json'),
       }),
     ).toEqual([]);
   });
