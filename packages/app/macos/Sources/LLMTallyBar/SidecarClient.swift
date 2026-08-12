@@ -40,6 +40,7 @@ final class SidecarClient {
                 .deletingLastPathComponent()  // LLMTallyBar
                 .deletingLastPathComponent()  // Sources
                 .deletingLastPathComponent()  // macos
+                .deletingLastPathComponent()  // app
                 .appendingPathComponent("src/sidecar-main.ts").path
 
         // A bundled app launched from Finder inherits a bare PATH, so
@@ -56,6 +57,19 @@ final class SidecarClient {
 
         stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             self?.consume(handle.availableData)
+        }
+        // A dead sidecar must degrade to failed requests, never take the
+        // app down with it: fail everything in flight and mark stopped.
+        process.terminationHandler = { [weak self] _ in
+            guard let self else { return }
+            self.queue.async {
+                self.running = false
+                let waiting = self.pending
+                self.pending.removeAll()
+                for completion in waiting.values {
+                    completion(.failure(SidecarError.notRunning))
+                }
+            }
         }
         try process.run()
         running = true
@@ -120,7 +134,15 @@ final class SidecarClient {
             }
             data.append(0x0A)
             self.pending[id] = completion
-            self.stdinPipe.fileHandleForWriting.write(data)
+            do {
+                // throwing write: a broken pipe becomes a failed request
+                // (with SIGPIPE ignored in main.swift), not a dead app
+                try self.stdinPipe.fileHandleForWriting.write(contentsOf: data)
+            } catch {
+                self.pending.removeValue(forKey: id)
+                self.running = false
+                completion(.failure(SidecarError.notRunning))
+            }
         }
     }
 
