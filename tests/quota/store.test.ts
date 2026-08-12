@@ -346,3 +346,44 @@ describe('discoverAccounts', () => {
     ).toEqual([]);
   });
 });
+
+describe('readStoredLastGood and a rejected credential', () => {
+  test('a refused credential cannot keep vouching for its old numbers', () => {
+    // Arrange — a good reading recorded moments ago
+    const db = openMigrated();
+    recordQuotaSamples(db, [claudeSnapshot({ accountId: 'acc-1' })], NOW - 60);
+
+    // Act — the same account, but the vendor has now rejected the key
+    const stale = readStoredLastGood(db, {
+      agent: 'claude-code',
+      accountId: 'acc-1',
+      account: 'me@test.dev',
+      nowUtc: NOW,
+      failure: { kind: 'auth_invalid', failedAtUtc: NOW, retryAtUtc: null },
+    });
+
+    // Assert — the numbers may still be true, but nothing can confirm it
+    expect(stale).toBeNull();
+    db.close();
+  });
+
+  test('a transient failure still gets the last good reading', () => {
+    // Arrange — same history, a network problem instead of a refusal
+    const db = openMigrated();
+    recordQuotaSamples(db, [claudeSnapshot({ accountId: 'acc-1' })], NOW - 60);
+
+    // Act
+    const stored = readStoredLastGood(db, {
+      agent: 'claude-code',
+      accountId: 'acc-1',
+      account: 'me@test.dev',
+      nowUtc: NOW,
+      failure: { kind: 'transport', failedAtUtc: NOW, retryAtUtc: null },
+    });
+
+    // Assert
+    expect(stored?.source).toBe('stored_history');
+    expect(stored?.windows).toHaveLength(2);
+    db.close();
+  });
+});

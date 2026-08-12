@@ -24,9 +24,21 @@ export type QuotaSource = 'vendor_api' | 'source_log' | 'third_party_cache' | 's
  * Why a reading has no (fresh) windows. `rate_limited` is the vendor's
  * 429; `transport` is any other network/HTTP/parse failure; `unavailable`
  * means we never had usable credentials; `deferred` means the throttle
- * chose not to call (cadence/backoff/another process holds the claim).
+ * chose not to call (cadence/backoff/another process holds the claim);
+ * `auth_invalid` means the vendor rejected the credential we do have
+ * (401) or refused the product to it (403).
+ *
+ * The split matters beyond wording: `auth_invalid` is the one kind that
+ * must never be answered with remembered numbers. A 429 or a timeout
+ * leaves the last reading true; a revoked key or a lapsed subscription
+ * means nobody can vouch for it any more.
  */
-export type QuotaFailureKind = 'rate_limited' | 'transport' | 'unavailable' | 'deferred';
+export type QuotaFailureKind =
+  | 'rate_limited'
+  | 'transport'
+  | 'unavailable'
+  | 'deferred'
+  | 'auth_invalid';
 
 export interface QuotaFailure {
   readonly kind: QuotaFailureKind;

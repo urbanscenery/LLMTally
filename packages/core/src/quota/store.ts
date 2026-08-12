@@ -139,6 +139,11 @@ export function readStoredLastGood(
   db: Database,
   request: StoredLastGoodRequest,
 ): QuotaSnapshot | null {
+  if (request.failure?.kind === 'auth_invalid') {
+    // a rejected credential invalidates its own history: the numbers
+    // may still be true, but nothing can confirm that any more
+    return null;
+  }
   // the stable id is the lookup key when the caller has one; rows
   // recorded before the id existed carry '' and stay reachable via
   // their display label

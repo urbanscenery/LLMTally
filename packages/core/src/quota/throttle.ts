@@ -120,6 +120,12 @@ export function describeWait(seconds: number): string {
 
 export interface ThrottledQuotaOptions {
   readonly ttlSeconds?: number;
+  /**
+   * Sustained cadence enforced across processes. Defaults to
+   * `ttlSeconds` so the in-memory cache and the shared SQLite claim can
+   * never disagree about how often a vendor may be called.
+   */
+  readonly normalIntervalSeconds?: number;
   /** Cross-process budget authority; omit for process-local behavior. */
   readonly stateStore?: QuotaFetchStateStore | null;
   /**
@@ -185,10 +191,9 @@ export async function throttledQuota(
   const inRateLimitWindow =
     entry.lastRateLimitedAtUtc !== null &&
     nowUtc - entry.lastRateLimitedAtUtc < POST_429_WINDOW_SECONDS;
-  const ttl = Math.max(
-    options.ttlSeconds ?? QUOTA_CACHE_TTL_SECONDS,
-    inRateLimitWindow ? POST_429_MIN_INTERVAL_SECONDS : 0,
-  );
+  const cadence = options.ttlSeconds ?? QUOTA_CACHE_TTL_SECONDS;
+  const sharedCadence = options.normalIntervalSeconds ?? cadence;
+  const ttl = Math.max(cadence, inRateLimitWindow ? POST_429_MIN_INTERVAL_SECONDS : 0);
 
   if (entry.inFlight !== null) {
     return entry.inFlight;
@@ -224,12 +229,7 @@ export async function throttledQuota(
   if (store !== null) {
     let decision;
     try {
-      decision = store.claim(
-        subject,
-        nowUtc,
-        QUOTA_CACHE_TTL_SECONDS,
-        POST_429_MIN_INTERVAL_SECONDS,
-      );
+      decision = store.claim(subject, nowUtc, sharedCadence, POST_429_MIN_INTERVAL_SECONDS);
     } catch {
       // a broken budget authority means no coordination is possible:
       // fail toward under-spending, exactly like an unopenable store
@@ -240,6 +240,25 @@ export async function throttledQuota(
         : withCurrentFailure(entry.snapshot, failure, [note]);
     }
     if (decision.kind === 'deferred') {
+      if (decision.state.authInvalidAtUtc !== null) {
+        // waiting out the cadence after a refusal is not an ordinary
+        // wait: reporting it as `deferred` is what lets the stored
+        // history fall back in and re-serve the rejected credential's
+        // numbers. The refusal keeps its own name until a read succeeds.
+        entry.snapshot = null;
+        entry.cachedAtUtc = 0;
+        entry.deferUntilUtc = decision.retryAtUtc;
+        return emptySnapshot(
+          subject,
+          nowUtc,
+          {
+            kind: 'auth_invalid',
+            failedAtUtc: decision.state.authInvalidAtUtc,
+            retryAtUtc: decision.retryAtUtc,
+          },
+          ['the vendor rejected this credential; sign in again to restore the reading'],
+        );
+      }
       // mirror the shared verdict locally so repeat reads stay cheap
       if (decision.reason === 'rate_limit') {
         entry.blockedUntilUtc = decision.retryAtUtc;
@@ -314,6 +333,18 @@ export async function throttledQuota(
       return servedWhileRateLimited(subject, entry, nowUtc, entry.blockedUntilUtc, snapshot);
     }
 
+    if (snapshot.failure.kind === 'auth_invalid') {
+      // The credential behind those numbers was just refused, so the
+      // numbers go and the refusal takes their place in the cache:
+      // remembering the refusal is what makes the cadence apply to
+      // re-checking a rejected key instead of re-asking on every
+      // repaint. Recording it persistently stops the next (deferred)
+      // read in any process from bringing the old numbers back.
+      complete({ kind: 'auth_invalid' });
+      entry.snapshot = snapshot;
+      entry.cachedAtUtc = nowUtc;
+      return snapshot;
+    }
     complete({ kind: 'failure' });
     // transport/unavailable: keep the last good numbers on screen
     return entry.snapshot === null

@@ -5,6 +5,7 @@ import accountsSql from './migrations/002_accounts.sql' with { type: 'text' };
 import quotaFetchStateSql from './migrations/003_quota_fetch_state.sql' with { type: 'text' };
 import quotaSampleAccountIdSql from './migrations/004_quota_sample_account_id.sql' with { type: 'text' };
 import quotaSampleIdentitySql from './migrations/005_quota_sample_identity.sql' with { type: 'text' };
+import quotaAuthStateSql from './migrations/006_quota_auth_state.sql' with { type: 'text' };
 
 interface Migration {
   readonly id: number;
@@ -18,6 +19,7 @@ const MIGRATIONS: readonly Migration[] = [
   { id: 3, name: '003_quota_fetch_state', sql: quotaFetchStateSql },
   { id: 4, name: '004_quota_sample_account_id', sql: quotaSampleAccountIdSql },
   { id: 5, name: '005_quota_sample_identity', sql: quotaSampleIdentitySql },
+  { id: 6, name: '006_quota_auth_state', sql: quotaAuthStateSql },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.id ?? 0;

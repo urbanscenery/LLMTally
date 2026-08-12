@@ -3,7 +3,11 @@ import { join } from 'node:path';
 
 import { openDatabase } from '@llmtally/core/db/connection.ts';
 import { migrate } from '@llmtally/core/db/migrate.ts';
-import { openQuotaFetchStateStore } from '@llmtally/core/quota/fetch-state.ts';
+import {
+  POST_429_MIN_INTERVAL_SECONDS,
+  openQuotaFetchStateStore,
+  rateLimitWaitSeconds,
+} from '@llmtally/core/quota/fetch-state.ts';
 import type { QuotaThrottleSubject } from '@llmtally/core/quota/throttle.ts';
 import { makeTempDir } from '../helpers.ts';
 
@@ -288,5 +292,37 @@ describe('monotonic 429 bookkeeping', () => {
       expect(after.state.last429Utc).toBe(NOW + NORMAL);
       expect(after.state.blockedUntilUtc).toBeGreaterThanOrEqual(NOW + NORMAL + 360);
     }
+  });
+});
+
+describe('rateLimitWaitSeconds', () => {
+  test('honours a vendor retry hint that is longer than our own backoff', () => {
+    // Act & Assert — the vendor knows its own window better than we do
+    expect(rateLimitWaitSeconds(1, 900)).toBe(900);
+  });
+
+  test('never lets a hint push the wait below our floor', () => {
+    // Act & Assert
+    expect(rateLimitWaitSeconds(1, 5)).toBe(POST_429_MIN_INTERVAL_SECONDS);
+    expect(rateLimitWaitSeconds(1, null)).toBe(POST_429_MIN_INTERVAL_SECONDS);
+  });
+
+  test('caps an absurd hint so a bad header cannot park polling for days', () => {
+    // Arrange — the wait is persisted, so an unbounded hint would
+    // survive restarts and silently stop the vendor being read at all
+    const week = 7 * 24 * 3600;
+
+    // Act
+    const wait = rateLimitWaitSeconds(1, week);
+
+    // Assert
+    expect(wait).toBe(3600);
+  });
+
+  test('the exponential backoff still grows and stops at its own cap', () => {
+    // Act & Assert
+    expect(rateLimitWaitSeconds(2, null)).toBe(600);
+    expect(rateLimitWaitSeconds(3, null)).toBe(1200);
+    expect(rateLimitWaitSeconds(9, null)).toBe(1800);
   });
 });

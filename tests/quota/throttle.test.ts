@@ -423,3 +423,97 @@ describe('429 metadata and restart inheritance', () => {
     expect(snapshot.failure?.kind).toBe('deferred');
   });
 });
+
+describe('throttledQuota and a rejected credential', () => {
+  beforeEach(() => {
+    resetQuotaThrottle();
+  });
+
+  function refused(nowUtc = NOW): QuotaSnapshot {
+    return makeQuotaSnapshot({
+      agent: 'claude-code',
+      source: 'vendor_api',
+      observedAtUtc: nowUtc,
+      windows: [],
+      failure: { kind: 'auth_invalid', failedAtUtc: nowUtc, retryAtUtc: null },
+      warnings: ['the vendor rejected the stored key'],
+    });
+  }
+
+  test('forgets the cached numbers instead of serving them under a refusal', async () => {
+    // Arrange — a good reading is cached, then the key stops working
+    await throttledQuota('k', NOW, async () => good(42));
+
+    // Act
+    const afterRefusal = await throttledQuota('k', NOW + TTL + 1, async () => refused(NOW + TTL + 1));
+    const nextRead = await throttledQuota('k', NOW + TTL + 2, async () => refused(NOW + TTL + 2));
+
+    // Assert — neither the refusal itself nor the read right after it
+    // may show numbers nobody stands behind any more
+    expect(afterRefusal.windows).toEqual([]);
+    expect(afterRefusal.failure?.kind).toBe('auth_invalid');
+    expect(nextRead.windows).toEqual([]);
+  });
+
+  test('a transport failure still keeps the last good numbers on screen', async () => {
+    // Arrange
+    await throttledQuota('k2', NOW, async () => good(42));
+    const broken = makeQuotaSnapshot({
+      agent: 'claude-code',
+      source: 'vendor_api',
+      observedAtUtc: NOW + TTL + 1,
+      windows: [],
+      failure: { kind: 'transport', failedAtUtc: NOW + TTL + 1, retryAtUtc: null },
+    });
+
+    // Act
+    const snapshot = await throttledQuota('k2', NOW + TTL + 1, async () => broken);
+
+    // Assert
+    expect(snapshot.windows).toHaveLength(1);
+    expect(snapshot.failure?.kind).toBe('transport');
+  });
+
+  test('a recovered credential repopulates the cache normally', async () => {
+    // Arrange
+    await throttledQuota('k3', NOW, async () => good(42));
+    await throttledQuota('k3', NOW + TTL + 1, async () => refused(NOW + TTL + 1));
+
+    // Act — the user logs back in and the next read succeeds
+    const healed = await throttledQuota('k3', NOW + 2 * TTL + 2, async () => good(7, NOW + 2 * TTL + 2));
+
+    // Assert
+    expect(healed.failure).toBeNull();
+    expect(healed.windows[0]?.usedPercent).toBe(7);
+  });
+
+  test('a slower cadence governs the shared claim, not just the local cache', async () => {
+    // Arrange — two independent processes sharing one budget file
+    const databasePath = join(makeTempDir(), 'ledger.db');
+    const storeA = openQuotaFetchStateStore(databasePath, NOW);
+    const storeB = openQuotaFetchStateStore(databasePath, NOW);
+    let calls = 0;
+    const fetchOnce = async (): Promise<QuotaSnapshot> => {
+      calls += 1;
+      return good(10);
+    };
+    const subject = { key: 'slow', agent: 'opencode', accountId: null, account: null };
+
+    // Act — the second process asks after the default 180s but inside 300s
+    await throttledQuota(subject, NOW, fetchOnce, {
+      ttlSeconds: 300,
+      stateStore: storeA,
+    });
+    resetQuotaThrottle('slow');
+    const second = await throttledQuota(subject, NOW + 200, fetchOnce, {
+      ttlSeconds: 300,
+      stateStore: storeB,
+    });
+
+    // Assert — the shared claim must honour the adapter's cadence
+    expect(calls).toBe(1);
+    expect(second.failure?.kind).toBe('deferred');
+    storeA.close();
+    storeB.close();
+  });
+});

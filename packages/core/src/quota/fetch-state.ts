@@ -31,6 +31,12 @@ export interface QuotaFetchState {
   readonly consecutive429: number;
   readonly last429Utc: number | null;
   readonly lastFetchUtc: number;
+  /**
+   * When the vendor last refused this credential (401/403), or null.
+   * Set, the credential's remembered numbers are not to be shown by
+   * anyone — including a process that has never talked to the vendor.
+   */
+  readonly authInvalidAtUtc: number | null;
   readonly claimOwner: string | null;
   readonly claimUntilUtc: number | null;
   readonly updatedAtUtc: number;
@@ -48,6 +54,8 @@ export type QuotaClaimDecision =
 export type QuotaFetchCompletion =
   | { readonly kind: 'success' }
   | { readonly kind: 'rate_limited'; readonly retryAfterSeconds: number | null }
+  /** The vendor refused the credential itself; remembered numbers die with it. */
+  | { readonly kind: 'auth_invalid' }
   | { readonly kind: 'failure' };
 
 export interface QuotaFetchStateStore {
@@ -70,6 +78,14 @@ export const POST_429_MIN_INTERVAL_SECONDS = 360;
 /** First-429 exponential base and its cap. */
 const BACKOFF_BASE_SECONDS = 5 * 60;
 const BACKOFF_CAP_SECONDS = 30 * 60;
+/**
+ * Ceiling on a vendor's own `retry-after`. The wait is persisted, so an
+ * absurd hint (a misbehaving or compromised endpoint asking for days)
+ * would park that vendor's polling long past any restart. Honouring it
+ * up to an hour keeps the vendor in charge of realistic waits; past
+ * that we retry, and a still-refusing endpoint just 429s us again.
+ */
+const RETRY_AFTER_CAP_SECONDS = 3600;
 const STATE_RETENTION_SECONDS = 7 * 24 * 3600;
 
 /**
@@ -79,7 +95,8 @@ const STATE_RETENTION_SECONDS = 7 * 24 * 3600;
  */
 export function rateLimitWaitSeconds(count: number, retryAfterSeconds: number | null): number {
   const exponential = Math.min(BACKOFF_CAP_SECONDS, BACKOFF_BASE_SECONDS * 2 ** (count - 1));
-  return Math.max(POST_429_MIN_INTERVAL_SECONDS, exponential, retryAfterSeconds ?? 0);
+  const hinted = Math.min(retryAfterSeconds ?? 0, RETRY_AFTER_CAP_SECONDS);
+  return Math.max(POST_429_MIN_INTERVAL_SECONDS, exponential, hinted);
 }
 
 interface StateRow {
@@ -91,6 +108,7 @@ interface StateRow {
   readonly consecutive_429: number;
   readonly last_429_utc: number | null;
   readonly last_fetch_utc: number;
+  readonly auth_invalid_at_utc: number | null;
   readonly claim_owner: string | null;
   readonly claim_until_utc: number | null;
   readonly updated_at_utc: number;
@@ -106,6 +124,7 @@ function toState(row: StateRow): QuotaFetchState {
     consecutive429: row.consecutive_429,
     last429Utc: row.last_429_utc,
     lastFetchUtc: row.last_fetch_utc,
+    authInvalidAtUtc: row.auth_invalid_at_utc,
     claimOwner: row.claim_owner,
     claimUntilUtc: row.claim_until_utc,
     updatedAtUtc: row.updated_at_utc,
@@ -133,7 +152,8 @@ export function openQuotaFetchStateStore(
 
   const selectRow = db.prepare<StateRow, [string]>(
     `SELECT key, agent, account_id, account_label, blocked_until_utc, consecutive_429,
-            last_429_utc, last_fetch_utc, claim_owner, claim_until_utc, updated_at_utc
+            last_429_utc, last_fetch_utc, auth_invalid_at_utc,
+            claim_owner, claim_until_utc, updated_at_utc
      FROM quota_fetch_state WHERE key = ?`,
   );
 
@@ -149,8 +169,9 @@ export function openQuotaFetchStateStore(
         db.run(
           `INSERT INTO quota_fetch_state
              (key, agent, account_id, account_label, blocked_until_utc, consecutive_429,
-              last_429_utc, last_fetch_utc, claim_owner, claim_until_utc, updated_at_utc)
-           VALUES (?, ?, ?, ?, 0, 0, NULL, 0, NULL, NULL, ?)
+              last_429_utc, last_fetch_utc, auth_invalid_at_utc,
+              claim_owner, claim_until_utc, updated_at_utc)
+           VALUES (?, ?, ?, ?, 0, 0, NULL, 0, NULL, NULL, NULL, ?)
            ON CONFLICT (key) DO NOTHING`,
           [subject.key, subject.agent, subject.accountId, subject.account, nowUtc_],
         );
@@ -259,9 +280,20 @@ export function openQuotaFetchStateStore(
                  last_429_utc = CASE
                    WHEN last_429_utc IS NOT NULL AND ? - last_429_utc < ${POST_429_WINDOW_SECONDS}
                      THEN last_429_utc ELSE NULL END,
+                 auth_invalid_at_utc = NULL,
                  claim_owner = NULL, claim_until_utc = NULL, updated_at_utc = ?
              WHERE key = ? AND claim_owner = ?`,
             [nowUtc_, nowUtc_, nowUtc_, key, owner],
+          );
+        } else if (completion.kind === 'auth_invalid') {
+          // the slot stays spent and the refusal is recorded, so a
+          // deferred read in any process knows not to serve history
+          db.run(
+            `UPDATE quota_fetch_state
+             SET auth_invalid_at_utc = ?,
+                 claim_owner = NULL, claim_until_utc = NULL, updated_at_utc = ?
+             WHERE key = ? AND claim_owner = ?`,
+            [nowUtc_, nowUtc_, key, owner],
           );
         } else if (completion.kind === 'rate_limited') {
           // a 429 is applied monotonically whoever reports it: the
