@@ -6,6 +6,7 @@ import {
   captureOpencodeAccount,
   opencodeAccountId,
   opencodeCredentialFingerprint,
+  readOpencodeApiKey,
   readOpencodeProviders,
   switchOpencodeAccount,
 } from '@llmtally/core/accounts/opencode.ts';
@@ -74,6 +75,54 @@ describe('opencode auth parsing', () => {
     expect(opencodeCredentialFingerprint(before)).not.toBe(
       opencodeCredentialFingerprint(rotatedRefresh),
     );
+  });
+});
+
+describe('readOpencodeApiKey', () => {
+  test('returns the key of exactly the provider asked for', () => {
+    // Arrange
+    const text = authJson({ 'opencode-go': 'sk-go', 'cline-pass': 'sk-pass' });
+
+    // Act & Assert — a look-alike provider must never be spent as another
+    expect(readOpencodeApiKey(text, 'opencode-go')).toBe('sk-go');
+    expect(readOpencodeApiKey(text, 'cline-pass')).toBe('sk-pass');
+    expect(readOpencodeApiKey(text, 'opencode')).toBeNull();
+    expect(readOpencodeApiKey(text, 'cline')).toBeNull();
+  });
+
+  test('has nothing to offer for an absent provider or an unusable file', () => {
+    // Act & Assert
+    expect(readOpencodeApiKey(authJson({ 'cline-pass': 'sk-pass' }), 'opencode-go')).toBeNull();
+    expect(readOpencodeApiKey('{not json', 'opencode-go')).toBeNull();
+    expect(readOpencodeApiKey('{}', 'opencode-go')).toBeNull();
+  });
+
+  test('ignores a provider that authenticates some other way', () => {
+    // Arrange
+    const oauth = JSON.stringify({
+      'opencode-go': { type: 'oauth', access: 'at-1', refresh: 'rt-1' },
+    });
+
+    // Act & Assert — an oauth entry has no key to send as a bearer token
+    expect(readOpencodeApiKey(oauth, 'opencode-go')).toBeNull();
+  });
+
+  test.each([
+    ['empty', ''],
+    ['newline', 'sk-a\nX-Injected: 1'],
+    ['carriage return', 'sk-a\r\nX-Injected: 1'],
+    ['null byte', 'sk-a\u0000'],
+  ])('refuses a %s key rather than sending it as a header', (_label, key) => {
+    // Act & Assert
+    expect(readOpencodeApiKey(authJson({ 'opencode-go': key }), 'opencode-go')).toBeNull();
+  });
+
+  test('accepts the punctuation real keys actually contain', () => {
+    // Arrange
+    const key = 'sk-go_live.AbC-123456789';
+
+    // Act & Assert
+    expect(readOpencodeApiKey(authJson({ 'opencode-go': key }), 'opencode-go')).toBe(key);
   });
 });
 

@@ -15,11 +15,27 @@
  * stored last-good reading (marked `stored_history`, never fabricated),
  * and the cross-process fetch-state store becomes the budget authority.
  */
+import { readFileSync } from 'node:fs';
+
 import { resolveActiveClaudeContext, recaptureRefreshDeadActiveAccount } from '../accounts/active-claude.ts';
 import type { ActiveClaudeContext } from '../accounts/active-claude.ts';
 import { createActiveCredentialStore } from '../accounts/credentials.ts';
 import type { ActiveCredentialStore } from '../accounts/credentials.ts';
+import {
+  OPENCODE_AGENT,
+  defaultOpencodeAuthPath,
+  opencodeAccountId,
+  readOpencodeApiKey,
+  readOpencodeProviders,
+} from '../accounts/opencode.ts';
 import { AccountVault } from '../accounts/vault.ts';
+import type { VaultEntry } from '../accounts/vault.ts';
+import { CLINE_PASS_PROVIDER, clinePassQuotaSubject, fetchClinePassQuota } from './cline.ts';
+import {
+  OPENCODE_GO_PROVIDER,
+  fetchOpencodeGoQuota,
+  opencodeGoQuotaSubject,
+} from './opencode.ts';
 import { readVaultAccountsQuota } from './vault-accounts.ts';
 import { openDatabase } from '../db/connection.ts';
 import { migrate } from '../db/migrate.ts';
@@ -40,9 +56,23 @@ import { openQuotaFetchStateStore } from './fetch-state.ts';
 import type { QuotaFetchStateStore, QuotaThrottleSubject } from './fetch-state.ts';
 import { readStoredLastGood, recordQuotaSamples } from './store.ts';
 import { LLMTALLY_USER_AGENT } from '../version.ts';
-import { claudeQuotaSubject, throttledQuota } from './throttle.ts';
+import { accessTokenFingerprint, claudeQuotaSubject, throttledQuota } from './throttle.ts';
 
-export type QuotaAgentFilter = 'claude-code' | 'codex' | 'antigravity' | null;
+export type QuotaAgentFilter =
+  | 'claude-code'
+  | 'codex'
+  | 'antigravity'
+  | 'opencode'
+  | 'cline'
+  | null;
+
+/**
+ * Cadence for the OpenCode/Cline subscription endpoints. Neither vendor
+ * publishes a polling contract, so this is our own conservative floor,
+ * not a promise either of them made: the shortest window they report is
+ * five hours, which a five-minute reading tracks with room to spare.
+ */
+const SUBSCRIPTION_CADENCE_SECONDS = 300;
 
 export async function loadAllQuota(options: {
   readonly agent?: QuotaAgentFilter;
@@ -56,6 +86,8 @@ export async function loadAllQuota(options: {
   /** Injected in tests; production resolves from ~/.claude.json. */
   readonly activeContext?: ActiveClaudeContext;
   readonly activeStore?: ActiveCredentialStore;
+  /** Injected in tests; production reads the XDG opencode auth file. */
+  readonly opencodeAuthPath?: string;
 } = {}): Promise<QuotaSnapshot[]> {
   const agent = options.agent ?? null;
   const now = options.nowUtc ?? Math.floor(Date.now() / 1000);
@@ -88,14 +120,27 @@ export async function loadAllQuota(options: {
     }
   }
 
+  // read once per load and share: the OpenCode and Cline readings must
+  // agree about which credential set was live while they ran
+  const bundles =
+    agent === null || agent === 'opencode' || agent === 'cline'
+      ? listOpencodeBundles(vault, options.opencodeAuthPath)
+      : [];
+
   try {
-    const [claude, codexLive, antigravity] = await Promise.all([
+    const [claude, codexLive, antigravity, opencode, cline] = await Promise.all([
       agent === null || agent === 'claude-code'
         ? loadActiveClaudeQuota(context, now, stateStore, stateStoreUnavailable)
         : null,
       agent === null || agent === 'codex' ? throttledCodexLive(now) : null,
       agent === null || agent === 'antigravity'
         ? loadAntigravityQuota(now, options.allowRefresh)
+        : null,
+      agent === null || agent === 'opencode'
+        ? loadOpencodeGoQuota(bundles, now, stateStore, stateStoreUnavailable)
+        : null,
+      agent === null || agent === 'cline'
+        ? loadClineQuota(bundles, now, stateStore, stateStoreUnavailable)
         : null,
     ]);
 
@@ -152,6 +197,12 @@ export async function loadAllQuota(options: {
     }
     if (antigravity !== null) {
       snapshots.push(...antigravity);
+    }
+    if (opencode !== null) {
+      snapshots.push(...opencode);
+    }
+    if (cline !== null) {
+      snapshots.push(...cline);
     }
     const withHistory =
       options.databasePath === undefined
@@ -224,6 +275,172 @@ async function loadActiveClaudeQuota(
     token === null
       ? {}
       : { stateStore, stateStoreUnavailable },
+  );
+}
+
+/**
+ * One OpenCode credential set: the switchable unit, and the only place
+ * a provider key for it can be read from.
+ */
+interface OpencodeBundle {
+  readonly accountId: string;
+  readonly account: string;
+  readonly authText: string;
+}
+
+function opencodeLabel(vaultEntries: readonly VaultEntry[], accountId: string): string {
+  const entry = vaultEntries.find(
+    (candidate) => candidate.agent === OPENCODE_AGENT && candidate.accountId === accountId,
+  );
+  return entry?.alias == null ? accountId : `${accountId} [${entry.alias}]`;
+}
+
+/**
+ * The live credential set plus every stored one, each read exactly once
+ * per load. Reading the file here (rather than inside each adapter) is
+ * what keeps one load's readings consistent: a set that is swapped
+ * mid-load cannot have half its providers attributed to the new
+ * identity and half to the old.
+ */
+function listOpencodeBundles(
+  vault: AccountVault,
+  authPath: string = defaultOpencodeAuthPath(),
+): OpencodeBundle[] {
+  const entries = vault.list();
+  const bundles = new Map<string, OpencodeBundle>();
+  try {
+    const text = readFileSync(authPath, 'utf8');
+    if (text.length > 0 && readOpencodeProviders(text).length > 0) {
+      const accountId = opencodeAccountId(text);
+      bundles.set(accountId, {
+        accountId,
+        account: opencodeLabel(entries, accountId),
+        authText: text,
+      });
+    }
+  } catch {
+    // no live credential set is not an error; stored ones still count
+  }
+  for (const entry of entries) {
+    if (entry.agent !== OPENCODE_AGENT || bundles.has(entry.accountId)) {
+      continue;
+    }
+    let authText: string | null = null;
+    try {
+      authText = vault.loadCredentials(entry.accountId);
+    } catch {
+      // an unreadable stored set simply yields no quota reading
+    }
+    if (authText === null) {
+      continue;
+    }
+    bundles.set(entry.accountId, {
+      accountId: entry.accountId,
+      account: opencodeLabel(entries, entry.accountId),
+      authText,
+    });
+  }
+  return [...bundles.values()];
+}
+
+/** Groups bundles by the key they hold for one provider, without the key in the map. */
+function groupByProviderKey(
+  bundles: readonly OpencodeBundle[],
+  providerId: string,
+): { readonly apiKey: string; readonly bundles: OpencodeBundle[] }[] {
+  const groups = new Map<string, { apiKey: string; bundles: OpencodeBundle[] }>();
+  for (const bundle of bundles) {
+    const apiKey = readOpencodeApiKey(bundle.authText, providerId);
+    if (apiKey === null) {
+      continue;
+    }
+    const fingerprint = accessTokenFingerprint(apiKey);
+    const group = groups.get(fingerprint);
+    if (group === undefined) {
+      groups.set(fingerprint, { apiKey, bundles: [bundle] });
+    } else {
+      group.bundles.push(bundle);
+    }
+  }
+  return [...groups.values()];
+}
+
+/**
+ * OpenCode Go readings, one vendor call per distinct key. Two stored
+ * sets that carry the same key are the same subscription, so they share
+ * the reading — but each row keeps its own identity, because the user
+ * switches between sets, not between subscriptions.
+ */
+async function loadOpencodeGoQuota(
+  bundles: readonly OpencodeBundle[],
+  nowUtc: number,
+  stateStore: QuotaFetchStateStore | null,
+  stateStoreUnavailable: boolean,
+): Promise<QuotaSnapshot[]> {
+  const readings = await Promise.all(
+    groupByProviderKey(bundles, OPENCODE_GO_PROVIDER).map(async ({ apiKey, bundles: group }) => {
+      const owner = group[0];
+      if (owner === undefined) {
+        return [];
+      }
+      const snapshot = await throttledQuota(
+        opencodeGoQuotaSubject({
+          apiKey,
+          accountId: owner.accountId,
+          account: owner.account,
+        }),
+        nowUtc,
+        () =>
+          fetchOpencodeGoQuota({
+            apiKey,
+            accountId: owner.accountId,
+            account: owner.account,
+            nowUtc,
+          }),
+        {
+          ttlSeconds: SUBSCRIPTION_CADENCE_SECONDS,
+          stateStore,
+          stateStoreUnavailable,
+        },
+      );
+      return group.map((bundle) => ({
+        ...snapshot,
+        accountId: bundle.accountId,
+        account: bundle.account,
+      }));
+    }),
+  );
+  return readings.flat();
+}
+
+/**
+ * ClinePass readings. Unlike OpenCode Go these carry a real vendor
+ * subject (the Cline user id), so the reading names its own account and
+ * two credential sets belonging to one Cline user collapse into one row
+ * downstream instead of being duplicated per bundle.
+ */
+async function loadClineQuota(
+  bundles: readonly OpencodeBundle[],
+  nowUtc: number,
+  stateStore: QuotaFetchStateStore | null,
+  stateStoreUnavailable: boolean,
+): Promise<QuotaSnapshot[]> {
+  return Promise.all(
+    groupByProviderKey(bundles, CLINE_PASS_PROVIDER).map(({ apiKey, bundles: group }) => {
+      // names a failure that happens before the vendor account is known,
+      // so an unusable stored key does not show up as "(current login)"
+      const credentialLabel = group[0]?.account ?? null;
+      return throttledQuota(
+        clinePassQuotaSubject({ apiKey, accountId: null, account: credentialLabel }),
+        nowUtc,
+        () => fetchClinePassQuota({ apiKey, nowUtc, credentialLabel }),
+        {
+          ttlSeconds: SUBSCRIPTION_CADENCE_SECONDS,
+          stateStore,
+          stateStoreUnavailable,
+        },
+      );
+    }),
   );
 }
 

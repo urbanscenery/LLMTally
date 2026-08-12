@@ -21,6 +21,9 @@ import { asObject, asString } from '../parsers/shared.ts';
 import { writeFilePrivate } from '../fs/atomic.ts';
 import type { AccountVault, VaultEntry } from './vault.ts';
 
+/** Anything that could break out of an HTTP header value. */
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
 export class OpencodeAccountError extends Error {
   override readonly name = 'OpencodeAccountError';
 }
@@ -57,6 +60,26 @@ function parseProviders(text: string): Map<string, Record<string, unknown>> | nu
 export function readOpencodeProviders(text: string): readonly string[] {
   const providers = parseProviders(text);
   return providers === null ? [] : [...providers.keys()].sort();
+}
+
+/**
+ * The API key one provider stores in an auth.json text, or null when
+ * that provider is absent or authenticates some other way (oauth). The
+ * exact provider id is required — no prefix or fuzzy matching, so a
+ * look-alike entry can never be spent against another vendor.
+ */
+export function readOpencodeApiKey(text: string, providerId: string): string | null {
+  const entry = parseProviders(text)?.get(providerId);
+  if (entry === undefined || entry.type !== 'api') {
+    return null;
+  }
+  const key = asString(entry.key);
+  // a key leaves as a request header: a stray newline in the credential
+  // file would otherwise become header injection on the way out
+  if (key === null || key.length === 0 || CONTROL_CHARACTERS.test(key)) {
+    return null;
+  }
+  return key;
 }
 
 /**

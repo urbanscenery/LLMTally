@@ -3,8 +3,8 @@ import { describe, expect, test } from 'bun:test';
 import type { QuotaSnapshot } from '@llmtally/core/quota/providers.ts';
 import { buildQuotaBar, describeReset, severityMarker } from '@llmtally/tui/components/quota-bar.ts';
 import { createInitialState, withActiveTab, withTabResource } from '@llmtally/tui/state.ts';
-import { toAccountsTabViewModel } from '@llmtally/tui/view-model/accounts.ts';
-import type { AccountsInput } from '@llmtally/tui/view-model/accounts.ts';
+import { isSwitchable, toAccountsTabViewModel } from '@llmtally/tui/view-model/accounts.ts';
+import type { AccountRowViewModel, AccountsInput } from '@llmtally/tui/view-model/accounts.ts';
 import { accountsTabView } from '@llmtally/tui/views/accounts.ts';
 import { viewText } from './helpers.ts';
 import { lineText } from '@llmtally/tui/rich-text.ts';
@@ -534,6 +534,66 @@ describe('quota window normalization and ordering', () => {
       '7days_Fable',
       '7days_Opus',
     ]);
+  });
+
+  test('opencode and cline window names map onto the same policy', () => {
+    // Arrange — the adapters keep each vendor's own names; only the
+    // display policy is shared, so the eye compares like with like
+    const opencode = snapshotFixture({
+      agent: 'opencode',
+      accountId: 'cline-pass.opencode-go.3f2a9c',
+      windows: [
+        { id: 'monthly', usedPercent: 43, resetsAtUtc: null },
+        { id: 'rolling', usedPercent: 1, resetsAtUtc: null },
+        { id: 'weekly', usedPercent: 12, resetsAtUtc: null },
+      ],
+    });
+    const cline = snapshotFixture({
+      agent: 'cline',
+      accountId: 'usr-01KYVB',
+      windows: [
+        { id: 'weekly', usedPercent: 4, resetsAtUtc: null },
+        { id: 'five_hour', usedPercent: 0, resetsAtUtc: null },
+        { id: 'monthly', usedPercent: 2, resetsAtUtc: null },
+      ],
+    });
+
+    // Act
+    const rows = toAccountsTabViewModel(inputFor([opencode, cline])).rows;
+
+    // Assert — both land on the policy labels, in canonical order
+    expect(rows[0]?.quota?.bars.map((bar) => bar.id)).toEqual(['5hours', '7days', '1month']);
+    expect(rows[1]?.quota?.bars.map((bar) => bar.id)).toEqual(['5hours', '7days', '1month']);
+  });
+
+  test('a cline reading stays its own row rather than merging into opencode', () => {
+    // Arrange — one credential file, two subscriptions
+    const opencode = snapshotFixture({
+      agent: 'opencode',
+      accountId: 'cline-pass.opencode-go.3f2a9c',
+      account: 'cline-pass.opencode-go.3f2a9c',
+      plan: 'Go',
+      windows: [{ id: 'monthly', usedPercent: 43, resetsAtUtc: null }],
+    });
+    const cline = snapshotFixture({
+      agent: 'cline',
+      accountId: 'usr-01KYVB',
+      account: 'me@test.dev',
+      plan: 'Cline Pass (Monthly)',
+      windows: [{ id: 'monthly', usedPercent: 2, resetsAtUtc: null }],
+    });
+
+    // Act
+    const rows = toAccountsTabViewModel(inputFor([opencode, cline])).rows;
+
+    // Assert — independent rows keep independent numbers and captions
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.agent).toBe('opencode');
+    expect(rows[1]?.agent).toBe('cline');
+    expect(rows[1]?.label).toBe('me@test.dev');
+    expect(rows[1]?.quota?.bars[0]?.usedPercent).toBe(2);
+    // cline logins are not ours to swap
+    expect(isSwitchable(rows[1] as AccountRowViewModel)).toBe(false);
   });
 
   test('codex minute-suffixed windows map by duration', () => {

@@ -1,8 +1,14 @@
 import { describe, expect, test } from 'bun:test';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
+import { createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
+import { AccountVault } from '@llmtally/core/accounts/vault.ts';
 import { makeQuotaSnapshot } from '@llmtally/core/quota/providers.ts';
 import type { QuotaSnapshot } from '@llmtally/core/quota/providers.ts';
-import { dedupeByAccount } from '@llmtally/core/quota/service.ts';
+import { dedupeByAccount, loadAllQuota } from '@llmtally/core/quota/service.ts';
+import { resetQuotaThrottle } from '@llmtally/core/quota/throttle.ts';
+import { makeTempDir } from '../helpers.ts';
 
 const NOW = 1_786_400_000;
 
@@ -133,3 +139,107 @@ describe('dedupeByAccount', () => {
 // sources and the machine's real agent stores, so any assertion about it
 // would depend on the environment. Its parts are covered individually
 // (providers, vault-accounts, antigravity, codex-live) and by the rules above.
+
+describe('loadAllQuota and the opencode credential file', () => {
+  const SIGNED_OUT = {
+    status: 'signed_out',
+    source: 'none',
+    activeAccountId: null,
+    identity: null,
+  } as const;
+
+  function harness(authText: string | null) {
+    const home = makeTempDir();
+    const authPath = join(home, 'auth.json');
+    if (authText !== null) {
+      writeFileSync(authPath, authText);
+    }
+    const vault = new AccountVault({ dir: join(home, 'vault'), keychain: createMemoryKeychain() });
+    return { authPath, vault };
+  }
+
+  /** Replaces global fetch so every vendor call this load makes is visible. */
+  async function withCountedFetch<T>(run: () => Promise<T>): Promise<{ result: T; urls: string[] }> {
+    const original = globalThis.fetch;
+    const urls: string[] = [];
+    globalThis.fetch = ((url: string): Promise<Response> => {
+      urls.push(String(url));
+      return Promise.reject(new Error('no vendor call expected'));
+    }) as unknown as typeof fetch;
+    try {
+      return { result: await run(), urls };
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+
+  const SUBSCRIPTION_HOSTS = ['opencode.ai', 'api.cline.bot'];
+
+  test('a credential set without a Go key is not a reason to call the vendor', async () => {
+    // Arrange — cline-pass only, which the Go adapter must not touch
+    const { authPath, vault } = harness(
+      JSON.stringify({ 'cline-pass': { type: 'api', key: 'sk-pass' } }),
+    );
+    resetQuotaThrottle();
+
+    // Act
+    const { result, urls } = await withCountedFetch(() =>
+      loadAllQuota({
+        agent: 'opencode',
+        nowUtc: NOW,
+        vault,
+        activeContext: SIGNED_OUT,
+        opencodeAuthPath: authPath,
+      }),
+    );
+
+    // Assert
+    expect(result).toEqual([]);
+    expect(urls).toEqual([]);
+  });
+
+  test('no credential file at all yields no rows and no calls', async () => {
+    // Arrange
+    const { authPath, vault } = harness(null);
+    resetQuotaThrottle();
+
+    // Act
+    const { result, urls } = await withCountedFetch(() =>
+      loadAllQuota({
+        agent: 'opencode',
+        nowUtc: NOW,
+        vault,
+        activeContext: SIGNED_OUT,
+        opencodeAuthPath: authPath,
+      }),
+    );
+
+    // Assert
+    expect(result).toEqual([]);
+    expect(urls).toEqual([]);
+  });
+
+  test('asking for another agent never spends the opencode credential', async () => {
+    // Arrange — a Go key that would be spent if the filter leaked
+    const { authPath, vault } = harness(
+      JSON.stringify({ 'opencode-go': { type: 'api', key: 'sk-go' } }),
+    );
+    resetQuotaThrottle();
+
+    // Act
+    const { result, urls } = await withCountedFetch(() =>
+      loadAllQuota({
+        agent: 'antigravity',
+        nowUtc: NOW,
+        vault,
+        activeContext: SIGNED_OUT,
+        opencodeAuthPath: authPath,
+      }),
+    );
+
+    // Assert — whatever antigravity does on its own, the subscription
+    // endpoints stay untouched when they were not asked for
+    expect(result.every((entry) => entry.agent === 'antigravity')).toBe(true);
+    expect(urls.filter((url) => SUBSCRIPTION_HOSTS.some((host) => url.includes(host)))).toEqual([]);
+  });
+});

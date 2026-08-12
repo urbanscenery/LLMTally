@@ -108,11 +108,16 @@ const CODEX_COMMON_BASES: ReadonlySet<string> = new Set([
 ]);
 
 export function normalizeQuotaWindow(id: string): NormalizedWindow {
-  if (id === 'five_hour') {
+  // adapters keep each vendor's own window name so history stays
+  // traceable to its source; the policy mapping lives only here
+  if (id === 'five_hour' || id === 'rolling') {
     return { label: '5hours', rank: 0, model: null };
   }
-  if (id === 'seven_day') {
+  if (id === 'seven_day' || id === 'weekly') {
     return { label: '7days', rank: 1, model: null };
+  }
+  if (id === 'monthly') {
+    return { label: '1month', rank: 2, model: null };
   }
   if (id === 'seven_day_opus') {
     return { label: '7days_Opus', rank: 1, model: 'Opus' };
