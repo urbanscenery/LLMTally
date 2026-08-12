@@ -13,7 +13,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private static let refreshIntervalSeconds: TimeInterval = 900
 
     private let statusItem: NSStatusItem
-    private let popover = NSPopover()
+    /// Recreated per open: reusing one NSPopover across transient
+    /// closes is a known source of second-show glitches (wrong
+    /// position, blank content) for status-bar apps.
+    private var popover: NSPopover?
     private let descriptorStore = DescriptorStore()
     private var refreshTimer: Timer?
     private var descriptorObserver: NSObjectProtocol?
@@ -30,10 +33,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         statusItem.button?.imagePosition = .imageLeading
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
-
-        popover.behavior = .transient
-        popover.delegate = self
-        popover.contentViewController = NSHostingController(rootView: OverviewView())
 
         refreshStatusText()
         refreshTimer = Timer.scheduledTimer(
@@ -65,17 +64,31 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     @objc private func togglePopover() {
         guard let button = statusItem.button else { return }
-        if popover.isShown {
-            popover.performClose(nil)
-        } else {
-            // preferredEdge is interpreted in the positioning view's own
-            // coordinate space, and NSStatusBarButton is flipped — there
-            // .minY is the visual TOP edge, which floated the popover
-            // above the menu bar with its head off-screen.
-            let bottomEdge: NSRectEdge = button.isFlipped ? .maxY : .minY
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: bottomEdge)
-            popover.contentViewController?.view.window?.makeKey()
+        if let shown = popover, shown.isShown {
+            shown.performClose(nil)
+            return
         }
+
+        let fresh = NSPopover()
+        fresh.behavior = .transient
+        fresh.delegate = self
+        fresh.contentViewController = NSHostingController(rootView: OverviewView())
+        popover = fresh
+
+        // an accessory app must activate for the popover to become and
+        // stay the key window — without it, second shows misbehave
+        NSApp.activate(ignoringOtherApps: true)
+        // preferredEdge is interpreted in the positioning view's own
+        // coordinate space, and NSStatusBarButton is flipped — there
+        // .minY is the visual TOP edge, which floated the popover
+        // above the menu bar with its head off-screen.
+        let bottomEdge: NSRectEdge = button.isFlipped ? .maxY : .minY
+        fresh.show(relativeTo: button.bounds, of: button, preferredEdge: bottomEdge)
+        fresh.contentViewController?.view.window?.makeKey()
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        popover = nil
     }
 
     /// Pulls quota + active accounts and renders the descriptor array
