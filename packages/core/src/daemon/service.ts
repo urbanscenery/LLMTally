@@ -23,8 +23,21 @@ export type LaunchctlRunner = (args: readonly string[]) => {
   readonly stderr: string;
 };
 
+/** Absolute path + timeout so a PATH-planted `launchctl` cannot run. */
+const LAUNCHCTL_BIN = '/bin/launchctl';
+const LAUNCHCTL_TIMEOUT_MS = 10_000;
+
 export const defaultLaunchctl: LaunchctlRunner = (args) => {
-  const result = Bun.spawnSync(['launchctl', ...args], { stderr: 'pipe', stdout: 'pipe' });
+  // launchctl is macOS-only; on other platforms report unavailable
+  // rather than spawning a same-named binary from PATH
+  if (process.platform !== 'darwin') {
+    return { exitCode: 1, stderr: 'launchctl is only available on macOS' };
+  }
+  const result = Bun.spawnSync([LAUNCHCTL_BIN, ...args], {
+    stderr: 'pipe',
+    stdout: 'pipe',
+    timeout: LAUNCHCTL_TIMEOUT_MS,
+  });
   return { exitCode: result.exitCode, stderr: result.stderr.toString() };
 };
 

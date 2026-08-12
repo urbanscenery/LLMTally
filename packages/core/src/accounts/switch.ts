@@ -197,7 +197,7 @@ export async function switchAccount(selector: string, ports: SwitchPorts): Promi
   const targetCredentials = vault.loadCredentials(target.accountId);
   if (targetCredentials === null) {
     throw new SwitchError(
-      `no stored credentials for ${target.email ?? target.accountId} — run "llmtally accounts add" while logged in as that account`,
+      `no stored credentials for ${target.email ?? target.accountId} — open the Accounts tab and press n while logged in as that account`,
     );
   }
 

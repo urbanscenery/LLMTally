@@ -83,7 +83,7 @@ function vaultChecks(home: string): DoctorCheck[] {
         id: 'vault.registry',
         status: 'skip',
         message: 'no stored accounts',
-        remediation: 'run "llmtally accounts add" while logged in to enable "llmtally switch"',
+        remediation: 'open the Accounts tab and press n while logged in to store an account, then s to switch',
       },
     ];
   }

@@ -12,7 +12,11 @@ local_docs
 .env
 .env.*
 *.pem
-credentials*
+# runtime credential artifacts only — NOT the credentials.ts source module.
+# `.json` suffix so a `.ts` source can never match, `**/` so a secret is
+# caught anywhere in the tree (not just the repo root).
+**/credentials.json
+**/.credentials.json
 
 # Node / Bun
 node_modules/

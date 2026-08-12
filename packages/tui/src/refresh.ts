@@ -142,9 +142,14 @@ export class RefreshScheduler {
     this.commitRefresh({ inFlight: true, pending: false, reason, scanStatus: 'running' });
 
     let scanStatus: ScanRefreshStatus;
+    let warningTotal = 0;
     try {
-      await this.dataSource.scan();
-      scanStatus = 'ok';
+      const summary = await this.dataSource.scan();
+      // a scan can complete AND report recoverable warnings (source
+      // permission/malformed lines); collapsing that to 'ok' would hide
+      // real data-completeness loss, so it gets its own status
+      warningTotal = summary.warningTotal;
+      scanStatus = warningTotal > 0 ? 'ok-with-warnings' : 'ok';
     } catch (error) {
       scanStatus = error instanceof ScanLockError ? 'busy' : 'error';
     }
@@ -154,7 +159,7 @@ export class RefreshScheduler {
       return;
     }
     let state = this.controller.getState();
-    if (scanStatus === 'ok') {
+    if (scanStatus === 'ok' || scanStatus === 'ok-with-warnings') {
       // quota is invalidated too so a visit after the cycle re-reads it
       this.loader.markScanCompleted();
       state = withInvalidatedTabs(state, ['overview', 'agents', 'models', 'accounts', 'search', 'doctor']);
@@ -167,6 +172,7 @@ export class RefreshScheduler {
       inFlight: false,
       reason: null,
       scanStatus,
+      warningTotal,
       lastCompletedAtUtc: this.nowUtc(),
     });
     this.controller.commit(state);

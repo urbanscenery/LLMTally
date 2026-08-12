@@ -55,7 +55,7 @@ llmtally --db /path/ledger.db     # 원장 경로 지정
 - **Claude (다른 계정)**: 볼트에 저장된 계정은 각자의 토큰으로 **라이브 조회**합니다. 토큰이
   만료됐으면 갱신 후 회전된 토큰을 볼트에 다시 저장합니다(저장하지 않으면 서버가 이미 무효화한
   토큰만 남습니다). 볼트에 없는 계정은 쿼터 수치가 없고 목록에만 나타납니다
-- **조회 빈도**: 성공한 조회는 60초간 재사용하고, 벤더가 429를 주면 5분부터 최대 30분까지
+- **조회 빈도**: 성공한 조회는 180초간 재사용하고, 벤더가 429를 주면 5분부터 최대 30분까지
   지수 백오프하며 그동안 **마지막 정상 수치를 유지**한 채 "retrying in Nm"만 덧붙입니다.
   `r`을 누르면 캐시를 버리고 즉시 다시 읽습니다
 - **Codex**: `~/.codex/auth.json`의 토큰으로 wham usage 엔드포인트를 읽기 전용 조회합니다
@@ -63,7 +63,7 @@ llmtally --db /path/ledger.db     # 원장 경로 지정
   마지막 `rate_limits` 관측치로 폴백하고 실패 사유를 경고로 남깁니다
 - **Antigravity(Gemini)**: antigravity-usage CLI(MIT)의 토큰 저장소를
   읽어 daily Cloud Code 엔드포인트를 조회합니다. 만료 임박 토큰은 **메모리 내에서만** refresh해
-  즉시 사용하고 저장소 파일은 절대 수정하지 않습니다 (`--no-refresh`로 완전 읽기 전용 모드).
+  즉시 사용하고 저장소 파일은 절대 수정하지 않습니다 (내부적으로 완전 읽기 전용 모드도 지원).
   refresh 실패 시 CLI 캐시 스냅샷으로 강등합니다
 - 성공한 조회는 원장 DB의 `quota_samples`에 이력으로 적재되고(30일 보존), 모든 소스가
   비어 있으면 24시간 이내의 저장된 last-good을 `stored, as of …`로 표시합니다
@@ -72,9 +72,10 @@ llmtally --db /path/ledger.db     # 원장 경로 지정
 - 계정 레지스트리(`account_profiles`)는 쿼터 라벨링·발견 전용입니다 — 기존 원장 row를
   현재 로그인 계정으로 소급 귀속하지 않습니다 (오귀속 방지 정책)
 
-### 계정 전환 (`llmtally switch`)
+### 계정 전환 (Accounts 탭)
 
-`llmtally accounts add`로 저장해 둔 계정으로 Claude Code 로그인을 바꿉니다. 크레덴셜은
+Accounts 탭에서 `n`으로 저장해 둔 계정으로 `s`(또는 Enter)를 눌러 Claude Code 로그인을
+바꿉니다. 크레덴셜은
 llmtally 자체 볼트(macOS Keychain 서비스 `llmtally`, 없으면 `~/.llmtally/accounts` 0600)에
 보관하며, 전환 시 Claude Code가 읽는 저장소(Keychain `Claude Code-credentials` 또는
 `~/.claude/.credentials.json`)를 교체하고 `~/.claude.json`의 **`oauthAccount` 섹션만** 바꿉니다.
@@ -105,8 +106,9 @@ projects·settings·히스토리는 그대로 유지됩니다.
   (클릭은 선택만 하며 실행은 `Enter` — 실수로 되돌리기 어려운 동작이 시작되지 않도록)
 - Agents/Models 탭에서 `d`(rows)/`c`(actual cost)/`t`(input tokens) 정렬,
   같은 키 재입력 시 방향 토글 — 헤더에 `↑`/`↓` 표시
-- 쿼터는 **스캔과 별개로** Accounts 탭이 열려 있는 동안 60초마다 갱신됩니다 (스캔은 수천 개
-  파일을 훑는 무거운 작업이라 주기가 다릅니다). 다른 탭에 있으면 네트워크를 쓰지 않습니다
+- 쿼터는 **스캔과 별개로** Accounts 탭이 열려 있는 동안 180초마다 갱신됩니다 (vendor의
+  토큰당 요청 예산 안에 들도록 — 스캔은 수천 개 파일을 훑는 무거운 작업이라 주기가 다릅니다).
+  다른 탭에 있으면 네트워크를 쓰지 않습니다
 - 시작·주기·`r` 시점에 증분 스캔 후 활성 탭만 다시 조회합니다. daemon이 스캔 락을 잡고
   있으면 `scan busy`로 표시하고 기존 원장으로 계속 동작합니다 (실패해도 마지막 정상 화면 유지)
 - Actual은 `$`, Nominal은 `~$` 접두사로 구조적으로 구분 — `NO_COLOR=1`(또는 `--theme mono`)
@@ -115,7 +117,8 @@ projects·settings·히스토리는 그대로 유지됩니다.
   전경색만 사용해 터미널 배경(투명 포함)을 존중합니다
 - Accounts 탭은 계정별 카드로 표시됩니다 — Claude 라이브(활성 계정 + 볼트에 저장된 계정),
   Codex 로컬 관측치, Antigravity 라이브/캐시 (`live` / `cached` / `stored` / `from local logs` 표기)
-- TTY가 아닌 환경에서는 실행을 거부합니다 (파이프/CI에서는 `report --json` 사용)
+- TTY가 아닌 환경(파이프/CI)에서는 실행을 거부합니다 — 현재 표면은 TUI 하나뿐이라
+  헤드리스 조회용 서브커맨드는 없습니다
 - TUI는 `@opentui/core` 하나를 런타임 의존성으로 사용합니다 (그 외 의존성 0 정책 유지,
   `bun build --compile` 단일 바이너리 지원)
 

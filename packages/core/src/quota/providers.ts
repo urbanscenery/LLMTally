@@ -65,21 +65,29 @@ export type TokenReader = () => string | null;
  * (Keychain, then the credentials file). The token is used for ONE
  * read-only usage request and is never written, refreshed, or logged.
  */
+/** Absolute path so a PATH-planted `security` cannot intercept the read. */
+const SECURITY_BIN = '/usr/bin/security';
+const SECURITY_TIMEOUT_MS = 5000;
+
 export function defaultClaudeTokenReader(home: string = homedir()): TokenReader {
   return () => {
-    try {
-      const keychain = Bun.spawnSync(
-        ['security', 'find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-        { stdout: 'pipe', stderr: 'pipe' },
-      );
-      if (keychain.exitCode === 0) {
-        const token = extractToken(keychain.stdout.toString());
-        if (token !== null) {
-          return token;
+    // macOS-only tool: on other platforms skip straight to the file so a
+    // same-named binary elsewhere on PATH is never spawned
+    if (process.platform === 'darwin') {
+      try {
+        const keychain = Bun.spawnSync(
+          [SECURITY_BIN, 'find-generic-password', '-s', 'Claude Code-credentials', '-w'],
+          { stdout: 'pipe', stderr: 'pipe', timeout: SECURITY_TIMEOUT_MS },
+        );
+        if (keychain.exitCode === 0) {
+          const token = extractToken(keychain.stdout.toString());
+          if (token !== null) {
+            return token;
+          }
         }
+      } catch {
+        // fall through to the credentials file
       }
-    } catch {
-      // fall through to the credentials file
     }
     try {
       return extractToken(readFileSync(join(home, '.claude', '.credentials.json'), 'utf8'));

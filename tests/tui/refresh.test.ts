@@ -57,6 +57,7 @@ function reportSummary(groupBy: ReportGroupBy): ReportSummary {
 interface FakeDataSourceOptions {
   scanError?: () => Error | null;
   scanDelayMs?: number;
+  scanWarningTotal?: number;
 }
 
 function makeFakes(options: FakeDataSourceOptions = {}) {
@@ -71,7 +72,7 @@ function makeFakes(options: FakeDataSourceOptions = {}) {
       if (error) {
         throw error;
       }
-      return scanSummary();
+      return { ...scanSummary(), warningTotal: options.scanWarningTotal ?? 0 };
     },
     async loadAccounts(): Promise<AccountsInput> {
       calls.accounts += 1;
@@ -428,5 +429,53 @@ describe('review regressions', () => {
     // Assert — no ESC/BEL survives into the error string
     const message = controller.getState().overview.error ?? '';
     expect(message).toBe('boom]52;c;payload end');
+  });
+});
+
+describe('scan warnings are not disguised as success', () => {
+  test('a scan that returned recoverable warnings surfaces as ok-with-warnings', async () => {
+    // Arrange — the scan completes but the coordinator reported warnings
+    const { dataSource, controller, loader } = makeFakes({ scanWarningTotal: 3 });
+    controller.start();
+    const scheduler = new RefreshScheduler({
+      controller,
+      dataSource,
+      loader,
+      intervalSeconds: 3600,
+      nowUtc: () => NOW,
+    });
+
+    // Act
+    scheduler.start();
+    await settle();
+
+    // Assert — a warning count reached the state, not a clean 'ok'
+    const refresh = controller.getState().refresh;
+    expect(refresh.scanStatus).toBe('ok-with-warnings');
+    expect(refresh.warningTotal).toBe(3);
+    scheduler.stop();
+  });
+
+  test('a clean scan stays ok with no warning count', async () => {
+    // Arrange
+    const { dataSource, controller, loader } = makeFakes({ scanWarningTotal: 0 });
+    controller.start();
+    const scheduler = new RefreshScheduler({
+      controller,
+      dataSource,
+      loader,
+      intervalSeconds: 3600,
+      nowUtc: () => NOW,
+    });
+
+    // Act
+    scheduler.start();
+    await settle();
+
+    // Assert
+    const refresh = controller.getState().refresh;
+    expect(refresh.scanStatus).toBe('ok');
+    expect(refresh.warningTotal).toBe(0);
+    scheduler.stop();
   });
 });

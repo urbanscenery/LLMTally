@@ -222,7 +222,7 @@ async function readOneAccount(
     );
   }
   if (options.allowRefresh === false || oauth.refreshToken === null) {
-    return unavailable(entry, options.nowUtc, 'stored token expired; run "llmtally switch" or re-login');
+    return unavailable(entry, options.nowUtc, 'stored token expired; switch to this account (Accounts tab, press s) or re-login');
   }
 
   const expectedFingerprint = credentialFingerprint(stored);

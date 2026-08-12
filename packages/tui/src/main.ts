@@ -28,7 +28,7 @@ Options:
   --chart <mode>   Daily chart glyphs: block (default) | braille (2x density)
   --help           Show this help
 
-Tabs: [1] Overview  [2] Accounts  [3] Agents  [4] Models  [5] Doctor
+Tabs: [1] Overview  [2] Accounts  [3] Agents  [4] Models  [5] Search  [6] Doctor
 Press ? inside the app for the full key list.
 
 The first launch imports every local agent log it can find; later ones

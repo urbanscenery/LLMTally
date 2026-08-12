@@ -40,6 +40,15 @@ function describeScanStatus(state: TuiState, nowUtc: number): RichLine {
   switch (state.refresh.scanStatus) {
     case 'running':
       return joinLine(span(`${spinnerFrame(nowUtc)} refreshing…`, 'accent'));
+    case 'ok-with-warnings': {
+      // honest: the count is the signal. It does not point at Doctor
+      // because Doctor does not yet carry the per-scan warning detail —
+      // promising a drill-down that isn't there would be a false lead.
+      const count = state.refresh.warningTotal;
+      return joinLine(
+        span(`completed with ${count} warning${count === 1 ? '' : 's'}`, 'warning'),
+      );
+    }
     case 'busy':
       return joinLine(span('scan busy (daemon)', 'warning'));
     case 'error':

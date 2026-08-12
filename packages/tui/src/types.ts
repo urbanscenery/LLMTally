@@ -17,13 +17,21 @@ export interface ResourceState<T> {
 
 export type RefreshReason = 'startup' | 'interval' | 'manual' | 'tab-change';
 
-export type ScanRefreshStatus = 'idle' | 'running' | 'ok' | 'busy' | 'error';
+export type ScanRefreshStatus =
+  | 'idle'
+  | 'running'
+  | 'ok'
+  | 'ok-with-warnings'
+  | 'busy'
+  | 'error';
 
 export interface RefreshState {
   readonly inFlight: boolean;
   readonly pending: boolean;
   readonly reason: RefreshReason | null;
   readonly scanStatus: ScanRefreshStatus;
+  /** Recoverable warnings from the last completed scan (0 = clean). */
+  readonly warningTotal: number;
   readonly lastCompletedAtUtc: number | null;
   /** Auto-refresh interval; null = off (the initial state). */
   readonly autoIntervalSeconds: number | null;
