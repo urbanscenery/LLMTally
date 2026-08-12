@@ -1,0 +1,76 @@
+# R-16: the gates a change must pass before it can claim to work.
+# macOS is the product target, so the blocking jobs run there; the
+# Linux job is a portability signal only (R-12 is an open decision)
+# and must not block a merge.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # weekly migration stress run (Mon 21:00 UTC = Tue 06:00 KST)
+    - cron: '0 21 * * 1'
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: typecheck · test · compile (macOS)
+    if: github.event_name != 'schedule'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # latest satisfies engines.bun (>=1.3.0); pin here if a release breaks
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - name: opentui compile smoke (PTY)
+        run: bun run verify:compile
+
+  pack-install:
+    name: pack → install → launch (macOS)
+    if: github.event_name != 'schedule'
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # latest satisfies engines.bun (>=1.3.0); pin here if a release breaks
+      - uses: oven-sh/setup-bun@v2
+      # the gate exercises the published artifact, not the checkout:
+      # tarball completeness, the node launcher, the tsconfig path map,
+      # and the scan worker the launchd plist points at (R-02/R-03)
+      - run: bun run verify:pack
+
+  linux-signal:
+    name: portability signal (Linux, non-blocking)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      # latest satisfies engines.bun (>=1.3.0); pin here if a release breaks
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+
+  migration-stress:
+    name: migration concurrency stress (weekly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # latest satisfies engines.bun (>=1.3.0); pin here if a release breaks
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      # D-01 residue: the in-suite race test at higher repetition. A
+      # flake here is a real cross-process migration bug, not noise.
+      - run: bun test tests/db --rerun-each=20
