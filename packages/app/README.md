@@ -14,13 +14,13 @@ packages/app/
 │   ├── rpc.ts            JSON-RPC 2.0 framing (newline-delimited stdio)
 │   ├── api.ts            method handlers binding @llmtally/core
 │   └── sidecar-main.ts   sidecar entry (`bun src/sidecar-main.ts`)
-├── macos/                SwiftPM executable `LLMTallyBar`
-│   └── Sources/LLMTallyBar/
-│       ├── main.swift               accessory-policy NSApplication
-│       ├── AppDelegate.swift        starts sidecar + status item
-│       ├── StatusItemController.swift  tally template glyph + popover
-│       ├── SidecarClient.swift      spawns bun, speaks JSON-RPC
-│       └── OverviewView.swift       scaffold popover (raw payload)
+├── macos/                SwiftPM package
+│   ├── Sources/LLMTallyKit/     pure logic — DTOs, attention ranking,
+│   │                            menuBarBuilderV1 descriptors, status renderer
+│   ├── Sources/LLMTallyBar/     the app — NSStatusItem + popover
+│   │                            (Overview / provider detail / switch sheet)
+│   └── Sources/KitSelftest/     `swift run kit-selftest` — assert-based
+│                                checks (XCTest needs a licensed Xcode)
 └── assets/               AppIcon.icns + 1024 master (00_fixed_dark)
 ```
 
@@ -33,7 +33,13 @@ for parsing, quota, and the switch transaction.
 
 ```bash
 cd packages/app/macos && swift build && .build/debug/LLMTallyBar
+swift run kit-selftest    # headless checks for LLMTallyKit
 ```
+
+The status item renders the user's ordered `MenuItemDescriptor[]`
+(`menuBarBuilderV1` in UserDefaults, Auto-seeded on first run) against
+live quota every 15 minutes; the popover and the status text share the
+same attention ranking and the same sidecar.
 
 The shell resolves the sidecar at `packages/app/src/sidecar-main.ts`
 relative to its own sources (override with `LLMTALLY_SIDECAR`), and

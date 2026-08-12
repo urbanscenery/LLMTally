@@ -1,4 +1,5 @@
 import Foundation
+import LLMTallyKit
 
 /// Spawns the Bun sidecar and speaks newline-delimited JSON-RPC 2.0 with
 /// it. The Swift shell never opens SQLite or the vault directly — every

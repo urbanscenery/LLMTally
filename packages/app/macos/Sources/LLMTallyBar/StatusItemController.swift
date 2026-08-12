@@ -1,24 +1,45 @@
 import AppKit
+import LLMTallyKit
 import SwiftUI
 
-/// Owns the NSStatusItem and its popover. The visible glyph is the tally
-/// mark (4 strokes + slash) as a template image so it follows the menu
-/// bar appearance — the design spec's monochrome identity rule.
+/// Owns the NSStatusItem and its popover. The visible content is the
+/// user's ordered descriptor array rendered against live quota — the
+/// tally glyph stays as the leading template image, and the text part
+/// comes from `renderStatusItems` (the same logic a Builder preview
+/// will reuse).
 final class StatusItemController: NSObject, NSPopoverDelegate {
+    /// Background cadence for the status text when the popover is
+    /// closed. Sidecar/core throttles still gate actual vendor calls.
+    private static let refreshIntervalSeconds: TimeInterval = 900
+
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
+    private let descriptorStore = DescriptorStore()
+    private var refreshTimer: Timer?
 
     override init() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
         statusItem.button?.image = Self.tallyTemplateImage()
+        statusItem.button?.imagePosition = .imageLeading
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
 
         popover.behavior = .transient
         popover.delegate = self
         popover.contentViewController = NSHostingController(rootView: OverviewView())
+
+        refreshStatusText()
+        refreshTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.refreshIntervalSeconds, repeats: true
+        ) { [weak self] _ in
+            self?.refreshStatusText()
+        }
+    }
+
+    deinit {
+        refreshTimer?.invalidate()
     }
 
     @objc private func togglePopover() {
@@ -29,6 +50,44 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    /// Pulls quota + active accounts and renders the descriptor array
+    /// into the button title. Failures keep the previous title —
+    /// last-good stays visible, matching the popover's rule.
+    private func refreshStatusText() {
+        var quota: [QuotaSnapshotDTO]?
+        var active: [String: String?]?
+        let group = DispatchGroup()
+
+        group.enter()
+        SidecarClient.shared.requestDecodable("quota", params: ["refresh": true], as: [QuotaSnapshotDTO].self) { result in
+            if case .success(let value) = result { quota = value }
+            group.leave()
+        }
+        group.enter()
+        SidecarClient.shared.requestDecodable("activeAccounts", as: [String: String?].self) { result in
+            if case .success(let value) = result { active = value }
+            group.leave()
+        }
+
+        group.notify(queue: .main) { [weak self] in
+            guard let self, let quota else { return }
+            let rendering = renderStatusItems(
+                descriptors: self.descriptorStore.load(),
+                quota: quota,
+                activeAccounts: active ?? [:])
+            self.apply(rendering)
+        }
+    }
+
+    private func apply(_ rendering: StatusRendering) {
+        guard let button = statusItem.button else { return }
+        button.attributedTitle = NSAttributedString(
+            string: rendering.title.isEmpty ? "" : " \(rendering.title)",
+            attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)])
+        button.toolTip = rendering.tooltip
+        button.setAccessibilityLabel("LLMTally. \(rendering.tooltip)")
     }
 
     /// Tally glyph: 4 vertical strokes crossed by the fifth (diagonal).

@@ -1,4 +1,5 @@
 import AppKit
+import LLMTallyKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusController: StatusItemController?

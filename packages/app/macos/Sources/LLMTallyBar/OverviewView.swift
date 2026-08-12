@@ -1,4 +1,5 @@
 import SwiftUI
+import LLMTallyKit
 
 /// The popover (03_design_spec §3–§5): Overview with attention headline,
 /// agent rows, Today cards — and Provider detail with per-account

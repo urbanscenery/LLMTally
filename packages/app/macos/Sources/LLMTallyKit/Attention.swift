@@ -1,10 +1,10 @@
 import Foundation
 
 /// Attention ranking (03_design_spec §2): permission and freshness
-/// outrank percentages. The headline and the row order both use this;
-/// the number itself is never the first thing the user is shown when
-/// something above it is wrong.
-enum AttentionRank: Int, Comparable {
+/// outrank percentages. The headline, the row order, and the status
+/// item's follow-attention binding all use this; the number itself is
+/// never the first thing shown when something above it is wrong.
+public enum AttentionRank: Int, Comparable {
     case authInvalid = 0
     case rateLimited = 1
     case stale = 2
@@ -13,26 +13,26 @@ enum AttentionRank: Int, Comparable {
     case resetSoon = 5
     case quiet = 6
 
-    static func < (lhs: AttentionRank, rhs: AttentionRank) -> Bool {
+    public static func < (lhs: AttentionRank, rhs: AttentionRank) -> Bool {
         lhs.rawValue < rhs.rawValue
     }
 }
 
 /// Snapshots older than this are stale. Placeholder for "source cadence
 /// × 2" until per-source cadence is part of the payload.
-let STALE_AFTER_SECONDS: Double = 1800
-let RESET_SOON_SECONDS: Double = 1800
-let CRITICAL_USED_PERCENT: Double = 90
-let WARNING_USED_PERCENT: Double = 70
+public let STALE_AFTER_SECONDS: Double = 1800
+public let RESET_SOON_SECONDS: Double = 1800
+public let CRITICAL_USED_PERCENT: Double = 90
+public let WARNING_USED_PERCENT: Double = 70
 
-struct AgentAttention {
-    let snapshot: QuotaSnapshotDTO
-    let rank: AttentionRank
+public struct AgentAttention {
+    public let snapshot: QuotaSnapshotDTO
+    public let rank: AttentionRank
     /// The window driving the rank — the row's big number.
-    let topWindow: QuotaWindowDTO?
+    public let topWindow: QuotaWindowDTO?
 }
 
-func attention(for snapshot: QuotaSnapshotDTO, now: Date = Date()) -> AgentAttention {
+public func attention(for snapshot: QuotaSnapshotDTO, now: Date = Date()) -> AgentAttention {
     let topWindow = snapshot.windows.max(by: { $0.usedPercent < $1.usedPercent })
 
     if snapshot.failure?.kind == "auth_invalid" {
@@ -65,7 +65,7 @@ func attention(for snapshot: QuotaSnapshotDTO, now: Date = Date()) -> AgentAtten
 }
 
 /// Highest-attention item; ties break toward the tighter window.
-func headlineAttention(_ items: [AgentAttention]) -> AgentAttention? {
+public func headlineAttention(_ items: [AgentAttention]) -> AgentAttention? {
     items.min { lhs, rhs in
         if lhs.rank != rhs.rank { return lhs.rank < rhs.rank }
         return (lhs.topWindow?.usedPercent ?? 0) > (rhs.topWindow?.usedPercent ?? 0)

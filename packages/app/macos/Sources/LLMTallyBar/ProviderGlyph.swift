@@ -1,4 +1,5 @@
 import SwiftUI
+import LLMTallyKit
 
 /// Monochrome provider identity (03_design_spec §7.2): every glyph is
 /// drawn in currentColor, never in a provider brand color. These are

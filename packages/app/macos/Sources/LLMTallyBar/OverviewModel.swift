@@ -1,4 +1,5 @@
 import Foundation
+import LLMTallyKit
 
 /// Popover state: one load = `overview` + `activeAccounts` in flight
 /// together. Last-good stays on screen during a refresh — data is never
