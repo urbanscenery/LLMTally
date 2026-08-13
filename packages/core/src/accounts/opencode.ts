@@ -125,6 +125,54 @@ export function opencodeCredentialFingerprint(text: string): string {
  * to the vault's account-id charset; the fingerprint suffix separates
  * two credential sets that happen to cover the same providers.
  */
+/**
+ * Best-effort display email from oauth tokens in the bundle. API keys
+ * (opencode-go) carry no identity, and Go's usage endpoint has none
+ * either. A JWT `email` claim on some other oauth provider is the only
+ * local signal. Missing is normal, not an error.
+ */
+function tokenEmail(token: string | null): string | null {
+  if (token === null) {
+    return null;
+  }
+  const payload = token.split('.')[1];
+  if (payload === undefined) {
+    return null;
+  }
+  try {
+    const body = asObject(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')));
+    const email = body === null ? null : asString(body.email);
+    return email !== null && email.includes('@') ? email : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readOpencodeDisplayEmail(text: string): string | null {
+  const providers = parseProviders(text);
+  if (providers === null) {
+    return null;
+  }
+  for (const entry of providers.values()) {
+    for (const field of ['id_token', 'idToken', 'access', 'token'] as const) {
+      const email = tokenEmail(asString(entry[field] ?? null));
+      if (email !== null) {
+        return email;
+      }
+    }
+  }
+  return null;
+}
+
+export function formatOpencodeAccountLabel(
+  accountId: string,
+  alias: string | null,
+  email: string | null,
+): string {
+  const base = email ?? accountId;
+  return alias === null ? base : `${base} [${alias}]`;
+}
+
 export function opencodeAccountId(text: string): string {
   const providers = readOpencodeProviders(text)
     .map((provider) => provider.replace(/[^A-Za-z0-9._-]/g, '_'))
@@ -133,6 +181,131 @@ export function opencodeAccountId(text: string): string {
   const short = fingerprint.slice(fingerprint.indexOf(':') + 1, fingerprint.indexOf(':') + 7);
   // the whole id must fit the vault charset and its 128-char cap
   return `${providers}.${short}`.slice(0, 128);
+}
+
+/** Per-provider lineage (refresh token, else api key, else the entry). */
+function providerLineages(text: string): Map<string, string> | null {
+  const providers = parseProviders(text);
+  if (providers === null) {
+    return null;
+  }
+  const lineages = new Map<string, string>();
+  for (const [provider, entry] of providers) {
+    lineages.set(provider, asString(entry.refresh) ?? asString(entry.key) ?? JSON.stringify(entry));
+  }
+  return lineages;
+}
+
+/**
+ * True when `stored` is the same login as `live` before a provider was
+ * added: every stored provider is still in live with the same lineage,
+ * but the derived account ids differ. A stored *superset* is not a
+ * predecessor — that is a switchable fuller set, not a stale snapshot.
+ */
+export function isOpencodeProviderPredecessor(stored: string, live: string): boolean {
+  const storedLineages = providerLineages(stored);
+  const liveLineages = providerLineages(live);
+  if (storedLineages === null || liveLineages === null || storedLineages.size === 0) {
+    return false;
+  }
+  if (opencodeAccountId(stored) === opencodeAccountId(live)) {
+    return false;
+  }
+  for (const [provider, lineage] of storedLineages) {
+    if (liveLineages.get(provider) !== lineage) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export type OpencodeLiveSyncOutcome = 'not_needed' | 'retired' | 'unavailable';
+
+/**
+ * When the live auth.json grew a provider, the derived account id
+ * changes and the previous vault row would otherwise sit next to it as
+ * a second "account". The old row is the same login, so it is removed
+ * and the live bytes are stored under the new id (alias preserved).
+ */
+export function syncOpencodeLiveIdentity(ports: {
+  readonly vault: AccountVault;
+  readonly authPath?: string;
+  readonly nowUtc?: number;
+}): OpencodeLiveSyncOutcome {
+  const authPath = ports.authPath ?? defaultOpencodeAuthPath();
+  const live = readAuthFile(authPath);
+  if (live === null || readOpencodeProviders(live).length === 0) {
+    return 'unavailable';
+  }
+  return retireOpencodePredecessors(ports.vault, live, ports.nowUtc);
+}
+
+function listOpencodePredecessors(vault: AccountVault, live: string): VaultEntry[] {
+  const liveId = opencodeAccountId(live);
+  const predecessors: VaultEntry[] = [];
+  for (const entry of vault.list()) {
+    if (entry.agent !== OPENCODE_AGENT || entry.accountId === liveId) {
+      continue;
+    }
+    let stored: string | null;
+    try {
+      stored = vault.loadCredentials(OPENCODE_AGENT, entry.accountId);
+    } catch {
+      continue;
+    }
+    if (stored !== null && isOpencodeProviderPredecessor(stored, live)) {
+      predecessors.push(entry);
+    }
+  }
+  return predecessors;
+}
+
+/** Prefer a named row, then the oldest — that is the original capture. */
+function pickPredecessorDonor(predecessors: readonly VaultEntry[]): VaultEntry | null {
+  const named = predecessors.find((entry) => entry.alias !== null);
+  if (named !== undefined) {
+    return named;
+  }
+  return predecessors.reduce<VaultEntry | null>(
+    (oldest, entry) => (oldest === null || entry.addedAtUtc < oldest.addedAtUtc ? entry : oldest),
+    null,
+  );
+}
+
+function retireOpencodePredecessors(
+  vault: AccountVault,
+  live: string,
+  nowUtc?: number,
+): OpencodeLiveSyncOutcome {
+  const predecessors = listOpencodePredecessors(vault, live);
+  if (predecessors.length === 0) {
+    return 'not_needed';
+  }
+
+  const liveId = opencodeAccountId(live);
+  const existing = vault.get(OPENCODE_AGENT, liveId);
+  const donor = pickPredecessorDonor(predecessors);
+  try {
+    vault.put(
+      {
+        agent: OPENCODE_AGENT,
+        accountId: liveId,
+        email: existing?.email ?? donor?.email ?? readOpencodeDisplayEmail(live),
+        organizationUuid: null,
+        organizationName: readOpencodeProviders(live).join(', '),
+        alias: existing?.alias ?? donor?.alias ?? null,
+        addedAtUtc: existing?.addedAtUtc ?? donor?.addedAtUtc ?? nowUtc ?? Math.floor(Date.now() / 1000),
+        refreshDeadAtUtc: existing?.refreshDeadAtUtc ?? null,
+      },
+      live,
+    );
+    for (const entry of predecessors) {
+      vault.remove(OPENCODE_AGENT, entry.accountId);
+    }
+  } catch {
+    return 'unavailable';
+  }
+  return 'retired';
 }
 
 function readAuthFile(authPath: string): string | null {
@@ -161,19 +334,26 @@ export function captureOpencodeAccount(ports: {
   }
   const accountId = opencodeAccountId(live);
   const existing = ports.vault.get(OPENCODE_AGENT, accountId);
-  return ports.vault.put(
+  const donor = pickPredecessorDonor(listOpencodePredecessors(ports.vault, live));
+  const entry = ports.vault.put(
     {
       agent: OPENCODE_AGENT,
       accountId,
-      email: null,
+      email: existing?.email ?? donor?.email ?? readOpencodeDisplayEmail(live),
       organizationUuid: null,
       organizationName: providers.join(', '),
-      alias: ports.alias === undefined ? (existing?.alias ?? null) : ports.alias,
-      addedAtUtc: existing?.addedAtUtc ?? ports.nowUtc ?? Math.floor(Date.now() / 1000),
+      alias:
+        ports.alias === undefined ? (existing?.alias ?? donor?.alias ?? null) : ports.alias,
+      addedAtUtc:
+        existing?.addedAtUtc ?? donor?.addedAtUtc ?? ports.nowUtc ?? Math.floor(Date.now() / 1000),
       refreshDeadAtUtc: null,
     },
     live,
   );
+  // a provider added to the same login changes the derived id; the
+  // previous row is the same credential set, not a second account
+  retireOpencodePredecessors(ports.vault, live, ports.nowUtc);
+  return ports.vault.get(OPENCODE_AGENT, accountId) ?? entry;
 }
 
 /** Resolves an id or alias — among opencode entries only. */
@@ -259,7 +439,7 @@ export async function switchOpencodeAccount(
         {
           agent: OPENCODE_AGENT,
           accountId: liveId,
-          email: null,
+          email: readOpencodeDisplayEmail(live),
           organizationUuid: null,
           organizationName: readOpencodeProviders(live).join(', '),
           alias: null,

@@ -27,9 +27,12 @@ import type { ProfileFetch } from '../accounts/oauth-profile.ts';
 import {
   OPENCODE_AGENT,
   defaultOpencodeAuthPath,
+  formatOpencodeAccountLabel,
   opencodeAccountId,
   readOpencodeApiKey,
+  readOpencodeDisplayEmail,
   readOpencodeProviders,
+  syncOpencodeLiveIdentity,
 } from '../accounts/opencode.ts';
 import { AccountVault } from '../accounts/vault.ts';
 import type { VaultEntry } from '../accounts/vault.ts';
@@ -147,6 +150,21 @@ export async function loadAllQuota(options: {
       });
     } catch {
       // opportunistic, exactly like the Claude mirror above
+    }
+  }
+  // OpenCode's account id is derived from the provider list, so adding
+  // a provider (xai onto an existing go+cline login) would otherwise
+  // leave the previous id sitting next to the live one as a second row.
+  if (agent === null || agent === 'opencode' || agent === 'cline') {
+    try {
+      syncOpencodeLiveIdentity({
+        vault,
+        authPath: options.opencodeAuthPath ?? defaultOpencodeAuthPath(),
+        nowUtc: now,
+      });
+    } catch {
+      // opportunistic: a stale predecessor is a display glitch, not a
+      // lost credential — the live file still holds the current set
     }
   }
 
@@ -415,11 +433,19 @@ interface OpencodeBundle {
   readonly authText: string;
 }
 
-function opencodeLabel(vaultEntries: readonly VaultEntry[], accountId: string): string {
+function opencodeLabel(
+  vaultEntries: readonly VaultEntry[],
+  accountId: string,
+  authText: string,
+): string {
   const entry = vaultEntries.find(
     (candidate) => candidate.agent === OPENCODE_AGENT && candidate.accountId === accountId,
   );
-  return entry?.alias == null ? accountId : `${accountId} [${entry.alias}]`;
+  return formatOpencodeAccountLabel(
+    accountId,
+    entry?.alias ?? null,
+    entry?.email ?? readOpencodeDisplayEmail(authText),
+  );
 }
 
 /**
@@ -441,7 +467,7 @@ function listOpencodeBundles(
       const accountId = opencodeAccountId(text);
       bundles.set(accountId, {
         accountId,
-        account: opencodeLabel(entries, accountId),
+        account: opencodeLabel(entries, accountId, text),
         authText: text,
       });
     }
@@ -463,7 +489,7 @@ function listOpencodeBundles(
     }
     bundles.set(entry.accountId, {
       accountId: entry.accountId,
-      account: opencodeLabel(entries, entry.accountId),
+      account: opencodeLabel(entries, entry.accountId, authText),
       authText,
     });
   }

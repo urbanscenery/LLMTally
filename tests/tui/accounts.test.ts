@@ -950,4 +950,37 @@ describe('opencode accounts', () => {
     expect(active?.isActive).toBe(true);
     expect(stored?.isActive).toBe(false);
   });
+
+  test('an email-labeled quota row is not duplicated by a derived-id discovery profile', () => {
+    // Arrange — live quota shows the ClinePass email; discovery still
+    // names the fingerprint id that auth.json actually stores
+    const snapshot = snapshotFixture({
+      agent: 'opencode',
+      accountId: 'cline-pass.opencode-go.aaaaaa',
+      account: 'me@test.dev',
+      windows: [{ id: 'rolling', usedPercent: 10, resetsAtUtc: null }],
+    });
+
+    // Act
+    const model = toAccountsTabViewModel(
+      inputFor([snapshot], {
+        discovered: [
+          {
+            agent: 'opencode',
+            accountId: 'cline-pass.opencode-go.aaaaaa',
+            displayLabel: 'cline-pass.opencode-go.aaaaaa',
+            email: null,
+            organizationId: null,
+            discoveredVia: 'opencode-auth',
+          },
+        ],
+        activeByAgent: { opencode: 'cline-pass.opencode-go.aaaaaa' },
+      }),
+    );
+
+    // Assert
+    const rows = model.rows.filter((row) => row.agent === 'opencode');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.label).toBe('me@test.dev');
+  });
 });

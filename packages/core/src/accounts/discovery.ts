@@ -13,7 +13,12 @@ import { asObject, asString } from '../parsers/shared.ts';
 import { defaultAntigravityStoreDir, listAntigravityAccounts } from '../quota/antigravity.ts';
 import { defaultClaudeConfigPath, readClaudeActiveIdentity } from './claude.ts';
 import { GROK_AGENT, defaultGrokAuthPath, readGrokIdentities } from './grok.ts';
-import { defaultOpencodeAuthPath, opencodeAccountId, readOpencodeProviders } from './opencode.ts';
+import {
+  defaultOpencodeAuthPath,
+  opencodeAccountId,
+  readOpencodeDisplayEmail,
+  readOpencodeProviders,
+} from './opencode.ts';
 
 export type DiscoverySource =
   | 'claude-config'
@@ -130,12 +135,13 @@ function discoverOpencode(authPath: string): AccountProfile[] {
     return [];
   }
   const accountId = opencodeAccountId(text);
+  const email = readOpencodeDisplayEmail(text);
   return [
     {
       agent: 'opencode',
       accountId,
-      displayLabel: accountId,
-      email: null,
+      displayLabel: email ?? accountId,
+      email,
       organizationId: null,
       discoveredVia: 'opencode-auth',
     },

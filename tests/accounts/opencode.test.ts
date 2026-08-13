@@ -4,11 +4,15 @@ import { join } from 'node:path';
 
 import {
   captureOpencodeAccount,
+  formatOpencodeAccountLabel,
+  isOpencodeProviderPredecessor,
   opencodeAccountId,
   opencodeCredentialFingerprint,
   readOpencodeApiKey,
+  readOpencodeDisplayEmail,
   readOpencodeProviders,
   switchOpencodeAccount,
+  syncOpencodeLiveIdentity,
 } from '@llmtally/core/accounts/opencode.ts';
 import { createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
 import { AccountVault, VAULT_KEYCHAIN_SERVICE } from '@llmtally/core/accounts/vault.ts';
@@ -101,6 +105,25 @@ describe('opencode auth parsing', () => {
     );
     expect(opencodeCredentialFingerprint(before)).not.toBe(
       opencodeCredentialFingerprint(rotatedRefresh),
+    );
+  });
+});
+
+describe('readOpencodeDisplayEmail', () => {
+  test('reads an email claim from an oauth access token', () => {
+    // Arrange
+    const access = `h.${Buffer.from(JSON.stringify({ email: 'me@test.dev' })).toString('base64url')}.s`;
+    const text = JSON.stringify({
+      'opencode-go': { type: 'api', key: 'sk-go' },
+      xai: { type: 'oauth', access, refresh: 'rt' },
+    });
+
+    // Act & Assert
+    expect(readOpencodeDisplayEmail(text)).toBe('me@test.dev');
+    expect(readOpencodeDisplayEmail(authJson({ 'opencode-go': 'sk-go' }))).toBeNull();
+    expect(formatOpencodeAccountLabel('opencode-go.aaaaaa', null, 'me@test.dev')).toBe('me@test.dev');
+    expect(formatOpencodeAccountLabel('opencode-go.aaaaaa', 'work', 'me@test.dev')).toBe(
+      'me@test.dev [work]',
     );
   });
 });
@@ -199,6 +222,117 @@ describe('captureOpencodeAccount', () => {
     expect(() => captureOpencodeAccount({ vault, authPath, nowUtc: NOW })).toThrow(
       /opencode auth login/,
     );
+  });
+
+  test('adding a provider retires the previous identity instead of keeping both', () => {
+    // Arrange — same keys, then xai is added to the live file
+    const { authPath, vault } = harness();
+    const original = authJson({ 'opencode-go': 'sk-go', 'cline-pass': 'sk-pass' });
+    writeFileSync(authPath, original);
+    const old = captureOpencodeAccount({ vault, authPath, nowUtc: NOW });
+    const grown = JSON.stringify({
+      'opencode-go': { type: 'api', key: 'sk-go' },
+      'cline-pass': { type: 'api', key: 'sk-pass' },
+      xai: { type: 'oauth', access: 'at', refresh: 'rt' },
+    });
+    writeFileSync(authPath, grown);
+
+    // Act
+    const next = captureOpencodeAccount({ vault, authPath, nowUtc: NOW + 60 });
+
+    // Assert
+    const stored = vault.list().filter((entry) => entry.agent === 'opencode');
+    expect(stored).toHaveLength(1);
+    expect(next.accountId).not.toBe(old.accountId);
+    expect(next.accountId).toBe(opencodeAccountId(grown));
+    expect(next.addedAtUtc).toBe(old.addedAtUtc);
+    expect(vault.get('opencode', old.accountId)).toBeNull();
+    expect(vault.get('opencode', next.accountId)?.addedAtUtc).toBe(old.addedAtUtc);
+    expect(vault.loadCredentials('opencode', next.accountId)).toBe(grown);
+  });
+
+  test('re-capturing after a provider is added keeps the previous alias', () => {
+    // Arrange
+    const { authPath, vault } = harness();
+    writeFileSync(authPath, authJson({ 'opencode-go': 'sk-go' }));
+    captureOpencodeAccount({ vault, authPath, alias: 'work', nowUtc: NOW });
+    writeFileSync(authPath, authJson({ 'opencode-go': 'sk-go', 'cline-pass': 'sk-pass' }));
+
+    // Act
+    const next = captureOpencodeAccount({ vault, authPath, nowUtc: NOW + 60 });
+
+    // Assert — the returned entry is the stored row, not the pre-retire put
+    expect(next.alias).toBe('work');
+    expect(next.addedAtUtc).toBe(NOW);
+    expect(vault.get('opencode', next.accountId)?.alias).toBe('work');
+  });
+});
+
+describe('isOpencodeProviderPredecessor', () => {
+  test('a stored subset with the same lineages is the live set before a provider was added', () => {
+    // Arrange
+    const stored = authJson({ 'opencode-go': 'sk-go', 'cline-pass': 'sk-pass' });
+    const live = JSON.stringify({
+      'opencode-go': { type: 'api', key: 'sk-go' },
+      'cline-pass': { type: 'api', key: 'sk-pass' },
+      xai: { type: 'oauth', access: 'at', refresh: 'rt' },
+    });
+
+    // Act & Assert
+    expect(isOpencodeProviderPredecessor(stored, live)).toBe(true);
+    expect(isOpencodeProviderPredecessor(live, stored)).toBe(false);
+    expect(isOpencodeProviderPredecessor(stored, stored)).toBe(false);
+  });
+
+  test('a different key under a shared provider is another account, not a predecessor', () => {
+    // Act & Assert
+    expect(
+      isOpencodeProviderPredecessor(
+        authJson({ 'opencode-go': 'sk-a' }),
+        authJson({ 'opencode-go': 'sk-b', 'cline-pass': 'sk-c' }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('syncOpencodeLiveIdentity', () => {
+  test('drops a stored predecessor when the live file grew a provider', () => {
+    // Arrange
+    const { authPath, vault } = harness();
+    const original = authJson({ 'opencode-go': 'sk-go' });
+    writeFileSync(authPath, original);
+    const old = captureOpencodeAccount({ vault, authPath, alias: 'work', nowUtc: NOW });
+    const grown = authJson({ 'opencode-go': 'sk-go', 'cline-pass': 'sk-pass' });
+    writeFileSync(authPath, grown);
+
+    // Act
+    const outcome = syncOpencodeLiveIdentity({ vault, authPath, nowUtc: NOW + 60 });
+
+    // Assert — the new id keeps the old alias so the row does not look new
+    const liveId = opencodeAccountId(grown);
+    expect(outcome).toBe('retired');
+    expect(vault.get('opencode', old.accountId)).toBeNull();
+    expect(vault.get('opencode', liveId)?.alias).toBe('work');
+    expect(vault.loadCredentials('opencode', liveId)).toBe(grown);
+  });
+
+  test('keeps a stored superset so switching back to it is still possible', () => {
+    // Arrange — live lost xai; the fuller set stays switchable
+    const { authPath, vault } = harness();
+    const full = JSON.stringify({
+      'opencode-go': { type: 'api', key: 'sk-go' },
+      xai: { type: 'oauth', access: 'at', refresh: 'rt' },
+    });
+    writeFileSync(authPath, full);
+    const stored = captureOpencodeAccount({ vault, authPath, nowUtc: NOW });
+    writeFileSync(authPath, authJson({ 'opencode-go': 'sk-go' }));
+
+    // Act
+    const outcome = syncOpencodeLiveIdentity({ vault, authPath, nowUtc: NOW + 60 });
+
+    // Assert
+    expect(outcome).toBe('not_needed');
+    expect(vault.get('opencode', stored.accountId)).not.toBeNull();
   });
 });
 

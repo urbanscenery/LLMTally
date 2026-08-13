@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import {
   clinePassQuotaSubject,
   fetchClinePassQuota,
+  lookupClinePassEmail,
   resetClineQuotaState,
 } from '@llmtally/core/quota/cline.ts';
 import { LLMTALLY_USER_AGENT } from '@llmtally/core/version.ts';
@@ -53,6 +54,21 @@ function router(
 
 beforeEach(() => {
   resetClineQuotaState();
+});
+
+describe('lookupClinePassEmail', () => {
+  test('returns the /users/me email and nothing when identity is unreadable', async () => {
+    // Arrange
+    const ok = router();
+    const dead = router({ '/users/me': () => new Response('{}', { status: 401 }) });
+
+    // Act & Assert
+    expect(await lookupClinePassEmail({ apiKey: KEY, nowUtc: NOW, fetchFn: ok.fetchFn })).toBe(
+      'me@test.dev',
+    );
+    resetClineQuotaState();
+    expect(await lookupClinePassEmail({ apiKey: KEY, nowUtc: NOW, fetchFn: dead.fetchFn })).toBeNull();
+  });
 });
 
 describe('fetchClinePassQuota', () => {

@@ -316,10 +316,25 @@ export function toAccountsTabViewModel(input: AccountsInput): AccountsTabViewMod
   }
 
   const covered = new Set(rows.map((row) => `${row.agent} ${row.label}`));
+  const coveredIds = new Set<string>();
+  for (const snapshot of input.snapshots) {
+    if (snapshot.accountId !== null) {
+      coveredIds.add(`${snapshot.agent}:${snapshot.accountId}`);
+    }
+  }
+  for (const row of rows) {
+    if (row.accountId !== null) {
+      coveredIds.add(`${row.agent}:${row.accountId}`);
+    }
+  }
   for (const profile of input.discovered) {
     const label = sanitizeTerminalLine(profile.displayLabel);
     const agent = sanitizeTerminalLine(profile.agent);
-    if (covered.has(`${agent} ${label}`)) {
+    const profileId = profile.accountId === null ? null : sanitizeTerminalLine(profile.accountId);
+    if (
+      covered.has(`${agent} ${label}`) ||
+      (profileId !== null && coveredIds.has(`${agent}:${profileId}`))
+    ) {
       continue;
     }
     covered.add(`${agent} ${label}`);

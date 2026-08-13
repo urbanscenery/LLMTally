@@ -286,6 +286,20 @@ async function resolveIdentity(
   return identity;
 }
 
+/** Display email for a ClinePass key; null when identity cannot be read. */
+export async function lookupClinePassEmail(input: {
+  readonly apiKey: string;
+  readonly nowUtc: number;
+  readonly fetchFn?: FetchLike;
+}): Promise<string | null> {
+  const identity = await resolveIdentity(input.apiKey, input.nowUtc, input.fetchFn ?? fetch);
+  if ('kind' in identity) {
+    return null;
+  }
+  const email = identity.account;
+  return email !== null && email.includes('@') ? email : null;
+}
+
 export async function fetchClinePassQuota(
   request: ClinePassQuotaRequest,
 ): Promise<QuotaSnapshot> {
