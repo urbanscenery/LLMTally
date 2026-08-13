@@ -42,6 +42,11 @@ final class OverviewModel: ObservableObject {
     @Published var loading = false
     @Published var loadError: String?
     @Published var lastLoadedAt: Date?
+    /// Claude switch settle window — mirrors core's cooldown (Keychain
+    /// reads are cached ~30s by Claude Code; core holds 45s). The
+    /// buttons count down instead of bouncing off the sidecar's error.
+    @Published var switchCooldownUntil: Date?
+    static let switchCooldownSeconds: TimeInterval = 45
 
     /// A user Refresh during a background load must not be dropped —
     /// it re-runs when the in-flight batch settles (audit grok C3-10).
@@ -189,10 +194,24 @@ final class OverviewModel: ObservableObject {
             DispatchQueue.main.async {
                 completion(result)
                 if case .success = result {
+                    if agent == "claude-code" {
+                        self.beginSwitchCooldown()
+                    }
                     // the new active identity must be reflected everywhere
                     self.load(refresh: true)
                 }
             }
+        }
+    }
+
+    private func beginSwitchCooldown() {
+        let until = Date().addingTimeInterval(Self.switchCooldownSeconds)
+        switchCooldownUntil = until
+        // republish at expiry so the Switch buttons come back without
+        // waiting for the next data reload
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.switchCooldownSeconds + 0.5) { [weak self] in
+            guard let self, let current = self.switchCooldownUntil, current <= Date() else { return }
+            self.switchCooldownUntil = nil
         }
     }
 

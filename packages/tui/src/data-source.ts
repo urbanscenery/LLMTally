@@ -22,6 +22,11 @@ import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
 import { defaultGrokAuthPath, readGrokIdentities } from '@llmtally/core/accounts/grok.ts';
 import { createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import { captureActiveAccount, switchAccount } from '@llmtally/core/accounts/switch.ts';
+import {
+  assertSwitchCooldown,
+  defaultSwitchCooldownPath,
+  recordSwitchCooldown,
+} from '@llmtally/core/accounts/switch-cooldown.ts';
 import { AccountVault } from '@llmtally/core/accounts/vault.ts';
 import { defaultAntigravityStoreDir, resolveActiveAccount } from '@llmtally/core/quota/antigravity.ts';
 import { readCodexAuth } from '@llmtally/core/quota/codex-live.ts';
@@ -199,10 +204,16 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
         // could be moved instead (audit GK-26)
         throw new Error(`switch is not supported for agent: ${agent}`);
       }
+      // settle window shared with the menu bar app: the Keychain read
+      // is cached ~30s by Claude Code, so back-to-back switches act on
+      // stores that are still converging
+      const cooldownPath = defaultSwitchCooldownPath();
+      assertSwitchCooldown(cooldownPath);
       const result = await switchAccount(accountId, {
         vault,
         activeStore: createActiveCredentialStore(),
       });
+      recordSwitchCooldown(cooldownPath);
       const sessions =
         result.liveSessions.length === 0
           ? ''

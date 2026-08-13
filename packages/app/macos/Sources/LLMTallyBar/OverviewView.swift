@@ -164,6 +164,7 @@ struct OverviewView: View {
                 activeAccountId: model.activeAccounts[agent] ?? nil,
                 privacy: privacy,
                 detail: model.providerDetails[agent],
+                switchCooldownUntil: model.switchCooldownUntil,
                 onSwitch: { snapshot in
                     guard let accountId = snapshot.accountId else { return }
                     switchIntent = SwitchIntent(
@@ -772,6 +773,8 @@ struct ProviderDetailView: View {
     let activeAccountId: String?
     var privacy = false
     var detail: OverviewModel.ProviderDetailData?
+    /// Claude switch settle window — Switch buttons count down while open.
+    var switchCooldownUntil: Date?
     let onSwitch: (QuotaSnapshotDTO) -> Void
 
     var body: some View {
@@ -882,6 +885,16 @@ struct ProviderDetailView: View {
                         // installing a refused login can only fail —
                         // say so instead of opening a doomed sheet
                         Text("re-login needed").font(.caption2).foregroundStyle(.orange)
+                    } else if agent == "claude-code", let until = switchCooldownUntil,
+                              until > Date() {
+                        // settle window after a switch (Keychain reads
+                        // are cached ~30s) — count down, don't bounce
+                        // off the sidecar's cooldown error
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            let remaining = max(0, Int(until.timeIntervalSince(context.date).rounded(.up)))
+                            Text("settling · \(remaining)s")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                     } else {
                         Button("Switch") { onSwitch(snapshot) }
                             .buttonStyle(HoverActionButtonStyle())

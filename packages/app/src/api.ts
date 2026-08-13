@@ -15,6 +15,11 @@ import { createActiveCredentialStore } from '@llmtally/core/accounts/credentials
 import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
 import { switchOpencodeAccount } from '@llmtally/core/accounts/opencode.ts';
 import { switchAccount as switchClaudeAccount } from '@llmtally/core/accounts/switch.ts';
+import {
+  assertSwitchCooldown,
+  defaultSwitchCooldownPath,
+  recordSwitchCooldown,
+} from '@llmtally/core/accounts/switch-cooldown.ts';
 import { AccountVault } from '@llmtally/core/accounts/vault.ts';
 import { defaultGrokAuthPath, readGrokIdentities } from '@llmtally/core/accounts/grok.ts';
 import { defaultOpencodeAuthPath, opencodeAccountId, readOpencodeProviders } from '@llmtally/core/accounts/opencode.ts';
@@ -195,7 +200,20 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
     if (agent === 'opencode') {
       return switchOpencodeAccount(selector, { vault: getVault() });
     }
-    return switchClaudeAccount(selector, { vault: getVault(), activeStore: getActiveStore() });
+    // settle window: Claude Code caches the Keychain read ~30s, so a
+    // switch right after a switch acts on stores that are still
+    // converging. The vault-dir default keeps hermetic tests isolated.
+    const cooldownPath =
+      options.vaultDir !== undefined
+        ? `${options.vaultDir}/switch-cooldown.json`
+        : defaultSwitchCooldownPath();
+    assertSwitchCooldown(cooldownPath);
+    return switchClaudeAccount(selector, { vault: getVault(), activeStore: getActiveStore() }).then(
+      (result) => {
+        recordSwitchCooldown(cooldownPath);
+        return result;
+      },
+    );
   });
 
   server.register('detachCodex', () => {
