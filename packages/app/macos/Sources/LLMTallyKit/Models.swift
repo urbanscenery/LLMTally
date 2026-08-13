@@ -216,12 +216,16 @@ public func resetText(_ resetsAtUtc: Double?, now: Date = Date()) -> String {
 }
 
 /// Detail surfaces pair the countdown with the absolute local time:
-/// `resets in 2h 5m · Wed 16:27` (§4). NULL stays `no reset`.
+/// `resets in 2h 5m · 08-14 (Thu) 16:27` (§4). The month-day keeps a
+/// monthly reset unambiguous — a weekday alone names four candidate
+/// days. NULL stays `no reset`.
 public func resetTextDetailed(_ resetsAtUtc: Double?, now: Date = Date()) -> String {
     guard let resetsAtUtc else { return "no reset" }
     let relative = resetText(resetsAtUtc, now: now)
     let formatter = DateFormatter()
-    formatter.dateFormat = "EEE HH:mm"
+    // the UI is English; a system locale must not localize the weekday
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "MM-dd (EEE) HH:mm"
     let absolute = formatter.string(from: Date(timeIntervalSince1970: epochSeconds(resetsAtUtc)))
     return "\(relative) · \(absolute)"
 }
