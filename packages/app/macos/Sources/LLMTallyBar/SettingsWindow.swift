@@ -321,6 +321,7 @@ private struct OverviewRowsPane: View {
     @State private var order: [String] = OverviewRowsPane.effectiveOrder()
     @State private var hidden = HiddenAgents.all()
     @State private var manual = ProviderOrder.saved() != nil
+    @State private var draggedAgent: String?
 
     private static func effectiveOrder() -> [String] {
         var agents = ProviderOrder.saved() ?? AGENT_DISPLAY_NAMES.keys.sorted()
@@ -339,6 +340,8 @@ private struct OverviewRowsPane: View {
             Divider()
             ForEach(Array(order.enumerated()), id: \.element) { index, agent in
                 HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.caption).foregroundStyle(.tertiary)
                     Button("↑") { move(index, by: -1) }.disabled(index == 0)
                     Button("↓") { move(index, by: 1) }.disabled(index == order.count - 1)
                     Text(agentDisplayName(agent))
@@ -352,6 +355,20 @@ private struct OverviewRowsPane: View {
                         }))
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .opacity(draggedAgent == agent ? 0.4 : 1)
+                .onDrag {
+                    draggedAgent = agent
+                    return NSItemProvider(object: agent as NSString)
+                }
+                .onDrop(of: [.text], delegate: DragReorderDelegate(
+                    itemId: agent, draggedId: $draggedAgent,
+                    indexOf: { id in order.firstIndex(of: id) },
+                    move: { from, to in
+                        order.moveElement(from: from, to: to)
+                        ProviderOrder.set(order)
+                        manual = true
+                    }))
             }
             Divider()
             HStack {

@@ -16,6 +16,7 @@ struct BuilderView: View {
     @State private var buckets: [ReportBucketDTO] = []
     @State private var hourBuckets: [ReportBucketDTO] = []
     @State private var todayRows: [String: Int]?
+    @State private var draggedId: String?
     /// Squeeze simulation (§6.5): reproduces a crowded menu bar.
     @State private var budget: Double = Double(StatusComposer.defaultBudget)
     private let store = DescriptorStore()
@@ -154,6 +155,17 @@ struct BuilderView: View {
             VStack(spacing: 0) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                     itemRow(item, index: index)
+                        .opacity(draggedId == item.id ? 0.4 : 1)
+                        .onDrag {
+                            draggedId = item.id
+                            return NSItemProvider(object: item.id as NSString)
+                        }
+                        .onDrop(of: [.text], delegate: DragReorderDelegate(
+                            itemId: item.id, draggedId: $draggedId,
+                            indexOf: { id in items.firstIndex { $0.id == id } },
+                            move: { from, to in
+                                mutate { $0.moveElement(from: from, to: to) }
+                            }))
                     Divider()
                 }
                 addMenu.padding(10)
