@@ -21,6 +21,7 @@ import { defaultOpencodeAuthPath, opencodeAccountId, readOpencodeProviders } fro
 import { defaultAntigravityStoreDir, resolveActiveAccount } from '@llmtally/core/quota/antigravity.ts';
 import { readCodexAuth } from '@llmtally/core/quota/codex-live.ts';
 import { dedupeByAccount, loadAllQuota } from '@llmtally/core/quota/service.ts';
+import { sortQuotaWindows } from '@llmtally/core/quota/window-policy.ts';
 import { softResetQuotaThrottle } from '@llmtally/core/quota/throttle.ts';
 import { PROMPTS_DEFAULT_LIMIT, listPrompts } from '@llmtally/core/report/prompts.ts';
 import { buildReportRange } from '@llmtally/core/report/range.ts';
@@ -78,13 +79,25 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
       return dedupeByAccount(snapshots);
     });
 
+  // gauges must line up with the TUI: same canonical window order
+  // (5hours, 7days, 1month, shared before model-scoped) on every read
+  const loadQuotaOrdered = async (loadOptions: {
+    readonly allowRefresh: boolean;
+  }): Promise<QuotaSnapshot[]> => {
+    const snapshots = await loadQuota(loadOptions);
+    return snapshots.map((snapshot) => ({
+      ...snapshot,
+      windows: sortQuotaWindows(snapshot.windows),
+    }));
+  };
+
   server.register('ping', () => ({ ok: true, databasePath }));
 
   server.register('scan', () =>
     getCoordinator().run({ agent: null, fullRescan: false, databasePath }));
 
   server.register('quota', (params) =>
-    loadQuota({ allowRefresh: readBool(params, 'refresh') ?? true }));
+    loadQuotaOrdered({ allowRefresh: readBool(params, 'refresh') ?? true }));
 
   server.register('report', (params) => reportFor(params, databasePath));
 
@@ -93,7 +106,7 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
     // first scan there IS no ledger, and the first paint should still
     // show the vendor gauges (audit grok C3-03)
     const [quota, report] = await Promise.all([
-      loadQuota({ allowRefresh: readBool(params, 'refresh') ?? true }),
+      loadQuotaOrdered({ allowRefresh: readBool(params, 'refresh') ?? true }),
       reportFor({ groupBy: 'day' }, databasePath).catch((error: unknown) => ({
         command: 'report' as const,
         databasePath,
