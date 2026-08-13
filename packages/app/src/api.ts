@@ -14,7 +14,7 @@ import { detachCodexLogin, switchCodexAccount } from '@llmtally/core/accounts/co
 import { createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
 import { switchOpencodeAccount } from '@llmtally/core/accounts/opencode.ts';
-import { switchAccount as switchClaudeAccount } from '@llmtally/core/accounts/switch.ts';
+import { claudeSwitchPreflight, switchAccount as switchClaudeAccount } from '@llmtally/core/accounts/switch.ts';
 import {
   assertSwitchCooldown,
   defaultSwitchCooldownPath,
@@ -186,6 +186,16 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
     // two simultaneous logins are ambiguous — show none rather than guess
     active['grok'] = grokIdentities.length === 1 ? (grokIdentities[0]?.accountId ?? null) : null;
     return active;
+  });
+
+  server.register('switchPreflight', (params) => {
+    const agent = requireString(params, 'agent');
+    // only Claude sessions hold the shared credential store a switch
+    // rewrites; other agents have nothing to preflight yet
+    if (agent !== 'claude-code') {
+      return { liveSessionPids: [] };
+    }
+    return claudeSwitchPreflight();
   });
 
   server.register('switchAccount', (params) => {

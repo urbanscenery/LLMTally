@@ -4,6 +4,7 @@
  * source, so every interaction lives in one place instead of being
  * split between the command and the controller.
  */
+import { claudeSwitchPreflight } from '@llmtally/core/accounts/switch.ts';
 import { loadUiPreferences, saveUiPreferences } from '@llmtally/core/config/preferences.ts';
 import type { UiPreferences } from '@llmtally/core/config/preferences.ts';
 import { sanitizeTerminalLine } from '@llmtally/core/terminal/sanitize.ts';
@@ -389,11 +390,19 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       if (row.accountId === null || row.isActive || !isSwitchable(row) || row.refreshDead) {
         return true;
       }
+      // preflight: a running session may revert the switch on its next
+      // token refresh — say so BEFORE the user commits, never after
+      const livePids =
+        row.agent === 'claude-code' ? claudeSwitchPreflight().liveSessionPids : [];
+      const liveWarning =
+        livePids.length === 0
+          ? ''
+          : ` (${livePids.length} running Claude Code session(s) may revert this switch on their next token refresh — quit them first for a clean switch)`;
       controller.setOverlay({
         kind: 'confirm',
         topic: 'account-switch',
         title: 'Switch account',
-        message: `Switch ${row.agent} to ${row.label}?`,
+        message: `Switch ${row.agent} to ${row.label}?${liveWarning}`,
         payload: `${row.agent}:${row.accountId}`,
       });
       return true;

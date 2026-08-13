@@ -188,6 +188,25 @@ function classifyOutgoing(
   return { kind: 'unclaimed', owner: null };
 }
 
+/** What a switch confirmation should surface BEFORE the user commits. */
+export interface ClaudeSwitchPreflight {
+  /** Running Claude Code sessions — any of them may revert the switch
+   * on its next token refresh. Warn, never block or kill. */
+  readonly liveSessionPids: readonly number[];
+}
+
+/**
+ * The pre-switch facts a confirmation dialog needs. Collected without
+ * network or locks so a UI can call it every time the sheet opens.
+ */
+export function claudeSwitchPreflight(
+  options: { readonly home?: string; readonly configHome?: string } = {},
+): ClaudeSwitchPreflight {
+  const home = options.home ?? homedir();
+  const configHome = options.configHome ?? defaultClaudeConfigHome(home);
+  return { liveSessionPids: liveSessionPids(configHome) };
+}
+
 export async function switchAccount(selector: string, ports: SwitchPorts): Promise<SwitchResult> {
   const home = ports.home ?? homedir();
   const configHome = ports.configHome ?? defaultClaudeConfigHome(home);

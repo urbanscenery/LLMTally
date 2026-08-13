@@ -3,10 +3,11 @@ import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from '
 import { join } from 'node:path';
 
 import { acquireClaudeLocks, claudeLockSpecs } from '@llmtally/core/accounts/claude-locks.ts';
-import { CredentialError, createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
+import { CredentialError, activeKeychainService, createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import type { ActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import { createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
 import {
+  claudeSwitchPreflight,
   captureActiveAccount,
   liveSessionPids,
   switchAccount,
@@ -498,3 +499,63 @@ describe('liveSessionPids', () => {
   });
 });
 
+
+describe('claudeSwitchPreflight', () => {
+  test('lists running sessions from the config home lock files', () => {
+    // Arrange — one live pid (our own) and one stale lock
+    const configHome = makeTempDir();
+    mkdirSync(join(configHome, 'ide'), { recursive: true });
+    writeFileSync(join(configHome, 'ide', 'a.lock'), JSON.stringify({ pid: process.pid }));
+    writeFileSync(join(configHome, 'ide', 'b.lock'), 'not json');
+
+    // Act
+    const preflight = claudeSwitchPreflight({ configHome });
+
+    // Assert
+    expect(preflight.liveSessionPids).toEqual([process.pid]);
+  });
+
+  test('an empty config home preflights clean', () => {
+    expect(claudeSwitchPreflight({ configHome: makeTempDir() }).liveSessionPids).toEqual([]);
+  });
+});
+
+describe('scoped keychain service (CLAUDE_CONFIG_DIR)', () => {
+  test('the default home keeps the legacy unsuffixed service', () => {
+    const home = makeTempDir();
+    expect(activeKeychainService(join(home, '.claude'), home)).toBe('Claude Code-credentials');
+  });
+
+  test('a custom config dir derives the sha256-suffixed service', () => {
+    const service = activeKeychainService('/tmp/profile-a', makeTempDir());
+    expect(service).toMatch(/^Claude Code-credentials-[0-9a-f]{8}$/);
+    // deterministic per dir, distinct across dirs
+    expect(activeKeychainService('/tmp/profile-a', makeTempDir())).toBe(service);
+    expect(activeKeychainService('/tmp/profile-b', makeTempDir())).not.toBe(service);
+  });
+
+  test('reads fall back from scoped to legacy; writes land on both', () => {
+    // Arrange — a scoped config home, but only the legacy entry exists
+    // (an older Claude Code build wrote it)
+    const configHome = makeTempDir();
+    const keychain = createMemoryKeychain();
+    keychain.write('Claude Code-credentials', 'user', '{"legacy":true}');
+    const store = createActiveCredentialStore({
+      configHome,
+      keychain,
+      keychainAccount: 'user',
+    });
+
+    // Act + Assert — the legacy entry is still reachable
+    expect(store.read()).toBe('{"legacy":true}');
+
+    // Act — a write must satisfy both generations of Claude Code
+    store.write('{"fresh":true}');
+    const scoped = activeKeychainService(configHome);
+    expect(keychain.read(scoped, 'user')).toEqual({ kind: 'found', value: '{"fresh":true}' });
+    expect(keychain.read('Claude Code-credentials', 'user')).toEqual({
+      kind: 'found',
+      value: '{"fresh":true}',
+    });
+  });
+});
