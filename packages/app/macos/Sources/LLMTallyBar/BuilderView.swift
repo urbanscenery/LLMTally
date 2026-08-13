@@ -131,6 +131,16 @@ struct BuilderView: View {
 
     private func itemRow(_ item: MenuItemDescriptor, index: Int) -> some View {
         HStack(spacing: 6) {
+            // mini render of just this item — same composer as the bar
+            Image(nsImage: StatusComposer.compose(
+                segments: renderStatusSegments(
+                    descriptors: [item], quota: quota, buckets: buckets,
+                    activeAccounts: [:], todayAgentRows: todayRows).segments,
+                leadingTally: false))
+                .frame(maxWidth: 64, alignment: .leading)
+                .clipped()
+                .padding(2)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.05)))
             VStack(alignment: .leading, spacing: 1) {
                 Text(metricName(item.metric)).font(.caption.weight(.medium))
                 Text(itemSubtitle(item)).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)

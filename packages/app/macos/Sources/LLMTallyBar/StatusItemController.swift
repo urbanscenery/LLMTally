@@ -31,7 +31,47 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// nil = no successful reading yet; an empty map is a real zero.
     private var lastTodayRows: [String: Int]?
     private var openObserver: NSObjectProtocol?
+    private var closeObserver: NSObjectProtocol?
     private var configObserver: NSObjectProtocol?
+    private var keyMonitor: Any?
+
+    /// §9 keyboard while the popover is key: ⌘, / ⌘R / ⌘O handled
+    /// here, navigation keys routed to the view.
+    private func installKeyMonitor() {
+        removeKeyMonitor()
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, self.popover?.isShown == true else { return event }
+            let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+            if event.modifierFlags.contains(.command) {
+                switch key {
+                case ",": SettingsWindowController.shared.show(); return nil
+                case "o": OpenTUI.launch(); return nil
+                case "r":
+                    NotificationCenter.default.post(name: .llmtallyKeyCommand, object: "refresh")
+                    return nil
+                default: return event
+                }
+            }
+            let command: String?
+            switch event.keyCode {
+            case 53: command = "esc"
+            case 36: command = "enter"
+            case 126: command = "up"
+            case 125: command = "down"
+            default: command = key == "s" ? "s" : nil
+            }
+            guard let command else { return event }
+            NotificationCenter.default.post(name: .llmtallyKeyCommand, object: command)
+            return nil
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+        }
+        keyMonitor = nil
+    }
 
     private func scheduleTimer() {
         refreshTimer?.invalidate()
@@ -74,6 +114,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         ) { [weak self] _ in
             self?.showPopover()
         }
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyClosePopover, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.popover?.performClose(nil)
+        }
     }
 
     deinit {
@@ -87,6 +132,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         if let openObserver {
             NotificationCenter.default.removeObserver(openObserver)
         }
+        if let closeObserver {
+            NotificationCenter.default.removeObserver(closeObserver)
+        }
+        if let configObserver {
+            NotificationCenter.default.removeObserver(configObserver)
+        }
+        removeKeyMonitor()
     }
 
     @objc private func togglePopover() {
@@ -116,6 +168,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         // above the menu bar with its head off-screen.
         let bottomEdge: NSRectEdge = button.isFlipped ? .maxY : .minY
         fresh.show(relativeTo: button.bounds, of: button, preferredEdge: bottomEdge)
+        installKeyMonitor()
     }
 
     func popoverDidShow(_ notification: Notification) {
@@ -158,6 +211,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         popover = nil
+        removeKeyMonitor()
     }
 
     /// Pulls quota + active accounts and renders the descriptor array

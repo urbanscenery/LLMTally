@@ -8,6 +8,7 @@ struct OverviewView: View {
     @StateObject private var model = OverviewModel()
     @State private var selectedAgent: String?
     @State private var switchIntent: SwitchIntent?
+    @State private var focusedRow: Int?
     @AppStorage(PrivacySetting.key) private var privacy = false
 
     private var aliases: [String: String] {
@@ -23,9 +24,52 @@ struct OverviewView: View {
             footer
         }
         .frame(width: 400, height: 560)
-        .onAppear { model.load(refresh: true) }
+        .onAppear {
+            model.load(refresh: true)
+            if let target = PendingNavigation.consume() {
+                selectedAgent = target
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .llmtallyKeyCommand)) { notification in
+            handleKey(notification.object as? String ?? "")
+        }
         .sheet(item: $switchIntent) { intent in
             SwitchSheet(intent: intent, model: model) { switchIntent = nil }
+        }
+    }
+
+    /// §9 keyboard: Esc back/close, `s` first provider, ⌘R refresh,
+    /// ↑↓/Enter row navigation.
+    private func handleKey(_ command: String) {
+        guard switchIntent == nil else { return }  // the sheet owns its keys
+        switch command {
+        case "esc":
+            if selectedAgent != nil {
+                selectedAgent = nil
+            } else {
+                NotificationCenter.default.post(name: .llmtallyClosePopover, object: nil)
+            }
+        case "s":
+            if selectedAgent == nil {
+                selectedAgent = model.agentGroups().first?.agent
+            }
+        case "refresh":
+            if model.retryAfterSeconds == nil {
+                model.load(refresh: true)
+            }
+        case "up", "down":
+            guard selectedAgent == nil else { return }
+            let count = model.agentGroups().count
+            guard count > 0 else { return }
+            let delta = command == "down" ? 1 : -1
+            focusedRow = ((focusedRow ?? -delta) + delta + count) % count
+        case "enter":
+            if selectedAgent == nil, let focusedRow,
+               focusedRow < model.agentGroups().count {
+                selectedAgent = model.agentGroups()[focusedRow].agent
+            }
+        default:
+            break
         }
     }
 
@@ -104,10 +148,11 @@ struct OverviewView: View {
                         .onTapGesture { selectedAgent = headline.snapshot.agent }
                     Divider()
                 }
-                ForEach(model.agentGroups(), id: \.agent) { group in
+                ForEach(Array(model.agentGroups().enumerated()), id: \.element.agent) { index, group in
                     if let row = model.overviewRow(for: group) {
                         AgentRow(item: row, privacy: privacy,
                                  alias: aliases[row.snapshot.agent] ?? "P?")
+                            .background(focusedRow == index ? Color.primary.opacity(0.06) : .clear)
                             .contentShape(Rectangle())
                             .onTapGesture { selectedAgent = group.agent }
                         Divider().padding(.leading, 44)

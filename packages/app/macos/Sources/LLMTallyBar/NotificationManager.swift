@@ -29,7 +29,11 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         // only the default click opens the popover — dismissals and
         // future custom actions must not
         if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+            let agent = response.notification.request.content.userInfo["agent"] as? String
             DispatchQueue.main.async {
+                // deep link: the popover opens on the provider the
+                // notification was about (§10)
+                PendingNavigation.agent = agent
                 NotificationCenter.default.post(name: .llmtallyOpenPopover, object: nil)
             }
         }
@@ -52,6 +56,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             let content = UNMutableNotificationContent()
             content.title = notification.title
             content.body = notification.body
+            content.userInfo = ["agent": notification.agent]
             UNUserNotificationCenter.current().add(
                 UNNotificationRequest(identifier: notification.key, content: content, trigger: nil))
         }

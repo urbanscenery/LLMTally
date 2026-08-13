@@ -16,6 +16,11 @@ extension Notification.Name {
     /// Posted for config that the status item must re-apply itself
     /// (refresh cadence).
     static let llmtallyConfigChanged = Notification.Name("llmtallyConfigChanged")
+    /// Keyboard routing while the popover is open (§9). Object is the
+    /// command string: esc / s / refresh / up / down / enter.
+    static let llmtallyKeyCommand = Notification.Name("llmtallyKeyCommand")
+    /// The popover view asks the controller to close it (Esc at root).
+    static let llmtallyClosePopover = Notification.Name("llmtallyClosePopover")
 }
 
 /// Single source for the privacy switch (03_design_spec §11).
@@ -47,6 +52,16 @@ enum AppConfig {
 
     static var nominalMode: Bool {
         UserDefaults.standard.string(forKey: costModeKey) == "nominal"
+    }
+}
+
+/// One-shot deep-link target: a clicked notification names its agent,
+/// the next popover open lands on that provider's detail.
+enum PendingNavigation {
+    static var agent: String?
+    static func consume() -> String? {
+        defer { agent = nil }
+        return agent
     }
 }
 
