@@ -7,6 +7,11 @@ import LLMTallyKit
 /// skeleton over stale truth).
 @MainActor
 final class OverviewModel: ObservableObject {
+    /// One instance for the app's lifetime: reopening the panel must
+    /// paint the previous data instantly (iStat-style) instead of
+    /// starting from an empty model and waiting out a live fetch.
+    static let shared = OverviewModel()
+
     struct ProviderDetailData {
         let modelBuckets: [ReportBucketDTO]
         let dayBuckets: [ReportBucketDTO]
@@ -41,6 +46,32 @@ final class OverviewModel: ObservableObject {
     /// A user Refresh during a background load must not be dropped —
     /// it re-runs when the in-flight batch settles (audit grok C3-10).
     private var pendingUserRefresh = false
+
+    /// Panel-open policy: whatever is cached paints first, the live
+    /// vendor round-trip (seconds) happens behind it. A cold model
+    /// reads stored state (`refresh: false`, fast) and queues the live
+    /// pass; a warm model already shows last-good, so it goes straight
+    /// to the live pass without hiding anything.
+    func loadOnAppear() {
+        guard overview == nil else {
+            load(refresh: true)
+            return
+        }
+        pendingUserRefresh = true
+        load(refresh: false)
+    }
+
+    /// Seed from the status item's background fetch so the very first
+    /// panel open after launch has something to paint. Only fills an
+    /// empty model — it must never clobber newer panel-driven data.
+    func seed(overview: OverviewDTO, activeAccounts: [String: String?]?,
+              hourBuckets: [ReportBucketDTO]?) {
+        guard self.overview == nil else { return }
+        self.overview = overview
+        if let activeAccounts { self.activeAccounts = activeAccounts }
+        if let hourBuckets { self.hourBuckets = hourBuckets }
+        lastLoadedAt = Date()
+    }
 
     func load(refresh: Bool) {
         guard !loading else {

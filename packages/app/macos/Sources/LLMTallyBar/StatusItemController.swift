@@ -312,6 +312,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             self.lastHourBuckets = hourBuckets ?? self.lastHourBuckets
             self.lastActive = active ?? self.lastActive
             self.lastTodayRows = todayRows ?? self.lastTodayRows
+            // launch fetch doubles as the panel's warm cache: the first
+            // open then paints instantly instead of waiting a live pass
+            // (this closure runs on the main queue via group.notify)
+            MainActor.assumeIsolated {
+                OverviewModel.shared.seed(
+                    overview: overview, activeAccounts: active, hourBuckets: hourBuckets)
+            }
             self.renderFromCache()
             NotificationManager.shared.process(quota: overview.quota, privacy: PrivacySetting.enabled)
         }

@@ -5,7 +5,9 @@ import LLMTallyKit
 /// agent rows, Today cards — and Provider detail with per-account
 /// windows and the Switch confirmation sheet.
 struct OverviewView: View {
-    @StateObject private var model = OverviewModel()
+    // the shared app-lifetime model: reopening paints last-good data
+    // immediately, the refresh lands behind it
+    @ObservedObject private var model = OverviewModel.shared
     @State private var selectedAgent: String?
     @State private var switchIntent: SwitchIntent?
     @State private var focusedRow: Int?
@@ -29,7 +31,7 @@ struct OverviewView: View {
         // panel stays open next to Settings
         .tint((Theme.presets.first { $0.id == themeId } ?? Theme.system).accent)
         .onAppear {
-            model.load(refresh: true)
+            model.loadOnAppear()
             if let target = PendingNavigation.consume() {
                 selectedAgent = target
             }
