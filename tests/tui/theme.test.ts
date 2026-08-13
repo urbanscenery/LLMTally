@@ -70,7 +70,7 @@ describe('themes', () => {
     expect(themeNames()).toContain('catppuccin');
     expect(themeNames()).toContain('onedark');
     expect(themeNames()).toContain('github');
-    expect(themeNames()).toHaveLength(15);
+    expect(themeNames()).toHaveLength(17);
     for (const definition of THEMES) {
       const theme = resolveTheme(definition);
       for (const role of roles) {

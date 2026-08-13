@@ -12,6 +12,8 @@ extension Theme {
         make("monokai", "Monokai", accent: 0xF92672, live: 0xA6E22E, warn: 0xFD971F, crit: 0xC4265E, actual: 0xE6DB74, background: 0x272822, dark: true),
         make("vue", "Vue Dark", accent: 0x42B883, live: 0x42D392, warn: 0xFFC517, crit: 0xED3C50, actual: 0xFF7043, background: 0x273849, dark: true),
         make("material", "Material Dark", accent: 0xC792EA, live: 0xC3E88D, warn: 0xFFCB6B, crit: 0xF07178, actual: 0xF78C6C, background: 0x263238, dark: true),
+        make("night-owl", "Night Owl", accent: 0x82AAFF, live: 0xADDB67, warn: 0xECC48D, crit: 0xEF5350, actual: 0xF78C6C, background: 0x011627, dark: true),
+        make("cobalt2", "Cobalt2", accent: 0xFFC600, live: 0x3AD900, warn: 0xFF9D00, crit: 0xFF2600, actual: 0xFF628C, background: 0x193549, dark: true),
         make("mono-dark", "Mono Dark", accent: 0xEEEEEE, live: 0xCFCFCF, warn: 0x8A8A8A, crit: 0xFFFFFF, actual: 0xB0B0B0, background: 0x000000, dark: true),
         make("github", "GitHub Light", accent: 0xCF222E, live: 0x1A7F37, warn: 0x9A6700, crit: 0xA40E26, actual: 0xBC4C00, background: 0xFFFFFF, dark: false),
         make("solarized", "Solarized Light", accent: 0x859900, live: 0x2AA198, warn: 0xB58900, crit: 0xDC322F, actual: 0xCB4B16, background: 0xFDF6E3, dark: false),
