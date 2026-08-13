@@ -48,13 +48,27 @@ export type LiveCredentialSyncOutcome =
   | 'unverified'
   /** The live credentials belong to another account; the vault is safe. */
   | 'foreign'
+  /** Foreign bytes were mirrored into their OWNER's vault slot. */
+  | 'foreign_synced'
   /** The live store could not be read, or held nothing usable. */
   | 'unavailable'
   /** Another credential operation held the vault lock. */
   | 'busy';
 
+/** The oracle's answer, with the profile-confirmed owner when known. */
+export interface LiveOwnerVerdict {
+  readonly status: 'own' | 'foreign' | 'unresolved';
+  readonly ownerAccountUuid: string | null;
+  readonly ownerEmail: string | null;
+}
+
 type ProbeMemo =
-  | { readonly kind: 'verdict'; readonly ownsSlot: boolean }
+  | {
+      readonly kind: 'verdict';
+      readonly ownsSlot: boolean;
+      readonly ownerUuid: string | null;
+      readonly ownerEmail: string | null;
+    }
   | { readonly kind: 'inconclusive'; readonly retryAtUtc: number };
 
 const probes = new Map<string, ProbeMemo>();
@@ -123,11 +137,14 @@ export async function syncActiveClaudeCredential(
     nowUtc: options.nowUtc,
     fetchFn: options.fetchFn,
   });
-  if (owns === 'unresolved') {
+  if (owns.status === 'unresolved') {
     return 'unverified';
   }
-  if (owns === 'foreign') {
-    return 'foreign';
+  if (owns.status === 'foreign') {
+    // the live rotation still deserves preservation — in its OWNER's
+    // slot, so the owner's next poll/switch does not burn a consumed
+    // predecessor (the same reason the active mirror exists)
+    return mirrorForeignToOwner(options, live, liveFingerprint, owns);
   }
 
   // CAS on the generation we compared against: a switch or another sync
@@ -150,6 +167,61 @@ export async function syncActiveClaudeCredential(
     return 'synced';
   }
   return result === 'busy' ? 'busy' : 'not_needed';
+}
+
+/**
+ * Foreign live bytes are mirrored into the slot the oracle NAMED, under
+ * the guards every reviewer of this design agreed on: identity comes
+ * from the profile API only, an absent slot is never created, a slot
+ * without credentials is never seeded (that is "accounts add"), the
+ * live bytes must not have moved since the probe, and the write is a
+ * fingerprint CAS. Anything short of all five leaves the vault alone.
+ */
+function mirrorForeignToOwner(
+  options: LiveCredentialSyncOptions,
+  live: string,
+  liveFingerprint: string,
+  verdict: LiveOwnerVerdict,
+): 'foreign' | 'foreign_synced' {
+  const ownerUuid = verdict.ownerAccountUuid;
+  if (ownerUuid === null) {
+    return 'foreign';
+  }
+  if (options.vault.get('claude-code', ownerUuid) === null) {
+    return 'foreign';
+  }
+  let ownerStored: string | null;
+  try {
+    ownerStored = options.vault.loadCredentials('claude-code', ownerUuid);
+  } catch {
+    return 'foreign';
+  }
+  if (ownerStored === null) {
+    return 'foreign';
+  }
+  const ownerFingerprint = credentialFingerprint(ownerStored);
+  if (ownerFingerprint === liveFingerprint) {
+    return 'foreign_synced';
+  }
+  // the verdict binds to the probed bytes; a switch or refresh landing
+  // in the probe's network gap makes it another generation's verdict
+  const reread = readLive(options.activeStore);
+  if (reread === null || credentialFingerprint(reread) !== liveFingerprint) {
+    return 'foreign';
+  }
+  try {
+    const result = options.vault.replaceCredentialsIfFingerprint(
+      'claude-code',
+      ownerUuid,
+      ownerFingerprint,
+      live,
+      // a live login is proof the lineage works; any quarantine is stale
+      { clearRefreshDead: true },
+    );
+    return result === 'updated' ? 'foreign_synced' : 'foreign';
+  } catch {
+    return 'foreign';
+  }
 }
 
 function readLive(activeStore: ActiveCredentialStore): string | null {
@@ -182,14 +254,18 @@ export async function verifyLiveCredentialOwner(options: {
   readonly credentials: string;
   readonly nowUtc: number;
   readonly fetchFn?: ProfileFetch;
-}): Promise<'own' | 'foreign' | 'unresolved'> {
+}): Promise<LiveOwnerVerdict> {
   const key = `${options.accountId}|${credentialFingerprint(options.credentials)}`;
   const memo = probes.get(key);
   if (memo?.kind === 'verdict') {
-    return memo.ownsSlot ? 'own' : 'foreign';
+    return {
+      status: memo.ownsSlot ? 'own' : 'foreign',
+      ownerAccountUuid: memo.ownerUuid,
+      ownerEmail: memo.ownerEmail,
+    };
   }
   if (memo?.kind === 'inconclusive' && options.nowUtc < memo.retryAtUtc) {
-    return 'unresolved';
+    return { status: 'unresolved', ownerAccountUuid: null, ownerEmail: null };
   }
 
   const accessToken = oauthAccessToken(options.credentials);
@@ -202,9 +278,18 @@ export async function verifyLiveCredentialOwner(options: {
       kind: 'inconclusive',
       retryAtUtc: options.nowUtc + PROBE_RETRY_SECONDS,
     });
-    return 'unresolved';
+    return { status: 'unresolved', ownerAccountUuid: null, ownerEmail: null };
   }
   const ownsSlot = identity.accountUuid === options.accountId;
-  rememberProbe(key, { kind: 'verdict', ownsSlot });
-  return ownsSlot ? 'own' : 'foreign';
+  rememberProbe(key, {
+    kind: 'verdict',
+    ownsSlot,
+    ownerUuid: identity.accountUuid ?? null,
+    ownerEmail: identity.email ?? null,
+  });
+  return {
+    status: ownsSlot ? 'own' : 'foreign',
+    ownerAccountUuid: identity.accountUuid ?? null,
+    ownerEmail: identity.email ?? null,
+  };
 }

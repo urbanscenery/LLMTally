@@ -466,3 +466,54 @@ describe('readVaultAccountsQuota', () => {
     expect(snapshots[0]?.failure?.kind).toBe('rate_limited');
   });
 });
+
+describe('live-family renewal deferral', () => {
+  test('a slot whose family a live session owns is not double-rotated', async () => {
+    // Arrange — uuid-b's stored token is expired, but the LIVE store
+    // holds the same refresh token: a running session owns that family
+    const vault = makeVault([{ id: 'uuid-b', expiresAt: NOW_MS - 1000 }]);
+    const tokenCalls: string[] = [];
+
+    // Act
+    const [snapshot] = await readVaultAccountsQuota({
+      vault,
+      activeContext: identified('uuid-active'),
+      nowUtc: NOW,
+      only: 'uuid-b',
+      liveRefreshToken: () => 'refresh-uuid-b',
+      fetchFn: ((url: string): Promise<Response> => {
+        tokenCalls.push(String(url));
+        return Promise.reject(new Error('no network call expected'));
+      }) as never,
+    });
+
+    // Assert — no token-endpoint POST; the reading defers to the session
+    expect(tokenCalls).toEqual([]);
+    expect(snapshot?.failure?.kind).toBe('unavailable');
+    expect(snapshot?.warnings[0]).toMatch(/running Claude Code session holds this token family/);
+  });
+
+  test('a different live family leaves the renewal path alone', async () => {
+    // Arrange — same expired slot, but the live store holds another
+    // account's family: renewal must proceed (and here fail transient)
+    const vault = makeVault([{ id: 'uuid-b', expiresAt: NOW_MS - 1000 }]);
+    let tokenCalls = 0;
+
+    // Act
+    const [snapshot] = await readVaultAccountsQuota({
+      vault,
+      activeContext: identified('uuid-active'),
+      nowUtc: NOW,
+      only: 'uuid-b',
+      liveRefreshToken: () => 'refresh-of-someone-else',
+      fetchFn: ((): Promise<Response> => {
+        tokenCalls += 1;
+        return Promise.reject(new Error('offline'));
+      }) as never,
+    });
+
+    // Assert
+    expect(tokenCalls).toBe(1);
+    expect(snapshot?.warnings[0]).toMatch(/token renewal failed/);
+  });
+});

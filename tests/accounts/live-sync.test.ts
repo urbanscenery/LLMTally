@@ -307,3 +307,107 @@ describe('probe memo bound', () => {
     expect(calls).toBe(301);
   });
 });
+
+describe('foreign mirror to the owner slot', () => {
+  beforeEach(() => {
+    resetLiveCredentialProbes();
+  });
+
+  function storeSeq(texts: (string | null)[]) {
+    let index = 0;
+    return {
+      backend: 'file' as const,
+      read: () => texts[Math.min(index++, texts.length - 1)] ?? null,
+      write: () => undefined,
+      clear: () => undefined,
+      touch: () => undefined,
+    };
+  }
+
+  test('foreign bytes with a managed owner land in the OWNER slot via CAS', async () => {
+    // Arrange — config selects acc-1; the live store holds acc-2's
+    // rotated bytes; acc-2 has a managed slot with an older generation
+    const vault = makeVault();
+    storedEntry(vault, 'acc-1', 'refresh-a');
+    storedEntry(vault, 'acc-2', 'refresh-b-old');
+    const context = resolveActiveClaudeContext({ vault, configPath: configWith('acc-1') });
+
+    // Act
+    const result = await syncActiveClaudeCredential({
+      context,
+      vault,
+      activeStore: storeWith(credentials('refresh-b-new')),
+      nowUtc: NOW,
+      fetchFn: oracle('acc-2'),
+    });
+
+    // Assert — the owner slot adopted the rotation; the selected slot
+    // kept its own only surviving refresh token
+    expect(result).toBe('foreign_synced');
+    expect(storedRefreshToken(vault, 'acc-2')).toBe('refresh-b-new');
+    expect(storedRefreshToken(vault, 'acc-1')).toBe('refresh-a');
+  });
+
+  test('a quarantined owner slot is revived by the live rotation', async () => {
+    // Arrange — acc-2 was refresh-dead; the live login is proof of life
+    const vault = makeVault();
+    storedEntry(vault, 'acc-1', 'refresh-a');
+    storedEntry(vault, 'acc-2', 'refresh-b-old');
+    quarantine(vault, 'acc-2');
+    const context = resolveActiveClaudeContext({ vault, configPath: configWith('acc-1') });
+
+    // Act
+    const result = await syncActiveClaudeCredential({
+      context,
+      vault,
+      activeStore: storeWith(credentials('refresh-b-new')),
+      nowUtc: NOW,
+      fetchFn: oracle('acc-2'),
+    });
+
+    // Assert
+    expect(result).toBe('foreign_synced');
+    expect(vault.get('claude-code', 'acc-2')?.refreshDeadAtUtc).toBeNull();
+  });
+
+  test('bytes that moved between probe and write are not mirrored', async () => {
+    // Arrange — the re-read before the CAS sees a different generation
+    const vault = makeVault();
+    storedEntry(vault, 'acc-1', 'refresh-a');
+    storedEntry(vault, 'acc-2', 'refresh-b-old');
+    const context = resolveActiveClaudeContext({ vault, configPath: configWith('acc-1') });
+
+    // Act
+    const result = await syncActiveClaudeCredential({
+      context,
+      vault,
+      activeStore: storeSeq([credentials('refresh-b-new'), credentials('refresh-b-newer')]),
+      nowUtc: NOW,
+      fetchFn: oracle('acc-2'),
+    });
+
+    // Assert — the verdict bound to bytes that no longer exist
+    expect(result).toBe('foreign');
+    expect(storedRefreshToken(vault, 'acc-2')).toBe('refresh-b-old');
+  });
+
+  test('an unknown owner writes to no claimed slot', async () => {
+    // Arrange — the oracle names an account the vault does not manage
+    const vault = makeVault();
+    storedEntry(vault, 'acc-1', 'refresh-a');
+    const context = resolveActiveClaudeContext({ vault, configPath: configWith('acc-1') });
+
+    // Act
+    const result = await syncActiveClaudeCredential({
+      context,
+      vault,
+      activeStore: storeWith(credentials('refresh-x')),
+      nowUtc: NOW,
+      fetchFn: oracle('acc-unmanaged'),
+    });
+
+    // Assert
+    expect(result).toBe('foreign');
+    expect(storedRefreshToken(vault, 'acc-1')).toBe('refresh-a');
+  });
+});

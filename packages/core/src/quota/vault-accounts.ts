@@ -176,6 +176,14 @@ export interface VaultQuotaOptions {
   readonly allowRefresh?: boolean;
   /** Restrict to one stored account, so each can be throttled separately. */
   readonly only?: string;
+  /**
+   * The refresh token the LIVE credential store currently holds, when
+   * readable. A stored slot whose refresh token matches it belongs to a
+   * family a running Claude Code session owns — renewing it here would
+   * double-rotate that family and invalidate one copy, so the poll
+   * defers to the session instead (the mirror re-captures its rotation).
+   */
+  readonly liveRefreshToken?: () => string | null;
 }
 
 function label(entry: VaultEntry): string {
@@ -242,6 +250,21 @@ async function readOneAccount(
   }
   if (options.allowRefresh === false || oauth.refreshToken === null) {
     return unavailable(entry, options.nowUtc, 'stored token expired; switch to this account (Accounts tab, press s) or re-login');
+  }
+  if (options.liveRefreshToken !== undefined) {
+    let liveToken: string | null = null;
+    try {
+      liveToken = options.liveRefreshToken();
+    } catch {
+      // an unanswerable live store must not block the renewal path
+    }
+    if (liveToken !== null && liveToken === oauth.refreshToken) {
+      return unavailable(
+        entry,
+        options.nowUtc,
+        'a running Claude Code session holds this token family; deferring renewal to it',
+      );
+    }
   }
 
   const expectedFingerprint = credentialFingerprint(stored);

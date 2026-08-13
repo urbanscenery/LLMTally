@@ -15,6 +15,7 @@
  *     so activating a snapshot must not resurrect the stale copies
  *     captured when that account was last active.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, rmSync, utimesSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -25,6 +26,21 @@ import { macosKeychain } from './keychain.ts';
 import type { KeychainPort } from './keychain.ts';
 
 export const ACTIVE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
+
+/**
+ * Claude Code 2.1+ scopes its macOS Keychain item by config dir when
+ * `CLAUDE_CONFIG_DIR` is set: the service name gains the first 8 hex
+ * chars of sha256(configDir) (measured by Orca). The default home keeps
+ * the legacy unsuffixed service. Reads try scoped first then legacy;
+ * writes land on both so older builds keep working.
+ */
+export function activeKeychainService(configHome: string, home: string = homedir()): string {
+  if (configHome === join(home, '.claude')) {
+    return ACTIVE_KEYCHAIN_SERVICE;
+  }
+  const suffix = createHash('sha256').update(configHome).digest('hex').slice(0, 8);
+  return `${ACTIVE_KEYCHAIN_SERVICE}-${suffix}`;
+}
 const FILE_MODE = 0o600;
 
 /** Machine-scoped keys: the live copy always wins, absence included. */
@@ -77,9 +93,21 @@ export function createActiveCredentialStore(options: ActiveStoreOptions = {}): A
   const configHome = options.configHome ?? defaultClaudeConfigHome();
   const filePath = join(configHome, '.credentials.json');
   const keychain = options.keychain ?? macosKeychain;
+  const scopedService = activeKeychainService(configHome);
+  // scoped first (Claude Code 2.1+ under CLAUDE_CONFIG_DIR), legacy
+  // second — reading only the legacy entry in a scoped environment
+  // would hand back another profile's login
+  const services =
+    scopedService === ACTIVE_KEYCHAIN_SERVICE
+      ? [ACTIVE_KEYCHAIN_SERVICE]
+      : [scopedService, ACTIVE_KEYCHAIN_SERVICE];
   const account =
     options.keychainAccount ??
-    (keychain.available ? (keychain.findAccount(ACTIVE_KEYCHAIN_SERVICE) ?? process.env.USER ?? '') : '');
+    (keychain.available
+      ? (services.map((service) => keychain.findAccount(service)).find((found) => found !== null) ??
+        process.env.USER ??
+        '')
+      : '');
   const useKeychain = keychain.available;
 
   return {
@@ -87,14 +115,16 @@ export function createActiveCredentialStore(options: ActiveStoreOptions = {}): A
 
     read(): string | null {
       if (useKeychain) {
-        const result = keychain.read(ACTIVE_KEYCHAIN_SERVICE, account);
-        if (result.kind === 'found') {
-          return result.value;
-        }
-        if (result.kind === 'error') {
-          throw new CredentialError(
-            `could not read the active Claude Code credentials (${result.message}) — refusing to treat them as absent`,
-          );
+        for (const service of services) {
+          const result = keychain.read(service, account);
+          if (result.kind === 'found') {
+            return result.value;
+          }
+          if (result.kind === 'error') {
+            throw new CredentialError(
+              `could not read the active Claude Code credentials (${result.message}) — refusing to treat them as absent`,
+            );
+          }
         }
       }
       try {
@@ -108,7 +138,9 @@ export function createActiveCredentialStore(options: ActiveStoreOptions = {}): A
     write(text: string): void {
       const compact = compactJson(text);
       if (useKeychain) {
-        keychain.write(ACTIVE_KEYCHAIN_SERVICE, account, compact);
+        for (const service of services) {
+          keychain.write(service, account, compact);
+        }
         this.touch();
         return;
       }
@@ -117,7 +149,9 @@ export function createActiveCredentialStore(options: ActiveStoreOptions = {}): A
 
     clear(): void {
       if (useKeychain) {
-        keychain.remove(ACTIVE_KEYCHAIN_SERVICE, account);
+        for (const service of services) {
+          keychain.remove(service, account);
+        }
       }
       rmSync(filePath, { force: true });
     },
@@ -194,6 +228,14 @@ export function oauthAccessToken(text: string): string | null {
   const parsed = asObject(safeParse(text));
   const oauth = parsed === null ? null : asObject(parsed.claudeAiOauth);
   const token = oauth === null ? null : oauth.accessToken;
+  return typeof token === 'string' && token.length > 0 ? token : null;
+}
+
+/** The refresh token of a stored blob — the token-family identity. */
+export function oauthRefreshToken(text: string): string | null {
+  const parsed = asObject(safeParse(text));
+  const oauth = parsed === null ? null : asObject(parsed.claudeAiOauth);
+  const token = oauth === null ? null : oauth.refreshToken;
   return typeof token === 'string' && token.length > 0 ? token : null;
 }
 
