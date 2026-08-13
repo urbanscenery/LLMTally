@@ -181,8 +181,10 @@ struct OverviewView: View {
     private var footer: some View {
         HStack {
             if let loaded = model.lastLoadedAt {
-                Text("Updated \(shortDuration(Date().timeIntervalSince(loaded))) ago · local ledger")
-                    .font(.caption2).foregroundStyle(.secondary)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text("Updated \(shortDuration(context.date.timeIntervalSince(loaded))) ago · local ledger")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
             Spacer()
             Button("Open TUI") { OpenTUI.launch() }
@@ -487,16 +489,19 @@ struct FreshnessSummary: View {
     let quota: [QuotaSnapshotDTO]
 
     var body: some View {
-        let (glyph, text, color) = summary()
-        HStack(spacing: 4) {
-            Text(glyph).font(.caption)
-            Text(text).font(.caption2).monospacedDigit()
+        // ages must tick while the panel is open — elapsed time alone
+        // never re-renders a SwiftUI view
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let (glyph, text, color) = summary(now: context.date)
+            HStack(spacing: 4) {
+                Text(glyph).font(.caption)
+                Text(text).font(.caption2).monospacedDigit()
+            }
+            .foregroundStyle(color)
         }
-        .foregroundStyle(color)
     }
 
-    private func summary() -> (String, String, Color) {
-        let now = Date()
+    private func summary(now: Date) -> (String, String, Color) {
         let theme = Theme.current()
         if quota.contains(where: { $0.failure?.kind == "auth_invalid" }) {
             return ("!", "auth", theme.crit)
