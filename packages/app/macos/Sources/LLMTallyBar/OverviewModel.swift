@@ -7,8 +7,15 @@ import LLMTallyKit
 /// skeleton over stale truth).
 @MainActor
 final class OverviewModel: ObservableObject {
+    struct ProviderDetailData {
+        let modelBuckets: [ReportBucketDTO]
+        let dayBuckets: [ReportBucketDTO]
+    }
+
     @Published var overview: OverviewDTO?
     @Published var activeAccounts: [String: String?] = [:]
+    @Published var lastPrompt: PromptRowDTO?
+    @Published var providerDetails: [String: ProviderDetailData] = [:]
     @Published var loading = false
     @Published var loadError: String?
     @Published var lastLoadedAt: Date?
@@ -32,6 +39,12 @@ final class OverviewModel: ObservableObject {
             activeResult = result
             group.leave()
         }
+        var promptResult: PromptRowDTO?
+        group.enter()
+        SidecarClient.shared.requestDecodable("prompts", params: ["limit": 1], as: PromptListDTO.self) { result in
+            if case .success(let list) = result { promptResult = list.rows.first }
+            group.leave()
+        }
 
         group.notify(queue: .main) { [weak self] in
             guard let self else { return }
@@ -49,6 +62,51 @@ final class OverviewModel: ObservableObject {
             if case .success(let active) = activeResult {
                 self.activeAccounts = active
             }
+            if let promptResult {
+                self.lastPrompt = promptResult
+            }
+        }
+    }
+
+    /// The largest retry countdown among rate-limited snapshots — the
+    /// footer locks Refresh behind it (§3, 429 state).
+    var retryAfterSeconds: Double? {
+        overview?.quota
+            .filter { $0.failure?.kind == "rate_limited" }
+            .compactMap(\.retryAfterSeconds)
+            .max()
+    }
+
+    /// Provider detail's lower half: today by model + weekly days.
+    func loadProviderDetail(agent: String) {
+        let today = localDayKey()
+        var models: [ReportBucketDTO]?
+        var days: [ReportBucketDTO]?
+        let group = DispatchGroup()
+
+        group.enter()
+        SidecarClient.shared.requestDecodable(
+            "report",
+            params: ["groupBy": "model", "agent": agent, "fromDate": today, "toDate": today, "noRefresh": true],
+            as: ReportSummaryDTO.self
+        ) { result in
+            if case .success(let summary) = result { models = summary.buckets }
+            group.leave()
+        }
+        group.enter()
+        SidecarClient.shared.requestDecodable(
+            "report",
+            params: ["groupBy": "day", "agent": agent, "noRefresh": true],
+            as: ReportSummaryDTO.self
+        ) { result in
+            if case .success(let summary) = result { days = summary.buckets }
+            group.leave()
+        }
+        group.notify(queue: .main) { [weak self] in
+            guard let self else { return }
+            self.providerDetails[agent] = ProviderDetailData(
+                modelBuckets: models ?? [],
+                dayBuckets: days ?? [])
         }
     }
 

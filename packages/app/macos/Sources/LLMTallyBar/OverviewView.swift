@@ -45,6 +45,8 @@ struct OverviewView: View {
             Spacer()
             if let error = model.loadError {
                 Text(error).font(.caption2).foregroundStyle(.red).lineLimit(1)
+            } else if let quota = model.overview?.quota {
+                FreshnessSummary(quota: quota)
             }
             Button {
                 SettingsWindowController.shared.show()
@@ -66,6 +68,7 @@ struct OverviewView: View {
                 items: model.agentGroups().first(where: { $0.agent == agent })?.items ?? [],
                 activeAccountId: model.activeAccounts[agent] ?? nil,
                 privacy: privacy,
+                detail: model.providerDetails[agent],
                 onSwitch: { snapshot in
                     guard let accountId = snapshot.accountId else { return }
                     switchIntent = SwitchIntent(
@@ -73,6 +76,7 @@ struct OverviewView: View {
                         selector: accountId,
                         label: privacy ? "the selected account" : (snapshot.account ?? accountId))
                 })
+                .onAppear { model.loadProviderDetail(agent: agent) }
         } else if model.overview == nil {
             VStack(spacing: 8) {
                 if model.loading {
@@ -112,6 +116,9 @@ struct OverviewView: View {
                 TodaySection(bucket: model.todayBucket(),
                              totals: model.overview?.report.totals,
                              privacy: privacy)
+                if let prompt = model.lastPrompt {
+                    RecentLine(prompt: prompt, privacy: privacy)
+                }
                 WeeklyChart(buckets: model.overview?.report.buckets ?? [], privacy: privacy)
             }
         }
@@ -126,11 +133,18 @@ struct OverviewView: View {
             Spacer()
             Button("Open TUI") { OpenTUI.launch() }
                 .font(.caption)
-            Button(model.loading ? "Refreshing…" : "Refresh") {
-                model.load(refresh: true)
+            if let retry = model.retryAfterSeconds, retry > 0 {
+                // 429: last-good stays, refresh locks behind the retry
+                Button("Retry in \(shortDuration(retry))") {}
+                    .disabled(true)
+                    .font(.caption)
+            } else {
+                Button(model.loading ? "Refreshing…" : "Refresh") {
+                    model.load(refresh: true)
+                }
+                .disabled(model.loading)
+                .font(.caption)
             }
-            .disabled(model.loading)
-            .font(.caption)
         }
         .padding(.horizontal, 12)
         .frame(height: 34)
@@ -388,6 +402,65 @@ struct TodaySection: View {
     }
 }
 
+// MARK: - Header freshness + Recent line
+
+/// `Fresh · 42s` / `N stale` / `auth` — the header's one-line answer to
+/// "can I trust these numbers" (§3 헤더).
+struct FreshnessSummary: View {
+    let quota: [QuotaSnapshotDTO]
+
+    var body: some View {
+        let (glyph, text, color) = summary()
+        HStack(spacing: 4) {
+            Text(glyph).font(.caption)
+            Text(text).font(.caption2).monospacedDigit()
+        }
+        .foregroundStyle(color)
+    }
+
+    private func summary() -> (String, String, Color) {
+        let now = Date()
+        if quota.contains(where: { $0.failure?.kind == "auth_invalid" }) {
+            return ("!", "auth", .red)
+        }
+        let staleCount = quota.filter {
+            $0.failure?.kind == "rate_limited"
+                || ($0.source == "vendor_api"
+                    && now.timeIntervalSince1970 - epochSeconds($0.observedAtUtc) > STALE_AFTER_SECONDS)
+        }.count
+        if staleCount > 0 {
+            return ("◷", "\(staleCount) stale", .orange)
+        }
+        let newest = quota.map { epochSeconds($0.observedAtUtc) }.max()
+        guard let newest else { return ("—", "no reading", .secondary) }
+        return ("●", "Fresh · \(shortAge(sinceEpoch: newest, now: now))", .green)
+    }
+}
+
+/// The single recent-activity line (§3): the popover previews one row;
+/// investigation belongs to the TUI.
+struct RecentLine: View {
+    let prompt: PromptRowDTO
+    var privacy = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text("last ·").foregroundStyle(.secondary)
+            Text("\(agentDisplayName(prompt.agent)) · \(prompt.model ?? "?") · \(shortAge(sinceEpoch: prompt.tsUtc))")
+                .foregroundStyle(.secondary).monospacedDigit()
+            if let text = prompt.text, !privacy {
+                Text("· \(text)").foregroundStyle(.tertiary).lineLimit(1)
+            } else if privacy {
+                Text("· Prompt hidden").foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.caption2)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+}
+
 // MARK: - Weekly chart
 
 /// "This week" dual line (03_design_spec §3): tokens + Actual over the
@@ -485,6 +558,7 @@ struct ProviderDetailView: View {
     let items: [AgentAttention]
     let activeAccountId: String?
     var privacy = false
+    var detail: OverviewModel.ProviderDetailData?
     let onSwitch: (QuotaSnapshotDTO) -> Void
 
     var body: some View {
@@ -497,8 +571,66 @@ struct ProviderDetailView: View {
                     accountSection(item)
                     Divider()
                 }
+                lowerHalf
             }
         }
+    }
+
+    /// Today cards, by-model table, weekly line, TUI handoff (§4).
+    @ViewBuilder
+    private var lowerHalf: some View {
+        if let detail {
+            TodaySection(bucket: detail.dayBuckets.first { $0.key == localDayKey() },
+                         totals: nil, privacy: privacy)
+            if !detail.modelBuckets.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("TODAY · BY MODEL")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 4) {
+                        GridRow {
+                            Text("Model").gridColumnAlignment(.leading)
+                            Text("Prompts").gridColumnAlignment(.trailing)
+                            Text("Tokens").gridColumnAlignment(.trailing)
+                            Text("Actual").gridColumnAlignment(.trailing)
+                        }
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        ForEach(detail.modelBuckets, id: \.key) { bucket in
+                            GridRow {
+                                Text(bucket.key).lineLimit(1)
+                                Text("\(bucket.rowCount)")
+                                Text(formatTokens(bucket.tokens.inputTokens + bucket.tokens.outputTokens))
+                                Text(modelActual(bucket))
+                            }
+                            .font(.caption2).monospacedDigit()
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
+            }
+            WeeklyChart(buckets: detail.dayBuckets, privacy: privacy)
+            HStack {
+                Button("Open TUI · \(agentDisplayName(agent))") { OpenTUI.launch() }
+                    .font(.caption)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
+        } else {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Loading ledger detail…").font(.caption2).foregroundStyle(.secondary)
+            }
+            .padding(12)
+        }
+    }
+
+    private func modelActual(_ bucket: ReportBucketDTO) -> String {
+        if privacy { return "hidden" }
+        if let usd = bucket.actual.usd { return formatUsd(usd) }
+        if bucket.actual.pricedRows > 0 { return formatUsd(bucket.actual.pricedSubtotalUsd) }
+        return "—"
     }
 
     @ViewBuilder
@@ -528,7 +660,7 @@ struct ProviderDetailView: View {
                     HStack {
                         Text(window.id).font(.caption).lineLimit(1)
                         Spacer()
-                        Text(resetText(window.resetsAtUtc)).font(.caption2).foregroundStyle(.secondary)
+                        Text(resetTextDetailed(window.resetsAtUtc)).font(.caption2).foregroundStyle(.secondary)
                         Text("\(Int(window.usedPercent.rounded()))%")
                             .font(.caption).monospacedDigit()
                             .frame(minWidth: 34, alignment: .trailing)

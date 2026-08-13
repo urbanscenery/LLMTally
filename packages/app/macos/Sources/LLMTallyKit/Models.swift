@@ -101,7 +101,26 @@ public struct ReportBucketDTO: Decodable {
         self.tokens = tokens
         self.actual = actual
         self.unpricedRows = unpricedRows
+        self.nominal = nil
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case key, rowCount, tokens, actual, unpricedRows, nominal
+    }
+    /// Nominal is a separate mode, never mixed into Actual surfaces.
+    public let nominal: CostResultDTO?
+}
+
+public struct PromptRowDTO: Decodable {
+    public let id: Int
+    public let tsUtc: Double
+    public let agent: String
+    public let model: String?
+    public let text: String?
+}
+
+public struct PromptListDTO: Decodable {
+    public let rows: [PromptRowDTO]
 }
 
 public struct ReportSummaryDTO: Decodable {
@@ -194,6 +213,17 @@ public func resetText(_ resetsAtUtc: Double?, now: Date = Date()) -> String {
     let remaining = epochSeconds(resetsAtUtc) - now.timeIntervalSince1970
     if remaining <= 0 { return "resetting" }
     return "resets in \(shortDuration(remaining))"
+}
+
+/// Detail surfaces pair the countdown with the absolute local time:
+/// `resets in 2h 5m · Wed 16:27` (§4). NULL stays `no reset`.
+public func resetTextDetailed(_ resetsAtUtc: Double?, now: Date = Date()) -> String {
+    guard let resetsAtUtc else { return "no reset" }
+    let relative = resetText(resetsAtUtc, now: now)
+    let formatter = DateFormatter()
+    formatter.dateFormat = "EEE HH:mm"
+    let absolute = formatter.string(from: Date(timeIntervalSince1970: epochSeconds(resetsAtUtc)))
+    return "\(relative) · \(absolute)"
 }
 
 /// Compact window label for tight surfaces; the exact native id stays
