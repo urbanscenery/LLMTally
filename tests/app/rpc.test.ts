@@ -69,3 +69,38 @@ describe('RpcServer', () => {
     expect(reply.result).toBe('done');
   });
 });
+
+describe('request validation (CX-45)', () => {
+  test('primitive lines get an invalid-request error, never a crash', async () => {
+    const server = new RpcServer();
+    for (const line of ['null', '1', '"x"', '[1,2]']) {
+      const reply = JSON.parse((await server.handleLine(line)) as string);
+      expect(reply.error.code).toBe(-32600);
+    }
+  });
+
+  test('a wrong jsonrpc version is rejected instead of silently accepted', async () => {
+    const server = new RpcServer();
+    server.register('ping', () => ({ ok: true }));
+    const reply = JSON.parse(
+      (await server.handleLine(JSON.stringify({ jsonrpc: '1.0', id: 1, method: 'ping' }))) as string,
+    );
+    expect(reply.error.code).toBe(-32600);
+    expect(reply.error.message).toContain('2.0');
+  });
+
+  test('non-scalar ids and primitive params are rejected', async () => {
+    const server = new RpcServer();
+    server.register('ping', () => ({ ok: true }));
+    const badId = JSON.parse(
+      (await server.handleLine(JSON.stringify({ jsonrpc: '2.0', id: {}, method: 'ping' }))) as string,
+    );
+    expect(badId.error.code).toBe(-32600);
+    const badParams = JSON.parse(
+      (await server.handleLine(
+        JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping', params: 7 }),
+      )) as string,
+    );
+    expect(badParams.error.code).toBe(-32600);
+  });
+});

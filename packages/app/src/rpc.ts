@@ -41,17 +41,40 @@ export class RpcServer {
       return null;
     }
 
-    let request: { id?: number | string | null; method?: unknown; params?: unknown };
+    let parsed: unknown;
     try {
-      request = JSON.parse(trimmed);
+      parsed = JSON.parse(trimmed);
     } catch {
       return respond(null, undefined, { code: PARSE_ERROR, message: 'invalid JSON' });
     }
+    // a primitive (`null`, `1`, `"x"`) is a parseable line but not a
+    // request — reading `.id` off it crashed the helper (audit CX-45)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return respond(null, undefined, { code: INVALID_REQUEST, message: 'request must be an object' });
+    }
+    const request = parsed as { id?: unknown; jsonrpc?: unknown; method?: unknown; params?: unknown };
 
-    const id = request.id ?? null;
     const isNotification = !('id' in request);
+    const rawId = request.id ?? null;
+    if (rawId !== null && typeof rawId !== 'number' && typeof rawId !== 'string') {
+      return respond(null, undefined, { code: INVALID_REQUEST, message: 'id must be a number, string, or null' });
+    }
+    const id = rawId;
+    if (request.jsonrpc !== '2.0') {
+      return isNotification
+        ? null
+        : respond(id, undefined, { code: INVALID_REQUEST, message: 'jsonrpc must be "2.0"' });
+    }
     if (typeof request.method !== 'string' || request.method === '') {
       return isNotification ? null : respond(id, undefined, { code: INVALID_REQUEST, message: 'method must be a string' });
+    }
+    if (
+      request.params !== undefined &&
+      (request.params === null || typeof request.params !== 'object')
+    ) {
+      return isNotification
+        ? null
+        : respond(id, undefined, { code: INVALID_REQUEST, message: 'params must be an object or array' });
     }
 
     const handler = this.#handlers.get(request.method);

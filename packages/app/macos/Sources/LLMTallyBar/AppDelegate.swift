@@ -5,6 +5,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusController: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Single instance: a login item plus a manual `open` would mean
+        // two status items, two sidecars, and racing switch/detach
+        // flows. The older instance wins; this one bows out.
+        let bundleId = Bundle.main.bundleIdentifier
+        if let bundleId,
+           NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
+               .contains(where: { $0 != NSRunningApplication.current }) {
+            NSLog("llmtally is already running; exiting the duplicate instance")
+            NSApp.terminate(nil)
+            return
+        }
         AppConfig.applyThresholds()
         do {
             try SidecarClient.shared.start()

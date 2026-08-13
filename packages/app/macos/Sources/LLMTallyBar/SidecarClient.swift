@@ -4,6 +4,11 @@ import LLMTallyKit
 /// Spawns the Bun sidecar and speaks newline-delimited JSON-RPC 2.0 with
 /// it. The Swift shell never opens SQLite or the vault directly — every
 /// data question goes through this seam (03_design_spec / 01_plan §9).
+///
+/// Robustness contract (audit CX-41/GK-42): every request carries a
+/// deadline, a dead helper is relaunched on the next request (with a
+/// short backoff so a crash loop cannot spin), and stderr is captured
+/// so a failing helper leaves a diagnosable trace instead of silence.
 final class SidecarClient {
     static let shared = SidecarClient()
 
@@ -11,27 +16,51 @@ final class SidecarClient {
         case notRunning
         case remote(String)
         case badResponse
+        case timeout
 
         var errorDescription: String? {
             switch self {
             case .notRunning: return "sidecar is not running"
             case .remote(let message): return message
             case .badResponse: return "malformed sidecar response"
+            case .timeout: return "sidecar did not answer in time"
             }
         }
     }
 
-    private let process = Process()
-    private let stdinPipe = Pipe()
-    private let stdoutPipe = Pipe()
+    /// One helper launch: Foundation's Process can only run() once, so
+    /// a restart is a fresh instance of everything, never a reuse.
+    private final class Launch {
+        let process = Process()
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+    }
+
+    private static let requestTimeout: TimeInterval = 20
+    private static let restartBackoff: TimeInterval = 5
+
     private let queue = DispatchQueue(label: "llmtally.sidecar")
+    private var launch: Launch?
     private var buffer = Data()
     private var pending: [Int: (Result<Any?, Error>) -> Void] = [:]
     private var nextRequestId = 0
     private var running = false
+    private var stopped = false
+    private var lastLaunchAt: Date?
+    /// Last stderr line — surfaced with failures for diagnosis.
+    private(set) var lastStderrLine: String?
 
     func start() throws {
+        try queue.sync { try startLocked() }
+    }
+
+    private func startLocked() throws {
         guard !running else { return }
+        stopped = false
+
+        let fresh = Launch()
+        let process = fresh.process
 
         // Dev checkout default: packages/app/src/sidecar-main.ts relative
         // to this source file. A bundled app overrides via environment.
@@ -45,7 +74,7 @@ final class SidecarClient {
             .appendingPathComponent("Contents/Helpers/llmtally-sidecar")
 
         if let override = environment["LLMTALLY_SIDECAR"] {
-            configureBunLaunch(scriptPath: override)
+            Self.configureBunLaunch(process, scriptPath: override)
         } else if FileManager.default.isExecutableFile(atPath: bundledSidecar.path) {
             process.executableURL = bundledSidecar
             process.arguments = []
@@ -56,19 +85,29 @@ final class SidecarClient {
                 .deletingLastPathComponent()  // macos
                 .deletingLastPathComponent()  // app
                 .appendingPathComponent("src/sidecar-main.ts").path
-            configureBunLaunch(scriptPath: checkoutScript)
+            Self.configureBunLaunch(process, scriptPath: checkoutScript)
         }
-        process.standardInput = stdinPipe
-        process.standardOutput = stdoutPipe
+        process.standardInput = fresh.stdinPipe
+        process.standardOutput = fresh.stdoutPipe
+        process.standardError = fresh.stderrPipe
 
-        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        fresh.stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             self?.consume(handle.availableData)
+        }
+        fresh.stderrPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { return }
+            NSLog("llmtally sidecar stderr: %@", line)
+            self?.queue.async { self?.lastStderrLine = line }
         }
         // A dead sidecar must degrade to failed requests, never take the
         // app down with it: fail everything in flight and mark stopped.
         process.terminationHandler = { [weak self] _ in
             guard let self else { return }
             self.queue.async {
+                guard self.launch === fresh else { return }
                 self.running = false
                 let waiting = self.pending
                 self.pending.removeAll()
@@ -78,13 +117,16 @@ final class SidecarClient {
             }
         }
         try process.run()
+        launch = fresh
+        buffer.removeAll()
         running = true
+        lastLaunchAt = Date()
     }
 
     /// Dev path: run the checkout's TypeScript through bun. A Finder-
     /// launched app inherits a bare PATH, so probe the usual installs.
-    private func configureBunLaunch(scriptPath: String) {
-        if let bun = Self.findBun() {
+    private static func configureBunLaunch(_ process: Process, scriptPath: String) {
+        if let bun = findBun() {
             process.executableURL = URL(fileURLWithPath: bun)
             process.arguments = [scriptPath]
         } else {
@@ -105,10 +147,14 @@ final class SidecarClient {
     }
 
     func stop() {
-        guard running else { return }
-        running = false
-        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        process.terminate()
+        queue.sync {
+            stopped = true
+            guard running, let launch else { return }
+            running = false
+            launch.stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            launch.stderrPipe.fileHandleForReading.readabilityHandler = nil
+            launch.process.terminate()
+        }
     }
 
     /// Typed request: re-serializes the JSON-RPC `result` and decodes it
@@ -138,7 +184,10 @@ final class SidecarClient {
     func request(_ method: String, params: [String: Any]? = nil,
                  completion: @escaping (Result<Any?, Error>) -> Void) {
         queue.async {
-            guard self.running else {
+            if !self.running {
+                self.attemptRestart()
+            }
+            guard self.running, let launch = self.launch else {
                 completion(.failure(SidecarError.notRunning))
                 return
             }
@@ -155,12 +204,34 @@ final class SidecarClient {
             do {
                 // throwing write: a broken pipe becomes a failed request
                 // (with SIGPIPE ignored in main.swift), not a dead app
-                try self.stdinPipe.fileHandleForWriting.write(contentsOf: data)
+                try launch.stdinPipe.fileHandleForWriting.write(contentsOf: data)
             } catch {
                 self.pending.removeValue(forKey: id)
                 self.running = false
                 completion(.failure(SidecarError.notRunning))
+                return
             }
+            // deadline: one unanswered request must not park the UI in
+            // loading forever (and pending must never grow unbounded)
+            self.queue.asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
+                guard let self, let waiting = self.pending.removeValue(forKey: id) else { return }
+                waiting(.failure(SidecarError.timeout))
+            }
+        }
+    }
+
+    /// Relaunches a dead helper on demand, at most once per backoff
+    /// window — a helper that dies instantly must not spin the CPU.
+    private func attemptRestart() {
+        guard !stopped else { return }
+        if let last = lastLaunchAt, Date().timeIntervalSince(last) < Self.restartBackoff {
+            return
+        }
+        do {
+            try startLocked()
+            NSLog("llmtally sidecar restarted")
+        } catch {
+            NSLog("llmtally sidecar restart failed: %@", String(describing: error))
         }
     }
 

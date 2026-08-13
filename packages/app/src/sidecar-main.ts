@@ -40,9 +40,17 @@ export async function runSidecar(argv: readonly string[]): Promise<number> {
   const server = createSidecarServer({ databasePath });
   const lines = createInterface({ input: process.stdin, terminal: false });
   for await (const line of lines) {
-    const reply = await server.handleLine(line);
-    if (reply !== null) {
-      process.stdout.write(`${reply}\n`);
+    // one bad line must never take the whole helper down — the shell
+    // has no way to restart a conversation it did not see end
+    try {
+      const reply = await server.handleLine(line);
+      if (reply !== null) {
+        process.stdout.write(`${reply}\n`);
+      }
+    } catch (error) {
+      process.stderr.write(
+        `sidecar: line failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
     }
   }
   return 0;
