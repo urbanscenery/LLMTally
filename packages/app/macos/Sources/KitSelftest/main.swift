@@ -336,6 +336,37 @@ do {
         return false
     }, "labels off leaves rails without any label segment")
 
+    // reset display: "at" renders the absolute local time, default
+    // stays a countdown
+    let resetQuota = [snapshot(agent: "claude-code", windows: [
+        QuotaWindowDTO(id: "five_hour", usedPercent: 10,
+                       resetsAtUtc: Date(timeIntervalSince1970: 1_755_140_400).timeIntervalSince1970),
+    ])]
+    let resetAt = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(
+            scope: .provider("claude-code"), metric: .quotaReset,
+            resetDisplay: "at",
+            binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"),
+            providerIdentityPresentation: nil)],
+        quota: resetQuota, buckets: buckets, activeAccounts: [:],
+        now: Date(timeIntervalSince1970: 1_755_100_000))
+    if case .text(let atText)? = resetAt.segments.first {
+        expect(atText.count >= 8 && atText.contains(":"),
+               "reset 'at' renders a weekday + clock time")
+    } else {
+        failures += 1
+        print("FAIL - reset 'at' did not render a text segment")
+    }
+    let resetCountdown = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(
+            scope: .provider("claude-code"), metric: .quotaReset,
+            binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"),
+            providerIdentityPresentation: nil)],
+        quota: resetQuota, buckets: buckets, activeAccounts: [:],
+        now: Date(timeIntervalSince1970: 1_755_100_000))
+    expectEqual(resetCountdown.segments.first, StatusSegment.text("11h 13m"),
+                "reset defaults to the countdown")
+
     // remaining direction inverts the displayed percent and marks the rails
     let remainingRails = renderStatusSegments(
         descriptors: [MenuItemDescriptor(

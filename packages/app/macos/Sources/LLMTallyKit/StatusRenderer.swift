@@ -167,8 +167,17 @@ private func renderReset(
         if descriptor.unavailableBehavior == "placeholder" { segments.append("—") }
         return
     }
-    let remaining = epochSeconds(window.resetsAtUtc ?? 0) - now.timeIntervalSince1970
-    segments.append(remaining > 0 ? shortDuration(remaining) : "reset")
+    if descriptor.resetDisplay == "at" {
+        // absolute local time — the countdown's alternative reading
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "EEE HH:mm"
+        segments.append(formatter.string(
+            from: Date(timeIntervalSince1970: epochSeconds(window.resetsAtUtc ?? 0))))
+    } else {
+        let remaining = epochSeconds(window.resetsAtUtc ?? 0) - now.timeIntervalSince1970
+        segments.append(remaining > 0 ? shortDuration(remaining) : "reset")
+    }
     tooltip.append("\(window.id) \(resetText(window.resetsAtUtc, now: now))")
 }
 

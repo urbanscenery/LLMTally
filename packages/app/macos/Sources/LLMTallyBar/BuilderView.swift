@@ -254,8 +254,12 @@ struct BuilderView: View {
                         if item.metric == .quotaMiniBar {
                             secondWindowSection(item, index: index)
                         }
-                        directionSection(item, index: index)
-                        if item.metric != .quotaReset {
+                        if item.metric == .quotaReset {
+                            // reset has no direction/labels — it shows
+                            // one time, as a countdown or an absolute
+                            resetDisplaySection(item, index: index)
+                        } else {
+                            directionSection(item, index: index)
                             labelSection(item, index: index)
                         }
                     }
@@ -394,6 +398,19 @@ struct BuilderView: View {
         }
     }
 
+    private func resetDisplaySection(_ item: MenuItemDescriptor, index: Int) -> some View {
+        section("Display") {
+            Picker("", selection: Binding(
+                get: { item.resetDisplay ?? "countdown" },
+                set: { value in mutate { $0[index].resetDisplay = value } })) {
+                Text("Countdown · 2h 5m").tag("countdown")
+                Text("At · Wed 06:00").tag("at")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+    }
+
     private func directionSection(_ item: MenuItemDescriptor, index: Int) -> some View {
         section("Direction") {
             Picker("", selection: Binding(
@@ -439,11 +456,11 @@ struct BuilderView: View {
         }
     }
 
-    /// The renderer reads identity only for quota metrics and the
-    /// provider label; freshness, agent-active, history, and spacer
-    /// ignore it entirely.
+    /// The renderer reads identity only for quota % / rails and the
+    /// provider label; reset, freshness, agent-active, history, and
+    /// spacer ignore it entirely.
     private func identityApplies(_ metric: MenuItemMetric) -> Bool {
-        isQuotaMetric(metric) || metric == .providerLabel
+        metric == .quotaUsagePercentage || metric == .quotaMiniBar || metric == .providerLabel
     }
 
     /// Metrics where a missing reading actually renders the chosen
