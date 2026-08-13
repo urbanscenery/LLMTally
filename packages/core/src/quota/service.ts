@@ -21,7 +21,7 @@ import { resolveActiveClaudeContext } from '../accounts/active-claude.ts';
 import { syncActiveCodexCredential } from '../accounts/codex-live-sync.ts';
 import { syncActiveClaudeCredential, verifyLiveCredentialOwner } from '../accounts/live-sync.ts';
 import type { ActiveClaudeContext } from '../accounts/active-claude.ts';
-import { createActiveCredentialStore, oauthAccessToken } from '../accounts/credentials.ts';
+import { createActiveCredentialStore, oauthAccessToken, oauthRefreshToken } from '../accounts/credentials.ts';
 import type { ActiveCredentialStore } from '../accounts/credentials.ts';
 import type { ProfileFetch } from '../accounts/oauth-profile.ts';
 import {
@@ -239,6 +239,12 @@ export async function loadAllQuota(options: {
                     nowUtc: now,
                     only: entry.accountId,
                     allowRefresh: options.allowRefresh,
+                    // a slot whose family a live session owns must not
+                    // be double-rotated by this poll
+                    liveRefreshToken: () => {
+                      const liveBytes = activeStore.read();
+                      return liveBytes === null ? null : oauthRefreshToken(liveBytes);
+                    },
                   });
                   // never substitute another account's reading: an empty
                   // result stays attributed to THIS entry
@@ -382,7 +388,10 @@ async function loadActiveClaudeQuota(
       nowUtc: now,
       fetchFn: profileFetchFn,
     });
-    if (owner === 'foreign') {
+    if (owner.status === 'foreign') {
+      // split-brain: refuse the live read (it would record the OTHER
+      // account's usage under this row) but say precisely why, and
+      // carry the confirmed owner so the UI can show both identities
       return makeQuotaSnapshot({
         agent: 'claude-code',
         accountId,
@@ -390,9 +399,17 @@ async function loadActiveClaudeQuota(
         source: 'vendor_api',
         observedAtUtc: now,
         windows: [],
-        failure: { kind: 'unavailable', failedAtUtc: now, retryAtUtc: null },
+        failure: {
+          kind: 'account_mismatch',
+          failedAtUtc: now,
+          retryAtUtc: null,
+          credentialOwner: {
+            accountId: owner.ownerAccountUuid,
+            account: owner.ownerEmail,
+          },
+        },
         warnings: [
-          'the live credentials belong to a different account than ~/.claude.json names — a switch or login is settling; retrying shortly',
+          'the live credentials belong to a different account than ~/.claude.json names — quit or re-login the running Claude Code session, then switch again',
         ],
       });
     }
@@ -859,15 +876,22 @@ function withQuotaHistory(
         if (snapshot.windows.length > 0) {
           return snapshot;
         }
-        const stored = readStoredLastGood(db, {
-          agent: snapshot.agent,
-          accountId: snapshot.accountId,
-          account: snapshot.account,
-          nowUtc,
-          failure: snapshot.failure,
-        });
+        const rejectionNotes: string[] = [];
+        const stored = readStoredLastGood(
+          db,
+          {
+            agent: snapshot.agent,
+            accountId: snapshot.accountId,
+            account: snapshot.account,
+            nowUtc,
+            failure: snapshot.failure,
+          },
+          rejectionNotes,
+        );
         if (stored === null) {
-          return snapshot;
+          return rejectionNotes.length === 0
+            ? snapshot
+            : { ...snapshot, warnings: [...snapshot.warnings, ...rejectionNotes] };
         }
         return {
           ...stored,

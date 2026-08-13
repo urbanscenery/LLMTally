@@ -116,6 +116,17 @@ function quotaLines(
       lines.push(joinLine(gaugeLine, span(`  ${reset}`, 'muted')));
     }
   }
+  // split-brain reads best as two facts, not one blended state: what
+  // the config selected, and whose bytes the live store actually holds
+  if (provider.failure?.kind === 'account_mismatch') {
+    const owner =
+      provider.failure.credentialOwner?.account ??
+      provider.failure.credentialOwner?.accountId ??
+      'another account';
+    lines.push(
+      joinLine(span(`! selected: ${provider.account ?? 'unknown'} · live credential: ${owner}`, 'warning')),
+    );
+  }
   for (const warning of provider.warnings) {
     lines.push(joinLine(span(`! ${warning}`, 'warning')));
   }

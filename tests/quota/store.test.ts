@@ -487,3 +487,69 @@ describe('readStoredLastGood and a rejected credential', () => {
     db.close();
   });
 });
+
+describe('account_mismatch and rejection diagnostics', () => {
+  test('trusted history still serves a gauge under account_mismatch', () => {
+    // Arrange
+    const db = openMigrated();
+    recordQuotaSamples(db, [claudeSnapshot({ accountId: 'uuid-a' })], NOW - 60);
+
+    // Act — the selected account is mismatch-refused but its OWN stored
+    // numbers stay trustworthy (unlike auth_invalid)
+    const stored = readStoredLastGood(db, {
+      agent: 'claude-code',
+      accountId: 'uuid-a',
+      account: 'me@test.dev',
+      nowUtc: NOW,
+      failure: {
+        kind: 'account_mismatch',
+        failedAtUtc: NOW,
+        retryAtUtc: null,
+        credentialOwner: { accountId: 'uuid-b', account: 'other@test.dev' },
+      },
+    });
+
+    // Assert
+    expect(stored).not.toBeNull();
+    expect(stored?.windows.map((window) => window.id)).toEqual(['five_hour', 'seven_day']);
+  });
+
+  test('a fully rejected history names the reason', () => {
+    // Arrange — one window past its reset, one aged out past 24h
+    const db = openMigrated();
+    recordQuotaSamples(
+      db,
+      [
+        claudeSnapshot({
+          accountId: 'uuid-a',
+          observedAtUtc: NOW - 100_000,
+          windows: [
+            { id: 'five_hour', usedPercent: 42, resetsAtUtc: NOW - 10 },
+            { id: 'seven_day', usedPercent: 10, resetsAtUtc: null },
+          ],
+        }),
+      ],
+      NOW - 100_000,
+    );
+
+    // Act
+    const rejectionNotes: string[] = [];
+    const stored = readStoredLastGood(
+      db,
+      {
+        agent: 'claude-code',
+        accountId: 'uuid-a',
+        account: 'me@test.dev',
+        nowUtc: NOW,
+        failure: { kind: 'transport', failedAtUtc: NOW, retryAtUtc: null },
+      },
+      rejectionNotes,
+    );
+
+    // Assert — the blank gauge explains itself
+    expect(stored).toBeNull();
+    expect(rejectionNotes).toHaveLength(1);
+    expect(rejectionNotes[0]).toMatch(/past their reset/);
+    expect(rejectionNotes[0]).toMatch(/older than 24h/);
+  });
+});

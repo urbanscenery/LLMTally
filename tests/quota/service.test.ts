@@ -387,8 +387,9 @@ describe('active claude quota attribution', () => {
     expect(result).toHaveLength(1);
     expect(result[0]?.accountId).toBe('uuid-a');
     expect(result[0]?.windows).toEqual([]);
-    expect(result[0]?.failure?.kind).toBe('unavailable');
-    expect(result[0]?.warnings[0]).toMatch(/different account.*settling/);
+    expect(result[0]?.failure?.kind).toBe('account_mismatch');
+    expect(result[0]?.failure?.credentialOwner?.accountId).toBe('uuid-b');
+    expect(result[0]?.warnings[0]).toMatch(/different account.*switch again/);
     expect(urls).toEqual([]);
   });
 

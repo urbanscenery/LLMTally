@@ -32,19 +32,31 @@ export type QuotaSource = 'vendor_api' | 'source_log' | 'third_party_cache' | 's
  * must never be answered with remembered numbers. A 429 or a timeout
  * leaves the last reading true; a revoked key or a lapsed subscription
  * means nobody can vouch for it any more.
+ *
+ * `account_mismatch` is the split-brain state: the config names one
+ * account but the live credential store provably holds another's bytes
+ * (a running session's token refresh reverted a switch). The selected
+ * account's stored last-good stays trustworthy — only the LIVE read is
+ * refused, to keep the other account's usage off this one's row.
  */
 export type QuotaFailureKind =
   | 'rate_limited'
   | 'transport'
   | 'unavailable'
   | 'deferred'
-  | 'auth_invalid';
+  | 'auth_invalid'
+  | 'account_mismatch';
 
 export interface QuotaFailure {
   readonly kind: QuotaFailureKind;
   readonly failedAtUtc: number;
   /** Earliest sensible retry, when one is known. */
   readonly retryAtUtc: number | null;
+  /** account_mismatch only: profile-confirmed owner of the live bytes. */
+  readonly credentialOwner?: {
+    readonly accountId: string | null;
+    readonly account: string | null;
+  };
 }
 
 export interface QuotaSnapshot {

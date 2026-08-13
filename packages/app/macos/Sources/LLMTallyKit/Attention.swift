@@ -6,12 +6,16 @@ import Foundation
 /// never the first thing shown when something above it is wrong.
 public enum AttentionRank: Int, Comparable {
     case authInvalid = 0
-    case rateLimited = 1
-    case stale = 2
-    case critical = 3
-    case warning = 4
-    case resetSoon = 5
-    case quiet = 6
+    /// Split-brain: the config's selected account and the live
+    /// credential's owner disagree — right below auth because the fix
+    /// is also a user action (quit the stale session, switch again).
+    case accountMismatch = 1
+    case rateLimited = 2
+    case stale = 3
+    case critical = 4
+    case warning = 5
+    case resetSoon = 6
+    case quiet = 7
 
     public static func < (lhs: AttentionRank, rhs: AttentionRank) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -46,6 +50,9 @@ public func attention(for snapshot: QuotaSnapshotDTO, now: Date = Date()) -> Age
 
     if snapshot.failure?.kind == "auth_invalid" {
         return AgentAttention(snapshot: snapshot, rank: .authInvalid, topWindow: topWindow)
+    }
+    if snapshot.failure?.kind == "account_mismatch" {
+        return AgentAttention(snapshot: snapshot, rank: .accountMismatch, topWindow: topWindow)
     }
     if snapshot.failure?.kind == "rate_limited" {
         return AgentAttention(snapshot: snapshot, rank: .rateLimited, topWindow: topWindow)

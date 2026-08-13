@@ -20,11 +20,33 @@ public struct QuotaFailureDTO: Decodable {
     public let kind: String
     public let failedAtUtc: Double?
     public let retryAtUtc: Double?
+    /// account_mismatch only: profile-confirmed owner of the live bytes.
+    public let credentialOwner: CredentialOwnerDTO?
 
-    public init(kind: String, failedAtUtc: Double?, retryAtUtc: Double?) {
+    public init(kind: String, failedAtUtc: Double?, retryAtUtc: Double?,
+                credentialOwner: CredentialOwnerDTO? = nil) {
         self.kind = kind
         self.failedAtUtc = failedAtUtc
         self.retryAtUtc = retryAtUtc
+        self.credentialOwner = credentialOwner
+    }
+}
+
+public struct SwitchPreflightDTO: Decodable {
+    public let liveSessionPids: [Int]
+
+    public init(liveSessionPids: [Int]) {
+        self.liveSessionPids = liveSessionPids
+    }
+}
+
+public struct CredentialOwnerDTO: Decodable {
+    public let accountId: String?
+    public let account: String?
+
+    public init(accountId: String?, account: String?) {
+        self.accountId = accountId
+        self.account = account
     }
 }
 

@@ -392,7 +392,7 @@ struct HeadlineView: View {
         let theme = Theme.current()
         switch item.rank {
         case .authInvalid, .critical: return theme.crit
-        case .rateLimited, .stale, .warning, .resetSoon: return theme.warn
+        case .accountMismatch, .rateLimited, .stale, .warning, .resetSoon: return theme.warn
         case .quiet: return theme.accent
         }
     }
@@ -400,6 +400,7 @@ struct HeadlineView: View {
     private var reason: String {
         switch item.rank {
         case .authInvalid: return "Live quota failed · auth"
+        case .accountMismatch: return "Account mismatch · switch reverted"
         case .rateLimited: return "Rate limited · retry \(retryIn)"
         case .stale: return "Stale · \(shortAge(sinceEpoch: item.snapshot.observedAtUtc))"
         case .critical, .warning, .resetSoon, .quiet:
@@ -415,6 +416,11 @@ struct HeadlineView: View {
                 return "last-good \(Int(window.usedPercent.rounded()))% · \(shortAge(sinceEpoch: item.snapshot.observedAtUtc)) ago"
             }
             return "reconnect in Settings"
+        case .accountMismatch:
+            if let owner = item.snapshot.failure?.credentialOwner {
+                return "live login: \(owner.account ?? owner.accountId ?? "another account")"
+            }
+            return "quit the running session, then switch again"
         case .rateLimited:
             if let window = item.topWindow {
                 return "last-good \(window.id) \(Int(window.usedPercent.rounded()))% · not fresh"
@@ -495,6 +501,7 @@ struct StatusChip: View {
         if let failure = item.snapshot.failure {
             switch failure.kind {
             case "auth_invalid": return "auth"
+            case "account_mismatch": return "mismatch"
             case "rate_limited": return "429"
             // an intentionally skipped live fetch (budget/cadence/claim)
             // is normal operation: the user-facing word is "cached"
@@ -644,6 +651,9 @@ struct FreshnessSummary: View {
         let theme = Theme.current()
         if quota.contains(where: { $0.failure?.kind == "auth_invalid" }) {
             return ("!", "auth", theme.crit)
+        }
+        if quota.contains(where: { $0.failure?.kind == "account_mismatch" }) {
+            return ("!", "mismatch", theme.warn)
         }
         let agedSources: Set<String> = ["vendor_api", "stored_history", "third_party_cache"]
         let staleCount = quota.filter {
@@ -904,6 +914,20 @@ struct ProviderDetailView: View {
                     StatusChip(item: item)
                 }
             }
+            if snapshot.failure?.kind == "account_mismatch" {
+                // split-brain is two facts, not one blended state: the
+                // selected identity and the live credential's owner
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Selected: \(privacy ? "Account hidden" : (snapshot.account ?? snapshot.accountId ?? "unknown"))")
+                    Text("Live credential: \(privacy ? "another account" : (snapshot.failure?.credentialOwner?.account ?? snapshot.failure?.credentialOwner?.accountId ?? "another account"))")
+                    Text("A running Claude Code session reverted the switch — quit or re-login that session, then switch again.")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption2)
+                .padding(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.current().warn.opacity(0.1)))
+            }
             if snapshot.windows.isEmpty {
                 Text("no windows reported").font(.caption2).foregroundStyle(.secondary)
             } else {
@@ -971,6 +995,9 @@ struct SwitchSheet: View {
     @ObservedObject var model: OverviewModel
     let dismiss: () -> Void
     @State private var phase: Phase = .confirm
+    /// Running Claude sessions, fetched when the sheet opens — nil
+    /// until the preflight answers (the generic warning shows then).
+    @State private var liveSessionCount: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -981,7 +1008,7 @@ struct SwitchSheet: View {
 
             switch phase {
             case .confirm:
-                Text("A running session keeps its old token until restarted. Warning, not a block.")
+                Text(preflightWarning)
                     .font(.caption)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1025,6 +1052,31 @@ struct SwitchSheet: View {
         // narrower than the 320pt panel that presents it
         .frame(width: 300)
         .interactiveDismissDisabled(phase == .inFlight)
+        .onAppear { loadPreflight() }
+    }
+
+    private var preflightWarning: String {
+        guard intent.agent == "claude-code", let count = liveSessionCount else {
+            return "A running session keeps its old token until restarted. Warning, not a block."
+        }
+        if count == 0 {
+            return "No running Claude Code sessions detected — clean to switch."
+        }
+        return "\(count) running Claude Code session(s) may revert this switch on their next token refresh. Quit them first for a clean switch."
+    }
+
+    private func loadPreflight() {
+        guard intent.agent == "claude-code" else { return }
+        SidecarClient.shared.requestDecodable(
+            "switchPreflight", params: ["agent": intent.agent],
+            as: SwitchPreflightDTO.self
+        ) { result in
+            DispatchQueue.main.async {
+                if case .success(let preflight) = result {
+                    liveSessionCount = preflight.liveSessionPids.count
+                }
+            }
+        }
     }
 
     private func run() {

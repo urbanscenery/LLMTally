@@ -102,6 +102,11 @@ private func renderQuotaPercent(
         tooltip.append("\(names.display(item.snapshot.agent)) auth invalid · reconnect required")
         return
     }
+    if item.rank == .accountMismatch {
+        segments.append("\(identityText(descriptor, code: names.code(item.snapshot.agent)))!")
+        tooltip.append("\(names.display(item.snapshot.agent)) account mismatch · a running session reverted the switch")
+        return
+    }
 
     guard let window else {
         if descriptor.unavailableBehavior == "placeholder" { segments.append("—") }
@@ -140,7 +145,7 @@ private func renderFreshness(
 
     let glyph: String
     switch worst?.rank {
-    case .authInvalid: glyph = "!"
+    case .authInvalid, .accountMismatch: glyph = "!"
     case .rateLimited, .stale: glyph = "◷"
     default: glyph = "●"
     }

@@ -149,6 +149,8 @@ function isWindowTrusted(row: SampleRow, request: StoredLastGoodRequest): boolea
 export function readStoredLastGood(
   db: Database,
   request: StoredLastGoodRequest,
+  /** Receives a human-readable reason when history existed but was rejected. */
+  rejectionNotes?: string[],
 ): QuotaSnapshot | null {
   if (request.failure?.kind === 'auth_invalid') {
     // a rejected credential invalidates its own history: the numbers
@@ -197,12 +199,29 @@ export function readStoredLastGood(
              ORDER BY window_id`,
           )
           .all(request.agent, request.account ?? '')
-  ).filter((row) => isWindowTrusted(row, request));
-  if (rows.length === 0) {
+  );
+  const trusted = rows.filter((row) => isWindowTrusted(row, request));
+  if (trusted.length === 0) {
+    // a blank gauge with history sitting right there is the confusing
+    // case — name the reason instead of leaving "why empty?" to guesses
+    if (rows.length > 0 && rejectionNotes !== undefined) {
+      const resetPassed = rows.filter(
+        (row) => row.resets_at_utc !== null && row.resets_at_utc <= request.nowUtc,
+      ).length;
+      const agedOut = rows.length - resetPassed;
+      const parts: string[] = [];
+      if (resetPassed > 0) {
+        parts.push(`${resetPassed} window(s) past their reset`);
+      }
+      if (agedOut > 0) {
+        parts.push(`${agedOut} older than 24h`);
+      }
+      rejectionNotes.push(`stored history exists but was not trusted: ${parts.join(', ')}`);
+    }
     return null;
   }
-  const observedAtUtc = Math.max(...rows.map((row) => row.observed_at_utc));
-  const windows: QuotaWindow[] = rows.map((row) => ({
+  const observedAtUtc = Math.max(...trusted.map((row) => row.observed_at_utc));
+  const windows: QuotaWindow[] = trusted.map((row) => ({
     id: row.window_id,
     usedPercent: row.used_percent,
     resetsAtUtc: row.resets_at_utc,
