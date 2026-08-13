@@ -63,13 +63,17 @@ do {
     expectEqual(headline?.snapshot.agent, "codex", "auth outranks higher percent in the headline")
     expectEqual(claude.rank, AttentionRank.warning, "72% used ranks warning")
 
-    // an old vendor snapshot is stale; old stored_history is expected
+    // every gauge-mirroring source ages into stale (audit CX-48);
+    // local_logs stays exempt — an idle agent's log is old by definition
     let stale = attention(for: snapshot(agent: "codex", observedAgo: 7200,
         windows: [QuotaWindowDTO(id: "primary (300m)", usedPercent: 5, resetsAtUtc: nil)]))
     expectEqual(stale.rank, AttentionRank.stale, "old vendor_api snapshot is stale")
     let stored = attention(for: snapshot(agent: "grok", source: "stored_history", observedAgo: 7200,
         windows: [QuotaWindowDTO(id: "weekly", usedPercent: 5, resetsAtUtc: nil)]))
-    expectEqual(stored.rank, AttentionRank.quiet, "old stored_history is not 'stale live data'")
+    expectEqual(stored.rank, AttentionRank.stale, "old stored_history is stale too — it mirrors a live gauge")
+    let logs = attention(for: snapshot(agent: "codex", source: "local_logs", observedAgo: 7200,
+        windows: [QuotaWindowDTO(id: "primary (300m)", usedPercent: 5, resetsAtUtc: nil)]))
+    expectEqual(logs.rank, AttentionRank.quiet, "old local_logs stays quiet — idle agents' logs age naturally")
 }
 
 // MARK: status renderer

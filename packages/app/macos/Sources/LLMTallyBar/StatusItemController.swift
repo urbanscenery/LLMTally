@@ -189,6 +189,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         // here, navigation keys routed to the view.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.panel != nil else { return event }
+            // a sheet (Switch confirmation) owns its own keys — eating
+            // Enter/Escape here made the sheet unconfirmable/uncancelable
+            if self.panel?.attachedSheet != nil { return event }
             let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
             if event.modifierFlags.contains(.command) {
                 switch key {
@@ -266,7 +269,18 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         }
 
         group.notify(queue: .main) { [weak self] in
-            guard let self, let overview else { return }
+            guard let self else { return }
+            guard let overview else {
+                // before any data has ever arrived, a failed fetch must
+                // not masquerade as the placid startup tally — mark the
+                // item and say why in the AX label (audit GK-49)
+                if self.lastQuota.isEmpty, let button = self.statusItem.button {
+                    button.image = StatusComposer.compose(segments: [.text("!")])
+                    let reason = SidecarClient.shared.lastStderrLine ?? "sidecar not answering"
+                    button.setAccessibilityLabel("LLMTally: no data — \(reason)")
+                }
+                return
+            }
             self.lastQuota = overview.quota
             self.lastBuckets = overview.report.buckets
             self.lastHourBuckets = hourBuckets ?? self.lastHourBuckets
@@ -286,7 +300,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             activeAccounts: lastActive,
             hourBuckets: lastHourBuckets,
             todayAgentRows: lastTodayRows,
-            privacy: PrivacySetting.enabled)
+            privacy: PrivacySetting.enabled,
+            nominalCost: AppConfig.nominalMode)
         // no leading brand mark (user decision 2026-08-13); the tally
         // glyph only appears while there is nothing else to draw
         button.image = StatusComposer.compose(

@@ -92,7 +92,8 @@ struct OverviewView: View {
                 Button {
                     selectedAgent = nil
                 } label: {
-                    Label(agentDisplayName(agent), systemImage: "chevron.left")
+                    Label(privacy ? (aliases[agent] ?? "P?") : agentDisplayName(agent),
+                          systemImage: "chevron.left")
                 }
                 .buttonStyle(HoverActionButtonStyle())
                 .font(.headline)
@@ -574,9 +575,10 @@ struct FreshnessSummary: View {
         if quota.contains(where: { $0.failure?.kind == "auth_invalid" }) {
             return ("!", "auth", theme.crit)
         }
+        let agedSources: Set<String> = ["vendor_api", "stored_history", "third_party_cache"]
         let staleCount = quota.filter {
             $0.failure?.kind == "rate_limited"
-                || ($0.source == "vendor_api"
+                || (agedSources.contains($0.source)
                     && now.timeIntervalSince1970 - epochSeconds($0.observedAtUtc) > STALE_AFTER_SECONDS)
         }.count
         if staleCount > 0 {
@@ -741,7 +743,9 @@ struct ProviderDetailView: View {
                         .foregroundStyle(.secondary)
                         ForEach(detail.modelBuckets, id: \.key) { bucket in
                             GridRow {
-                                Text(bucket.key).lineLimit(1)
+                                // model names identify the provider —
+                                // neutralized like accounts (§11)
+                                Text(privacy ? "Model hidden" : bucket.key).lineLimit(1)
                                 Text("\(bucket.rowCount)")
                                 Text(formatTokens(bucket.tokens.inputTokens + bucket.tokens.outputTokens))
                                 Text(modelActual(bucket))
@@ -902,7 +906,11 @@ struct SwitchSheet: View {
                 Text("Past ledger rows were not reassigned.").font(.caption2).foregroundStyle(.secondary)
                 HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
             case .failed(let message):
-                Text(message)
+                // raw error text can carry emails/account ids — privacy
+                // mode gets the fact of failure, not the details
+                Text(PrivacySetting.enabled
+                     ? "Switch failed and rolled back. Details hidden (Privacy mode)."
+                     : message)
                     .font(.caption)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)

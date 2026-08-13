@@ -59,9 +59,12 @@ public func planNotifications(
             next.authNotified.remove(accountKey)
         }
 
-        // stale — once per episode, only for live sources gone quiet
+        // stale — once per episode, for every source that mirrors a
+        // live gauge (local_logs is exempt: idle agents' logs are old
+        // by definition)
         let age = now.timeIntervalSince1970 - epochSeconds(snapshot.observedAtUtc)
-        if snapshot.source == "vendor_api" && age > STALE_AFTER_SECONDS {
+        let agedSources: Set<String> = ["vendor_api", "stored_history", "third_party_cache"]
+        if agedSources.contains(snapshot.source) && age > STALE_AFTER_SECONDS {
             if !next.staleNotified.contains(accountKey) {
                 next.staleNotified.insert(accountKey)
                 planned.append(PlannedNotification(
@@ -76,8 +79,10 @@ public func planNotifications(
 
         // thresholds — crossing events only, re-armed below the line
         for window in snapshot.windows {
-            let criticalKey = "\(accountKey)|\(window.id)|90"
-            let warningKey = "\(accountKey)|\(window.id)|70"
+            // the configured thresholds ARE the state identity: after a
+            // Settings change the old lines' arm state must not linger
+            let criticalKey = "\(accountKey)|\(window.id)|\(Int(CRITICAL_USED_PERCENT))"
+            let warningKey = "\(accountKey)|\(window.id)|\(Int(WARNING_USED_PERCENT))"
 
             if window.usedPercent >= CRITICAL_USED_PERCENT {
                 if !next.crossedThresholds.contains(criticalKey) {

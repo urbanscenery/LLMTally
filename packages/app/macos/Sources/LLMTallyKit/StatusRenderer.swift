@@ -291,6 +291,7 @@ public func renderStatusSegments(
     hourBuckets: [ReportBucketDTO] = [],
     todayAgentRows: [String: Int]? = nil,
     privacy: Bool = false,
+    nominalCost: Bool = false,
     now: Date = Date()
 ) -> SegmentRendering {
     var segments: [StatusSegment] = []
@@ -400,9 +401,13 @@ public func renderStatusSegments(
                 rangeLabel = "7d"
             }
             let values = source.map { bucket in
-                money
-                    ? (bucket.actual.usd ?? bucket.actual.pricedSubtotalUsd)
-                    : bucket.tokens.inputTokens + bucket.tokens.outputTokens
+                if !money {
+                    return bucket.tokens.inputTokens + bucket.tokens.outputTokens
+                }
+                // the spark follows the same cost mode as the Today
+                // cards — Nominal never silently reverts to Actual
+                let cost = nominalCost ? (bucket.nominal ?? bucket.actual) : bucket.actual
+                return cost.usd ?? cost.pricedSubtotalUsd
             }
             if values.count < 2 {
                 // one sample is a snapshot, never a trend

@@ -181,6 +181,7 @@ struct SettingsView: View {
 
 private struct GeneralPane: View {
     @State private var launchAtLogin = false
+    @State private var loginItemError: String?
     private var isBundled: Bool { Bundle.main.bundleIdentifier != nil }
 
     var body: some View {
@@ -203,8 +204,11 @@ private struct GeneralPane: View {
                                 try SMAppService.mainApp.unregister()
                             }
                         } catch {
-                            // roll the toggle back so the UI matches reality
+                            // roll the toggle back so the UI matches
+                            // reality — and say why, silence here reads
+                            // as "it worked" (audit GK-55)
                             launchAtLogin = SMAppService.mainApp.status == .enabled
+                            loginItemError = "Could not update the login item: \(error.localizedDescription). Check System Settings → General → Login Items."
                         }
                     }
             }
@@ -212,6 +216,9 @@ private struct GeneralPane: View {
                  ? "Registers with macOS login items."
                  : "Available when running as the bundled app (scripts/bundle.sh).")
                 .font(.caption2).foregroundStyle(.secondary)
+            if let loginItemError {
+                Text(loginItemError).font(.caption2).foregroundStyle(.orange)
+            }
             Divider()
             HStack {
                 Text("Open dashboard")
@@ -544,16 +551,44 @@ private struct PrivacyPane: View {
 /// Investigate happens in the TUI. The popover hands off instead of
 /// growing a second terminal (01_plan §2).
 enum OpenTUI {
+    /// A Finder-launched app inherits a bare PATH, so `llmtally` must
+    /// be resolved against the known install locations — and a missing
+    /// install must say so instead of failing silently (audit GK-47).
+    static func resolveBinary() -> String? {
+        var candidates: [String] = []
+        if let override = ProcessInfo.processInfo.environment["LLMTALLY_BIN"] {
+            candidates.append(override)
+        }
+        candidates.append(NSHomeDirectory() + "/.bun/bin/llmtally")
+        candidates.append("/opt/homebrew/bin/llmtally")
+        candidates.append("/usr/local/bin/llmtally")
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
     static func launch() {
+        guard let binary = resolveBinary() else {
+            let alert = NSAlert()
+            alert.messageText = "llmtally CLI not found"
+            alert.informativeText = "Looked in ~/.bun/bin, /opt/homebrew/bin, and /usr/local/bin. Install the CLI (bun install -g llmtally) or set LLMTALLY_BIN."
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
+        }
+        // single-quote the path for the shell line Terminal runs
+        let quoted = "'" + binary.replacingOccurrences(of: "'", with: "'\\''") + "'"
         let script = """
         tell application "Terminal"
             activate
-            do script "llmtally"
+            do script \"\(quoted)\"
         end tell
         """
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
-        try? process.run()
+        do {
+            try process.run()
+        } catch {
+            NSLog("Open TUI failed: %@", String(describing: error))
+        }
     }
 }

@@ -19,7 +19,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     func requestAuthorizationIfNeeded() {
         guard canDeliver else { return }
         UNUserNotificationCenter.current().delegate = self
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            // a discarded result made permission failures invisible —
+            // threshold alerts then failed silently (audit GK-48)
+            if let error {
+                NSLog("llmtally notification authorization failed: %@", String(describing: error))
+            } else if !granted {
+                NSLog("llmtally notifications are denied; threshold alerts will not be delivered")
+            }
+        }
     }
 
     /// Clicking a notification opens the popover (03_design_spec §10).

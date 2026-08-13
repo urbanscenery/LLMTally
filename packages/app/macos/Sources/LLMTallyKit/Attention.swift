@@ -50,8 +50,13 @@ public func attention(for snapshot: QuotaSnapshotDTO, now: Date = Date()) -> Age
     if snapshot.failure?.kind == "rate_limited" {
         return AgentAttention(snapshot: snapshot, rank: .rateLimited, topWindow: topWindow)
     }
+    // Age gates every source that mirrors a live gauge — a 2-hour-old
+    // stored_history reading posing as fresh is exactly the trust bug
+    // the rank exists to surface (audit CX-48). Only local_logs stays
+    // exempt: an idle agent's last log event is old by definition.
     let age = now.timeIntervalSince1970 - epochSeconds(snapshot.observedAtUtc)
-    if snapshot.source == "vendor_api" && age > STALE_AFTER_SECONDS {
+    let agedSources: Set<String> = ["vendor_api", "stored_history", "third_party_cache"]
+    if agedSources.contains(snapshot.source) && age > STALE_AFTER_SECONDS {
         return AgentAttention(snapshot: snapshot, rank: .stale, topWindow: topWindow)
     }
     if let topWindow {

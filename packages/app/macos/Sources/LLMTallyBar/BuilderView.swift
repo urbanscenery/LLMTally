@@ -75,7 +75,8 @@ struct BuilderView: View {
             descriptors: items, quota: quota, buckets: buckets,
             activeAccounts: [:], hourBuckets: hourBuckets,
             todayAgentRows: todayRows,
-            privacy: PrivacySetting.enabled)
+            privacy: PrivacySetting.enabled,
+            nominalCost: AppConfig.nominalMode)
         // the note must agree with the composer: same content budget,
         // same +N indicator width
         let widths = rendering.segments.map { Double(StatusComposer.width(of: $0)) }
@@ -180,7 +181,9 @@ struct BuilderView: View {
                 segments: renderStatusSegments(
                     descriptors: [item], quota: quota, buckets: buckets,
                     activeAccounts: [:], hourBuckets: hourBuckets,
-                    todayAgentRows: todayRows).segments,
+                    todayAgentRows: todayRows,
+                    privacy: PrivacySetting.enabled,
+                    nominalCost: AppConfig.nominalMode).segments,
                 leadingTally: false))
                 .frame(maxWidth: 64, alignment: .leading)
                 .clipped()
@@ -633,7 +636,11 @@ struct BuilderView: View {
     private func firstProvider() -> String { catalogProviders().first ?? "claude-code" }
 
     private func firstWindowId(of provider: String) -> String {
-        windowIds(of: provider).first ?? "five_hour"
+        // never fabricate a window id: a synthesized "five_hour" pin on
+        // a provider that reports no such window renders a permanent
+        // "—" with no explanation (audit GK-59). An empty id keeps the
+        // editor's "no windows reported" guidance visible instead.
+        windowIds(of: provider).first ?? ""
     }
 
     private func isQuotaMetric(_ metric: MenuItemMetric) -> Bool {
