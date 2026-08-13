@@ -50,6 +50,9 @@ function toChunk(span: StyledSpan, theme: ResolvedTheme): TextChunk {
   if (style.color !== null) {
     (chunk as { fg?: RGBA }).fg = rgbaFor(style.color);
   }
+  if (theme.background !== null) {
+    (chunk as { bg?: RGBA }).bg = rgbaFor(theme.background);
+  }
   if (attributes !== 0) {
     (chunk as { attributes?: number }).attributes = attributes;
   }
@@ -102,6 +105,20 @@ export function wrapRenderer(
   const readTerminalSize = options.readTerminalSize ?? readStdoutSize;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let destroyed = false;
+  let lastBackground: string | null | undefined;
+  function applyBackground(theme: ResolvedTheme): void {
+    const background = theme.background;
+    if (background === lastBackground) {
+      return;
+    }
+    lastBackground = background;
+    if (background === null) {
+      renderer.resetTerminalBgColor();
+      renderer.setBackgroundColor('transparent');
+      return;
+    }
+    renderer.setBackgroundColor(background);
+  }
   return {
     get width(): number {
       return renderer.terminalWidth;
@@ -113,10 +130,12 @@ export function wrapRenderer(
       if (destroyed) {
         return;
       }
+      const theme = themeProvider();
+      applyBackground(theme);
       // mono still renders bold/dim structure — NO_COLOR bans colors only
       frame.content = isPlainFrame(richFrame)
         ? frameText(richFrame).join('\n')
-        : toStyledText(richFrame, themeProvider());
+        : toStyledText(richFrame, theme);
       renderer.requestRender();
     },
     onKey(handler: (key: TuiKeyEvent) => void): void {

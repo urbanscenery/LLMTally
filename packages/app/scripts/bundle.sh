@@ -7,6 +7,9 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+# keep the Swift theme catalog in lockstep with the shared presets
+bun scripts/gen-theme-presets.ts
+
 swift build -c release --package-path macos
 bun build --compile src/sidecar-main.ts --outfile build/llmtally-sidecar
 

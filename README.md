@@ -45,7 +45,7 @@ bun install -g llmtally     # 또는 npm install -g llmtally (실행엔 Bun 필�
 
 ```bash
 llmtally                          # 대시보드 진입 (그 자체가 전부입니다)
-llmtally --theme tokyo-night      # default | tokyo-night | dracula | mono
+llmtally --theme tokyo-night      # App 팔레트 + Catppuccin / mono. p 로 고름
 llmtally --chart braille          # 일별 차트 2배 밀도 (기본 block)
 llmtally --refresh 300            # 자동 새로고침 초기값(초, 최소 30)
 llmtally --db /path/ledger.db     # 원장 경로 지정
@@ -141,8 +141,9 @@ projects·settings·히스토리는 그대로 유지됩니다.
   있으면 `scan busy`로 표시하고 기존 원장으로 계속 동작합니다 (실패해도 마지막 정상 화면 유지)
 - Actual은 `$`, Nominal은 `~$` 접두사로 구조적으로 구분 — `NO_COLOR=1`(또는 `--theme mono`)
   에서도 굵기·기호만으로 판별됩니다. 쿼터 게이지는 80% 초과 `[!]`, 95% 초과 `[!!]` + 색 램프
-- 내장 테마 3종(Catppuccin Mocha 기본 / Tokyo Night / Dracula)은 배경색을 칠하지 않고
-  전경색만 사용해 터미널 배경(투명 포함)을 존중합니다
+- 내장 테마는 App과 같은 에디터 팔레트(다크 7 + 라이트 7)와 Catppuccin Mocha 기본값입니다.
+  다크는 전경만 칠해 터미널 배경(투명 포함)을 존중하고, `p` 피커에서 면을 칠할 수 있습니다.
+  라이트는 대비를 위해 테마 면을 칠합니다. `NO_COLOR=1` / `--theme mono`는 색과 면 칠하기를 끕니다
 - Accounts 탭은 계정별 카드로 표시됩니다 — Claude 라이브(활성 계정 + 볼트에 저장된 계정),
   Codex 로컬 관측치, Antigravity 라이브/캐시 (`live` / `cached` / `stored` / `from local logs` 표기)
 - TTY가 아닌 환경(파이프/CI)에서는 실행을 거부합니다 — 현재 표면은 TUI 하나뿐이라

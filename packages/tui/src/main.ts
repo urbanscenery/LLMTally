@@ -24,7 +24,7 @@ Usage:
 Options:
   --db <path>      Ledger database path (default: ~/.llmtally/ledger.db)
   --refresh <sec>  Auto-refresh interval to start with (min 30; remembered otherwise)
-  --theme <name>   Color theme: default | tokyo-night | dracula | mono
+  --theme <name>   Color theme (p to pick; light themes paint a surface). mono = no color
   --chart <mode>   Daily chart glyphs: block (default) | braille (2x density)
   --help           Show this help
 

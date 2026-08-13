@@ -127,7 +127,7 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
     action: 'theme-cycle',
     scope: 'global',
     group: 'Application',
-    label: 'choose color theme (remembered)',
+    label: 'choose color theme and surface (remembered)',
     keysLabel: 'p',
     footer: { keys: '[p]', text: ' theme' },
     priority: 50,

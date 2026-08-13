@@ -98,7 +98,10 @@ async function settle(ms = 60): Promise<void> {
 }
 
 function preferences() {
-  return { load: () => ({ theme: null, autoRefreshSeconds: undefined }), save: () => null };
+  return {
+    load: () => ({ theme: null, autoRefreshSeconds: undefined, paintBackground: undefined }),
+    save: () => null,
+  };
 }
 
 describe('first launch', () => {

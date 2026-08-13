@@ -60,7 +60,7 @@ struct OverviewView: View {
         }
         // reading themeId keeps every themed child live while the
         // panel stays open next to Settings
-        .tint((Theme.presets.first { $0.id == themeId } ?? Theme.system).accent)
+        .tint(Theme.resolve(themeId).accent)
         .onAppear {
             model.loadOnAppear()
             if let target = PendingNavigation.consume() {
@@ -286,7 +286,7 @@ private struct HoverHighlight: ViewModifier {
     @AppStorage(Theme.storageKey) private var themeId = "system"
 
     func body(content: Content) -> some View {
-        let theme = Theme.presets.first { $0.id == themeId } ?? Theme.system
+        let theme = Theme.resolve(themeId)
         content
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
@@ -316,7 +316,7 @@ struct HoverActionButtonStyle: ButtonStyle {
         @AppStorage(Theme.storageKey) private var themeId = "system"
 
         var body: some View {
-            let theme = Theme.presets.first { $0.id == themeId } ?? Theme.system
+            let theme = Theme.resolve(themeId)
             let active = hovering && isEnabled
             configuration.label
                 .padding(.horizontal, 7)

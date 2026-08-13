@@ -24,9 +24,19 @@ export interface UiPreferences {
   readonly theme: string | null;
   /** Auto-refresh seconds; null means off, undefined means never set. */
   readonly autoRefreshSeconds: number | null | undefined;
+  /**
+   * Paint the theme surface instead of the terminal background.
+   * undefined = never chosen (dark themes stay transparent; light
+   * themes still paint because they require a surface).
+   */
+  readonly paintBackground: boolean | undefined;
 }
 
-export const EMPTY_PREFERENCES: UiPreferences = { theme: null, autoRefreshSeconds: undefined };
+export const EMPTY_PREFERENCES: UiPreferences = {
+  theme: null,
+  autoRefreshSeconds: undefined,
+  paintBackground: undefined,
+};
 
 export function defaultPreferencesPath(home: string = homedir()): string {
   return join(home, '.llmtally', 'config.json');
@@ -72,6 +82,7 @@ export function loadUiPreferences(path: string = defaultPreferencesPath()): UiPr
         : typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0
           ? Math.floor(seconds)
           : undefined,
+    paintBackground: typeof ui.paintBackground === 'boolean' ? ui.paintBackground : undefined,
   };
 }
 
@@ -96,6 +107,9 @@ export function saveUiPreferences(
     }
     if ('autoRefreshSeconds' in patch) {
       ui.autoRefreshSeconds = patch.autoRefreshSeconds ?? null;
+    }
+    if ('paintBackground' in patch) {
+      ui.paintBackground = patch.paintBackground;
     }
     mkdirSync(dirname(path), { recursive: true, mode: DIRECTORY_MODE });
     writeFilePrivate(path, `${JSON.stringify({ ...base, version: CONFIG_VERSION, ui }, null, 2)}\n`);

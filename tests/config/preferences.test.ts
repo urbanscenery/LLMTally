@@ -22,7 +22,11 @@ describe('ui preferences', () => {
     expect(saveUiPreferences({ theme: 'dracula', autoRefreshSeconds: 300 }, path)).toBeNull();
 
     // Assert
-    expect(loadUiPreferences(path)).toEqual({ theme: 'dracula', autoRefreshSeconds: 300 });
+    expect(loadUiPreferences(path)).toEqual({
+      theme: 'dracula',
+      autoRefreshSeconds: 300,
+      paintBackground: undefined,
+    });
   });
 
   test('saving one field leaves the other alone', () => {
@@ -34,7 +38,11 @@ describe('ui preferences', () => {
     saveUiPreferences({ theme: 'tokyo-night' }, path);
 
     // Assert
-    expect(loadUiPreferences(path)).toEqual({ theme: 'tokyo-night', autoRefreshSeconds: 60 });
+    expect(loadUiPreferences(path)).toEqual({
+      theme: 'tokyo-night',
+      autoRefreshSeconds: 60,
+      paintBackground: undefined,
+    });
   });
 
   test('pricing overrides survive a theme change (review regression)', () => {
@@ -78,8 +86,25 @@ describe('ui preferences', () => {
     expect(loadUiPreferences(join(makeTempDir(), 'none.json'))).toEqual({
       theme: null,
       autoRefreshSeconds: undefined,
+      paintBackground: undefined,
     });
     expect(loadUiPreferences(broken).theme).toBeNull();
+  });
+
+  test('paintBackground round-trips and a theme save leaves it alone', () => {
+    // Arrange
+    const path = configPath();
+    saveUiPreferences({ paintBackground: true }, path);
+
+    // Act
+    saveUiPreferences({ theme: 'onedark' }, path);
+
+    // Assert
+    expect(loadUiPreferences(path)).toEqual({
+      theme: 'onedark',
+      autoRefreshSeconds: undefined,
+      paintBackground: true,
+    });
   });
 
   test('an unwritable path reports an error instead of throwing', () => {

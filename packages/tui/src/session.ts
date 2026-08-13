@@ -25,7 +25,7 @@ import {
   withTabResource,
   sortSpecFor,
 } from './state.ts';
-import { MONO_THEME, THEMES, resolveTheme } from './theme.ts';
+import { MONO_THEME, THEMES, canonicalThemeName, findTheme, resolveTheme, shouldPaintSurface } from './theme.ts';
 import type { ResolvedTheme } from './theme.ts';
 import type { ChartGlyphMode } from './components/daily-block-chart.ts';
 import type { ResourceState, TuiKeyEvent, TuiScreen } from './types.ts';
@@ -73,15 +73,22 @@ export interface TuiSessionOptions {
   };
 }
 
+const SURFACE_TERMINAL = 'surface:terminal';
+const SURFACE_PAINTED = 'surface:painted';
+
 /** Tracks the chosen theme and resolves it once per theme, not per frame. */
 class ThemeSelection {
   readonly #resolved = new Map<string, ResolvedTheme>();
   #name: string;
+  #userPaint: boolean;
 
-  constructor(name: string, private readonly monoForced: boolean) {
-    this.#name = name;
+  constructor(name: string, userPaint: boolean, private readonly monoForced: boolean) {
+    // stored ids may predate the shared catalog ('default', 'tokyonight')
+    this.#name = name === MONO_THEME_NAME ? name : canonicalThemeName(name);
+    this.#userPaint = userPaint;
     for (const theme of THEMES) {
-      this.#resolved.set(theme.name, resolveTheme(theme));
+      this.#resolved.set(`${theme.name}:term`, resolveTheme(theme));
+      this.#resolved.set(`${theme.name}:paint`, resolveTheme(theme, { paintSurface: true }));
     }
   }
 
@@ -89,25 +96,68 @@ class ThemeSelection {
     return this.#name;
   }
 
+  paints(): boolean {
+    return shouldPaintSurface(findTheme(this.#name), this.#userPaint, this.monoForced || this.#name === MONO_THEME_NAME);
+  }
+
   select(name: string): void {
-    if (name === MONO_THEME_NAME || this.#resolved.has(name)) {
+    if (name === MONO_THEME_NAME) {
       this.#name = name;
+      return;
     }
+    const canonical = canonicalThemeName(name);
+    if (findTheme(canonical) !== null) {
+      this.#name = canonical;
+      if (findTheme(canonical)?.requiresBackground === true) {
+        this.#userPaint = true;
+      }
+    }
+  }
+
+  setPaint(paint: boolean): string | null {
+    if (!paint && findTheme(this.#name)?.requiresBackground === true) {
+      return 'Light themes paint their surface. Switch to a dark theme first.';
+    }
+    this.#userPaint = paint;
+    return null;
   }
 
   current(): ResolvedTheme {
     if (this.monoForced || this.#name === MONO_THEME_NAME) {
       return MONO_THEME;
     }
-    return this.#resolved.get(this.#name) ?? MONO_THEME;
+    const key = `${this.#name}:${this.paints() ? 'paint' : 'term'}`;
+    return this.#resolved.get(key) ?? MONO_THEME;
   }
 
   options(): PickerOption[] {
-    const options: PickerOption[] = THEMES.map((theme) => ({
-      id: theme.name,
-      label: theme.name,
-      hint: theme.name === this.#name ? 'current' : undefined,
-    }));
+    const paints = this.paints();
+    const light = findTheme(this.#name)?.requiresBackground === true;
+    const options: PickerOption[] = [
+      {
+        id: SURFACE_TERMINAL,
+        label: 'Terminal background',
+        hint: light ? 'light themes paint' : paints ? undefined : 'current',
+        disabled: light,
+      },
+      {
+        id: SURFACE_PAINTED,
+        label: 'Paint theme surface',
+        hint: paints ? 'current' : undefined,
+      },
+    ];
+    for (const theme of THEMES) {
+      options.push({
+        id: theme.name,
+        label: theme.label,
+        hint:
+          theme.name === this.#name
+            ? 'current'
+            : theme.requiresBackground
+              ? 'light · paints'
+              : undefined,
+      });
+    }
     options.push({
       id: MONO_THEME_NAME,
       label: 'mono (no colors)',
@@ -137,7 +187,8 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
   };
   const remembered = prefs.load();
   const theme = new ThemeSelection(
-    options.themeName ?? remembered.theme ?? 'default',
+    options.themeName ?? remembered.theme ?? 'catppuccin',
+    remembered.paintBackground === true,
     options.monoForced,
   );
   const initialInterval =
@@ -218,8 +269,22 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
 
   function applyPick(topic: PickerTopic, optionId: string): void {
     if (topic === 'theme') {
+      if (optionId === SURFACE_TERMINAL || optionId === SURFACE_PAINTED) {
+        const refused = theme.setPaint(optionId === SURFACE_PAINTED);
+        if (refused !== null) {
+          notice('Theme', refused, false);
+          return;
+        }
+        const error = prefs.save({ paintBackground: theme.paints() });
+        if (error !== null) {
+          notice('Theme', error, false);
+          return;
+        }
+        controller.commit(controller.getState());
+        return;
+      }
       theme.select(optionId);
-      const error = prefs.save({ theme: optionId });
+      const error = prefs.save({ theme: optionId, paintBackground: theme.paints() });
       if (error !== null) {
         notice('Theme', error, false);
         return;

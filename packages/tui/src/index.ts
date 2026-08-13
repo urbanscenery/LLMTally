@@ -9,4 +9,11 @@ export { RefreshScheduler } from './refresh.ts';
 export { createDefaultDataSource } from './data-source.ts';
 export { createOpentuiScreen } from './renderer.ts';
 export { renderShell } from './views/shell.ts';
-export { THEMES, MONO_THEME, findTheme, resolveTheme, themeNames } from './theme.ts';
+export {
+  THEMES,
+  MONO_THEME,
+  findTheme,
+  resolveTheme,
+  shouldPaintSurface,
+  themeNames,
+} from './theme.ts';
