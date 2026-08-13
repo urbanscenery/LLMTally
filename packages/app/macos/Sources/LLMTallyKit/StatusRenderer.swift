@@ -358,7 +358,12 @@ public func renderStatusSegments(
             case "last_24h":
                 source = Array(hourBuckets.suffix(24)); rangeLabel = "24h"
             default:
-                source = recentBuckets; rangeLabel = "7d"
+                // 7d prefers hour grain (~168 points) so a longer range
+                // reads denser in the same fixed track width
+                source = hourBuckets.count >= 8
+                    ? Array(hourBuckets.suffix(168))
+                    : recentBuckets
+                rangeLabel = "7d"
             }
             let values = source.map { bucket in
                 money

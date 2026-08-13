@@ -74,8 +74,9 @@ enum StatusComposer {
         case .rails(let identity, let bars):
             let identityWidth = identity.isEmpty ? 0 : attributed(identity).size().width.rounded(.up) + 3
             return identityWidth + CGFloat(bars.count) * 5 + CGFloat(max(0, bars.count - 1)) * 2
-        case .spark(let values, _, _):
-            return max(CGFloat(values.count) * 3 - 1, 20)
+        case .spark:
+            // fixed track: the range changes density, not width
+            return 100
         case .placeholder:
             return attributed("—").size().width.rounded(.up)
         }
@@ -113,30 +114,30 @@ enum StatusComposer {
             let maximum = max(values.max() ?? 1, 0.000_001)
             let theme = Theme.current()
             let color = money ? theme.nsActual : theme.nsAccent
+            let track: CGFloat = 100
             if line {
                 let path = NSBezierPath()
                 path.lineWidth = 1.2
                 path.lineJoinStyle = .round
-                let step = values.count > 1
-                    ? (CGFloat(values.count) * 3 - 3) / CGFloat(values.count - 1)
-                    : 0
+                let step = values.count > 1 ? track / CGFloat(values.count - 1) : 0
                 for (index, value) in values.enumerated() {
                     let point = NSPoint(
-                        x: x + CGFloat(index) * step + 1,
+                        x: x + CGFloat(index) * step,
                         y: 1.5 + (barHeight - 4) * value / maximum)
                     index == 0 ? path.move(to: point) : path.line(to: point)
                 }
                 color.setStroke()
                 path.stroke()
             } else {
-                var cursor = x
-                for value in values {
+                let step = track / CGFloat(values.count)
+                let barWidth = max(0.6, min(step * 0.7, 4))
+                for (index, value) in values.enumerated() {
                     let height = max(1.5, (barHeight - 4) * value / maximum)
                     color.setFill()
                     NSBezierPath(
-                        roundedRect: NSRect(x: cursor, y: 1, width: 2, height: height),
-                        xRadius: 1, yRadius: 1).fill()
-                    cursor += 3
+                        roundedRect: NSRect(x: x + CGFloat(index) * step, y: 1,
+                                            width: barWidth, height: height),
+                        xRadius: barWidth / 2, yRadius: barWidth / 2).fill()
                 }
             }
         }

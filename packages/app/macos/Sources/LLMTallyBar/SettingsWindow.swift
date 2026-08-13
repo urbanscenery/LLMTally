@@ -86,7 +86,7 @@ final class SettingsWindowController {
 
     func show() {
         if window == nil {
-            let hosting = NSHostingController(rootView: SettingsView())
+            let hosting = NSHostingController(rootView: ThemedSurface { SettingsView() })
             let window = NSWindow(contentViewController: hosting)
             window.title = "LLMTally Settings"
             window.setContentSize(NSSize(width: 860, height: 700))

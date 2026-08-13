@@ -323,8 +323,7 @@ private final class KeyablePanel: NSPanel {
 /// independent of window key state.
 private struct PanelRoot: View {
     var body: some View {
-        OverviewView()
-            .background(Color(nsColor: .windowBackgroundColor))
+        ThemedSurface { OverviewView() }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
