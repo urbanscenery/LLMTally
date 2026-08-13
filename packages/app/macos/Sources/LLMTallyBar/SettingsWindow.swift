@@ -113,7 +113,11 @@ final class SettingsWindowController {
             let window = NSWindow(contentViewController: hosting)
             window.title = "LLMTally Settings"
             window.setContentSize(NSSize(width: 860, height: 700))
-            window.styleMask = [.titled, .closable, .miniaturizable]
+            // resizable + scrolling panes: content taller than the
+            // window (theme catalog, future rows) stays reachable at
+            // any window size
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.contentMinSize = NSSize(width: 640, height: 420)
             window.isReleasedWhenClosed = false
             self.window = window
         }
@@ -167,20 +171,34 @@ struct SettingsView: View {
             Divider()
 
             Group {
-                switch pane {
-                case .general: GeneralPane()
-                // the Builder IS the pane — no summary detour
-                case .menubar: BuilderView()
-                case .overviewRows: OverviewRowsPane()
-                case .accounts: AccountsPane()
-                case .thresholds: ThresholdsPane()
-                case .refresh: RefreshPane()
-                case .cost: CostPane()
-                case .privacy: PrivacyPane()
-                case .appearance: AppearancePane()
+                if pane == .menubar {
+                    // the Builder IS the pane — no summary detour; it
+                    // owns its own scrolling, so no outer ScrollView
+                    BuilderView()
+                } else {
+                    ScrollView {
+                        paneBody
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    /// Form panes overflow the window as they grow (the theme catalog
+    /// already does) — every one of them scrolls.
+    @ViewBuilder private var paneBody: some View {
+        switch pane {
+        case .general: GeneralPane()
+        case .menubar: BuilderView()
+        case .overviewRows: OverviewRowsPane()
+        case .accounts: AccountsPane()
+        case .thresholds: ThresholdsPane()
+        case .refresh: RefreshPane()
+        case .cost: CostPane()
+        case .privacy: PrivacyPane()
+        case .appearance: AppearancePane()
         }
     }
 }
@@ -504,7 +522,7 @@ private struct AppearancePane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Appearance").font(.title2.weight(.semibold))
-            Text("Fifteen presets: System plus seven light and seven dark editor palettes. Meaning channels never depend on color alone.")
+            Text("System plus the cross-surface catalog shared with the TUI — nine dark and nine light editor palettes. Meaning channels never depend on color alone.")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
             ForEach(Theme.presets, id: \.id) { theme in
