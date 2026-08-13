@@ -238,7 +238,7 @@ struct HeadlineView: View {
         switch item.rank {
         case .authInvalid, .critical: return theme.crit
         case .rateLimited, .stale, .warning, .resetSoon: return theme.warn
-        case .quiet: return theme.live
+        case .quiet: return theme.accent
         }
     }
 
@@ -303,10 +303,6 @@ struct AgentRow: View {
                     }
                 }
                 Spacer()
-                // the row's big number — metric scale (§7.2)
-                Text(bigValue)
-                    .font(.system(size: 20, weight: .semibold))
-                    .monospacedDigit()
                 StatusChip(item: item)
             }
             if item.snapshot.windows.isEmpty {
@@ -327,12 +323,6 @@ struct AgentRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-    }
-
-    private var bigValue: String {
-        guard let window = item.topWindow else { return "—" }
-        if item.rank == .authInvalid { return "—" }
-        return "\(Int(window.usedPercent.rounded()))%"
     }
 }
 
@@ -366,10 +356,10 @@ struct StatusChip: View {
     private var color: Color {
         let theme = Theme.current()
         if item.snapshot.failure?.kind == "auth_invalid" { return theme.crit }
-        // cached is healthy — same color as fresh/live, never a warning
-        if item.snapshot.failure?.kind == "deferred" { return theme.live }
+        // cached is healthy — same accent as live, never a warning
+        if item.snapshot.failure?.kind == "deferred" { return theme.accent }
         if item.snapshot.failure != nil || item.rank == .stale { return theme.warn }
-        return item.snapshot.source == "vendor_api" ? theme.live : .secondary
+        return item.snapshot.source == "vendor_api" ? theme.accent : .secondary
     }
 }
 
@@ -378,35 +368,32 @@ struct WindowRail: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Text(shortLabel).font(.caption2).foregroundStyle(.secondary)
+            Text(shortWindowLabel(window.id)).font(.caption2).foregroundStyle(.secondary)
                 .frame(minWidth: 20, alignment: .leading)
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.1))
-                    Capsule().fill(fillColor)
+                    Capsule().fill(railFill(window.usedPercent))
                         .frame(width: max(0, geometry.size.width * window.usedPercent / 100))
                 }
             }
             .frame(height: 4)
+            // every rail carries its own number — no single big value
+            Text("\(Int(window.usedPercent.rounded()))%")
+                .font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
+                .frame(minWidth: 24, alignment: .trailing)
         }
         .help("\(window.id) used \(Int(window.usedPercent.rounded()))% · \(resetText(window.resetsAtUtc))")
     }
+}
 
-    private var shortLabel: String {
-        let id = window.id
-        if id.contains("five_hour") || id.contains("300m") { return "5h" }
-        if id.contains("seven_day") || id.contains("10080m") || id.hasPrefix("7d") { return "7d" }
-        if id.lowercased().contains("fable") { return "Fable" }
-        if id.contains("1month") { return "1mo" }
-        return String(id.prefix(6))
-    }
-
-    private var fillColor: Color {
-        let theme = Theme.current()
-        if window.usedPercent >= CRITICAL_USED_PERCENT { return theme.crit }
-        if window.usedPercent >= WARNING_USED_PERCENT { return theme.warn }
-        return theme.live
-    }
+/// Healthy fill is the THEME ACCENT so a theme change is unmistakable;
+/// warn/crit keep the theme's alarm colors.
+func railFill(_ usedPercent: Double) -> Color {
+    let theme = Theme.current()
+    if usedPercent >= CRITICAL_USED_PERCENT { return theme.crit }
+    if usedPercent >= WARNING_USED_PERCENT { return theme.warn }
+    return theme.accent
 }
 
 // MARK: - Today
@@ -485,8 +472,9 @@ struct FreshnessSummary: View {
 
     private func summary() -> (String, String, Color) {
         let now = Date()
+        let theme = Theme.current()
         if quota.contains(where: { $0.failure?.kind == "auth_invalid" }) {
-            return ("!", "auth", .red)
+            return ("!", "auth", theme.crit)
         }
         let staleCount = quota.filter {
             $0.failure?.kind == "rate_limited"
@@ -494,11 +482,11 @@ struct FreshnessSummary: View {
                     && now.timeIntervalSince1970 - epochSeconds($0.observedAtUtc) > STALE_AFTER_SECONDS)
         }.count
         if staleCount > 0 {
-            return ("◷", "\(staleCount) stale", .orange)
+            return ("◷", "\(staleCount) stale", theme.warn)
         }
         let newest = quota.map { epochSeconds($0.observedAtUtc) }.max()
         guard let newest else { return ("—", "no reading", .secondary) }
-        return ("●", "Fresh · \(shortAge(sinceEpoch: newest, now: now))", .green)
+        return ("●", "Fresh · \(shortAge(sinceEpoch: newest, now: now))", theme.accent)
     }
 }
 
@@ -641,7 +629,9 @@ struct ProviderDetailView: View {
                 Text("Switch is a function of this provider. Credentials are not edited here.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .padding(.horizontal, 14).padding(.vertical, 8)
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                // fixed, stable order like the TUI accounts tab — not
+                // attention-sorted, so rows never jump between opens
+                ForEach(Array(orderedItems.enumerated()), id: \.offset) { _, item in
                     accountSection(item)
                     Divider()
                 }
@@ -700,6 +690,13 @@ struct ProviderDetailView: View {
         }
     }
 
+    private var orderedItems: [AgentAttention] {
+        items.sorted {
+            ($0.snapshot.account ?? $0.snapshot.accountId ?? "")
+                < ($1.snapshot.account ?? $1.snapshot.accountId ?? "")
+        }
+    }
+
     private func modelActual(_ bucket: ReportBucketDTO) -> String {
         if privacy { return "hidden" }
         let cost = AppConfig.nominalMode ? bucket.nominal : .some(bucket.actual)
@@ -732,15 +729,30 @@ struct ProviderDetailView: View {
             if snapshot.windows.isEmpty {
                 Text("no windows reported").font(.caption2).foregroundStyle(.secondary)
             } else {
+                // horizontal bars, TUI-style: label · bar · percent,
+                // native id + reset underneath
                 ForEach(snapshot.windows) { window in
-                    HStack {
-                        Text(window.id).font(.caption).lineLimit(1)
-                        Spacer()
-                        Text(resetTextDetailed(window.resetsAtUtc)).font(.caption2).foregroundStyle(.secondary)
-                        Text("\(Int(window.usedPercent.rounded()))%")
-                            .font(.caption).monospacedDigit()
-                            .frame(minWidth: 34, alignment: .trailing)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(shortWindowLabel(window.id))
+                                .font(.caption).frame(width: 42, alignment: .leading)
+                            GeometryReader { geometry in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(Color.primary.opacity(0.1))
+                                    Capsule().fill(railFill(window.usedPercent))
+                                        .frame(width: max(0, geometry.size.width * window.usedPercent / 100))
+                                }
+                            }
+                            .frame(height: 6)
+                            Text("\(Int(window.usedPercent.rounded()))%")
+                                .font(.caption).monospacedDigit()
+                                .frame(minWidth: 34, alignment: .trailing)
+                        }
+                        Text("\(window.id) · \(resetTextDetailed(window.resetsAtUtc))")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                            .padding(.leading, 48)
                     }
+                    .padding(.vertical, 1)
                 }
             }
             Text("observed \(shortAge(sinceEpoch: snapshot.observedAtUtc)) ago · \(snapshot.source)")

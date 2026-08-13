@@ -139,10 +139,11 @@ enum StatusComposer {
     }
 
     private static func stateColor(_ usedPercent: Double) -> NSColor {
+        // healthy = theme ACCENT so the chosen theme reads instantly
         let theme = Theme.current()
         if usedPercent >= CRITICAL_USED_PERCENT { return theme.nsCrit }
         if usedPercent >= WARNING_USED_PERCENT { return theme.nsWarn }
-        return theme.nsLive
+        return theme.nsAccent
     }
 
     /// The tally mark, drawn in labelColor so it matches the text.

@@ -2,45 +2,178 @@ import AppKit
 import LLMTallyKit
 import SwiftUI
 
-/// Owns the NSStatusItem and its popover. The visible content is the
-/// user's ordered descriptor array rendered against live quota — the
-/// tally glyph stays as the leading template image, and the text part
-/// comes from `renderStatusItems` (the same logic a Builder preview
-/// will reuse).
-final class StatusItemController: NSObject, NSPopoverDelegate {
+/// Owns the NSStatusItem and its dropdown. The dropdown is a plain
+/// borderless panel — not an NSPopover — so it behaves like other
+/// menu-bar apps: rectangular, positioned once before it appears,
+/// fully opaque at constant intensity, and closed by any click
+/// outside or by losing key.
+final class StatusItemController: NSObject, NSWindowDelegate {
     /// Background cadence for the status text when the popover is
     /// closed (Settings → Refresh; default 15 min). Sidecar/core
     /// throttles still gate actual vendor calls.
     private static var refreshIntervalSeconds: TimeInterval {
         TimeInterval(AppConfig.cadenceMinutes * 60)
     }
+    private static let panelSize = NSSize(width: 400, height: 560)
 
     private let statusItem: NSStatusItem
-    /// Recreated per open: reusing one NSPopover across transient
-    /// closes is a known source of second-show glitches (wrong
-    /// position, blank content) for status-bar apps.
-    private var popover: NSPopover?
+    private var panel: NSPanel?
     private let descriptorStore = DescriptorStore()
     private var refreshTimer: Timer?
     private var descriptorObserver: NSObjectProtocol?
     private var privacyObserver: NSObjectProtocol?
+    private var openObserver: NSObjectProtocol?
+    private var closeObserver: NSObjectProtocol?
+    private var configObserver: NSObjectProtocol?
+    private var keyMonitor: Any?
+    private var outsideClickMonitor: Any?
     // last-good inputs so a Builder edit re-renders without a new fetch
     private var lastQuota: [QuotaSnapshotDTO] = []
     private var lastBuckets: [ReportBucketDTO] = []
     private var lastActive: [String: String?] = [:]
     /// nil = no successful reading yet; an empty map is a real zero.
     private var lastTodayRows: [String: Int]?
-    private var openObserver: NSObjectProtocol?
-    private var closeObserver: NSObjectProtocol?
-    private var configObserver: NSObjectProtocol?
-    private var keyMonitor: Any?
 
-    /// §9 keyboard while the popover is key: ⌘, / ⌘R / ⌘O handled
-    /// here, navigation keys routed to the view.
-    private func installKeyMonitor() {
-        removeKeyMonitor()
+    override init() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        super.init()
+
+        statusItem.button?.image = Self.tallyTemplateImage()
+        statusItem.button?.imagePosition = .imageOnly
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(togglePanel)
+
+        refreshStatusText()
+        scheduleTimer()
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyConfigChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.scheduleTimer()
+            self?.renderFromCache()
+        }
+        descriptorObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyDescriptorsChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.renderFromCache()
+        }
+        privacyObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyPrivacyChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.renderFromCache()
+        }
+        openObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyOpenPopover, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.showPanel()
+        }
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyClosePopover, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.closePanel()
+        }
+    }
+
+    deinit {
+        refreshTimer?.invalidate()
+        for observer in [descriptorObserver, privacyObserver, openObserver, closeObserver, configObserver] {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
+        removeMonitors()
+    }
+
+    private func scheduleTimer() {
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.refreshIntervalSeconds, repeats: true
+        ) { [weak self] _ in
+            self?.refreshStatusText()
+        }
+    }
+
+    // MARK: - panel lifecycle
+
+    @objc private func togglePanel() {
+        if panel != nil {
+            closePanel()
+        } else {
+            showPanel()
+        }
+    }
+
+    private func showPanel() {
+        guard panel == nil, let button = statusItem.button else { return }
+
+        let hosting = NSHostingController(rootView: PanelRoot())
+        hosting.view.frame = NSRect(origin: .zero, size: Self.panelSize)
+        let fresh = KeyablePanel(
+            contentRect: NSRect(origin: .zero, size: Self.panelSize),
+            styleMask: [.borderless, .fullSizeContentView],
+            backing: .buffered, defer: false)
+        fresh.contentViewController = hosting
+        // opaque rounded content over a clear window: constant color,
+        // no vibrancy, no key-state dimming
+        fresh.isOpaque = false
+        fresh.backgroundColor = .clear
+        fresh.hasShadow = true
+        fresh.level = .popUpMenu
+        fresh.collectionBehavior = [.transient, .ignoresCycle]
+        fresh.isReleasedWhenClosed = false
+        fresh.delegate = self
+        fresh.setFrame(panelFrame(anchoredTo: button), display: false)
+        panel = fresh
+
+        NSApp.activate(ignoringOtherApps: true)
+        fresh.makeKeyAndOrderFront(nil)
+        installMonitors()
+    }
+
+    func closePanel() {
+        removeMonitors()
+        panel?.orderOut(nil)
+        panel = nil
+    }
+
+    /// Computed BEFORE the panel appears — no visible reposition. The
+    /// anchor is the button's screen rect; a menu-bar manager (Ice)
+    /// may have moved it, so the frame clamps into the visible frame.
+    private func panelFrame(anchoredTo button: NSStatusBarButton) -> NSRect {
+        let size = Self.panelSize
+        let buttonRect = button.window.map {
+            $0.convertToScreen(button.convert(button.bounds, to: nil))
+        } ?? .zero
+        let screen = button.window?.screen ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+        var x = buttonRect.midX - size.width / 2
+        x = min(max(x, visible.minX + 4), visible.maxX - size.width - 4)
+        let top = min(buttonRect.minY, visible.maxY) - 4
+        let y = max(top - size.height, visible.minY + 4)
+        return NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        // clicking anywhere else (another app, Settings, the desktop)
+        // takes key away — the menu-like dismissal the platform expects
+        if (notification.object as? NSPanel) === panel {
+            closePanel()
+        }
+    }
+
+    // MARK: - event monitors
+
+    private func installMonitors() {
+        removeMonitors()
+        // clicks on other status items or the menu bar do not always
+        // move key; a global click is always "outside"
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            self?.closePanel()
+        }
+        // §9 keyboard while the panel is key: ⌘, / ⌘R / ⌘O handled
+        // here, navigation keys routed to the view.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, self.popover?.isShown == true else { return event }
+            guard let self, self.panel != nil else { return event }
             let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
             if event.modifierFlags.contains(.command) {
                 switch key {
@@ -66,157 +199,18 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         }
     }
 
-    private func removeKeyMonitor() {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-        }
+    private func removeMonitors() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        if let outsideClickMonitor { NSEvent.removeMonitor(outsideClickMonitor) }
         keyMonitor = nil
+        outsideClickMonitor = nil
     }
 
-    private func scheduleTimer() {
-        refreshTimer?.invalidate()
-        refreshTimer = Timer.scheduledTimer(
-            withTimeInterval: Self.refreshIntervalSeconds, repeats: true
-        ) { [weak self] _ in
-            self?.refreshStatusText()
-        }
-    }
+    // MARK: - status rendering
 
-    override init() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        super.init()
-
-        statusItem.button?.image = Self.tallyTemplateImage()
-        statusItem.button?.imagePosition = .imageLeading
-        statusItem.button?.target = self
-        statusItem.button?.action = #selector(togglePopover)
-
-        refreshStatusText()
-        scheduleTimer()
-        configObserver = NotificationCenter.default.addObserver(
-            forName: .llmtallyConfigChanged, object: nil, queue: .main
-        ) { [weak self] _ in
-            self?.scheduleTimer()
-            self?.renderFromCache()
-        }
-        descriptorObserver = NotificationCenter.default.addObserver(
-            forName: .llmtallyDescriptorsChanged, object: nil, queue: .main
-        ) { [weak self] _ in
-            self?.renderFromCache()
-        }
-        privacyObserver = NotificationCenter.default.addObserver(
-            forName: .llmtallyPrivacyChanged, object: nil, queue: .main
-        ) { [weak self] _ in
-            self?.renderFromCache()
-        }
-        openObserver = NotificationCenter.default.addObserver(
-            forName: .llmtallyOpenPopover, object: nil, queue: .main
-        ) { [weak self] _ in
-            self?.showPopover()
-        }
-        closeObserver = NotificationCenter.default.addObserver(
-            forName: .llmtallyClosePopover, object: nil, queue: .main
-        ) { [weak self] _ in
-            self?.popover?.performClose(nil)
-        }
-    }
-
-    deinit {
-        refreshTimer?.invalidate()
-        if let descriptorObserver {
-            NotificationCenter.default.removeObserver(descriptorObserver)
-        }
-        if let privacyObserver {
-            NotificationCenter.default.removeObserver(privacyObserver)
-        }
-        if let openObserver {
-            NotificationCenter.default.removeObserver(openObserver)
-        }
-        if let closeObserver {
-            NotificationCenter.default.removeObserver(closeObserver)
-        }
-        if let configObserver {
-            NotificationCenter.default.removeObserver(configObserver)
-        }
-        removeKeyMonitor()
-    }
-
-    @objc private func togglePopover() {
-        if let shown = popover, shown.isShown {
-            shown.performClose(nil)
-            return
-        }
-        showPopover()
-    }
-
-    private func showPopover() {
-        guard let button = statusItem.button else { return }
-        if let shown = popover, shown.isShown { return }
-
-        let fresh = NSPopover()
-        fresh.behavior = .transient
-        fresh.delegate = self
-        fresh.contentViewController = NSHostingController(rootView: OverviewView())
-        popover = fresh
-
-        // an accessory app must activate for the popover to become and
-        // stay the key window — without it, second shows misbehave
-        NSApp.activate(ignoringOtherApps: true)
-        // preferredEdge is interpreted in the positioning view's own
-        // coordinate space, and NSStatusBarButton is flipped — there
-        // .minY is the visual TOP edge, which floated the popover
-        // above the menu bar with its head off-screen.
-        let bottomEdge: NSRectEdge = button.isFlipped ? .maxY : .minY
-        fresh.show(relativeTo: button.bounds, of: button, preferredEdge: bottomEdge)
-        installKeyMonitor()
-    }
-
-    func popoverDidShow(_ notification: Notification) {
-        // Menu-bar managers (Ice, Bartender) relocate status-item
-        // windows when hiding/revealing items, so the anchor rect can
-        // be stale by the second open and the popover lands half above
-        // the screen. Trust the screen, not the anchor: clamp the
-        // popover window into the visible frame after it appears.
-        clampPopoverIntoVisibleFrame()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-            self?.clampPopoverIntoVisibleFrame()
-        }
-    }
-
-    private func clampPopoverIntoVisibleFrame() {
-        guard
-            let window = popover?.contentViewController?.view.window,
-            let screen = window.screen ?? statusItem.button?.window?.screen ?? NSScreen.main
-        else { return }
-
-        var frame = window.frame
-        let visible = screen.visibleFrame  // excludes the menu bar (and notch)
-        var changed = false
-        if frame.maxY > visible.maxY {
-            frame.origin.y = visible.maxY - frame.height
-            changed = true
-        }
-        if frame.minX < visible.minX {
-            frame.origin.x = visible.minX + 4
-            changed = true
-        }
-        if frame.maxX > visible.maxX {
-            frame.origin.x = visible.maxX - frame.width - 4
-            changed = true
-        }
-        if changed {
-            window.setFrame(frame, display: true)
-        }
-    }
-
-    func popoverDidClose(_ notification: Notification) {
-        popover = nil
-        removeKeyMonitor()
-    }
-
-    /// Pulls quota + active accounts and renders the descriptor array
-    /// into the button title. Failures keep the previous title —
-    /// last-good stays visible, matching the popover's rule.
+    /// Pulls quota + report + active accounts and renders the
+    /// descriptor array into the button. Failures keep the previous
+    /// image — last-good stays visible, matching the popover's rule.
     private func refreshStatusText() {
         var overview: OverviewDTO?
         var active: [String: String?]?
@@ -259,10 +253,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             activeAccounts: lastActive,
             todayAgentRows: lastTodayRows,
             privacy: PrivacySetting.enabled)
+        // no leading brand mark (user decision 2026-08-13); the tally
+        // glyph only appears while there is nothing else to draw
         button.image = StatusComposer.compose(
             segments: rendering.segments,
             metrics: rendering.metrics,
-            budget: StatusComposer.defaultBudget)
+            budget: StatusComposer.defaultBudget,
+            leadingTally: rendering.segments.isEmpty)
         button.imagePosition = .imageOnly
         button.attributedTitle = NSAttributedString(string: "")
         button.toolTip = rendering.tooltip
@@ -293,5 +290,24 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         }
         image.isTemplate = true
         return image
+    }
+}
+
+/// Borderless panels refuse key status by default; the dropdown needs
+/// it for keyboard navigation.
+private final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+/// Opaque rounded shell around the popover content — constant color,
+/// independent of window key state.
+private struct PanelRoot: View {
+    var body: some View {
+        OverviewView()
+            .background(Color(nsColor: .windowBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(Color.primary.opacity(0.16), lineWidth: 0.5))
     }
 }
