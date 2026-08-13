@@ -7,6 +7,7 @@ import quotaSampleAccountIdSql from './migrations/004_quota_sample_account_id.sq
 import quotaSampleIdentitySql from './migrations/005_quota_sample_identity.sql' with { type: 'text' };
 import quotaAuthStateSql from './migrations/006_quota_auth_state.sql' with { type: 'text' };
 import quotaSampleLatestIndexSql from './migrations/007_quota_sample_latest_index.sql' with { type: 'text' };
+import claudeMessageDedupSql from './migrations/008_claude_message_dedup.sql' with { type: 'text' };
 
 interface Migration {
   readonly id: number;
@@ -22,6 +23,7 @@ const MIGRATIONS: readonly Migration[] = [
   { id: 5, name: '005_quota_sample_identity', sql: quotaSampleIdentitySql },
   { id: 6, name: '006_quota_auth_state', sql: quotaAuthStateSql },
   { id: 7, name: '007_quota_sample_latest_index', sql: quotaSampleLatestIndexSql },
+  { id: 8, name: '008_claude_message_dedup', sql: claudeMessageDedupSql },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.id ?? 0;

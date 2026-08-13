@@ -89,6 +89,50 @@ describe('SqliteLedgerRepository.commitBatch', () => {
     repository.close();
   });
 
+  test('refreshes token columns when a duplicate carries a larger output count', () => {
+    // Arrange — Claude streams cumulative usage snapshots across the block
+    // lines of one message; the last (largest) snapshot is what was billed
+    const { repository, db } = setup();
+    repository.commitBatch(batchInput([entry({ outputTokens: 7 })]));
+
+    // Act
+    const rescan = repository.commitBatch(
+      batchInput([entry({ outputTokens: 250, cacheRead: 9, promptText: 'other prompt' })]),
+    );
+    const row = db
+      .query<{ output_tokens: number; cache_read: number; prompt_text: string }, []>(
+        'SELECT output_tokens, cache_read, prompt_text FROM usage_ledger',
+      )
+      .get();
+
+    // Assert — tokens follow the larger snapshot, prompt_text stays put
+    expect(rescan.insertedRows).toBe(1);
+    expect(row?.output_tokens).toBe(250);
+    expect(row?.cache_read).toBe(9);
+    expect(row?.prompt_text).toBe('searchable prompt body');
+    repository.close();
+  });
+
+  test('a token refresh cannot resurrect an aged prompt', () => {
+    // Arrange
+    const { repository, db } = setup();
+    repository.commitBatch(batchInput([entry({ outputTokens: 7 })]));
+    repository.agePrompts(1_785_578_405 + 1);
+
+    // Act
+    repository.commitBatch(batchInput([entry({ outputTokens: 250 })]));
+    const row = db
+      .query<{ output_tokens: number; prompt_text: string | null }, []>(
+        'SELECT output_tokens, prompt_text FROM usage_ledger',
+      )
+      .get();
+
+    // Assert
+    expect(row?.output_tokens).toBe(250);
+    expect(row?.prompt_text).toBeNull();
+    repository.close();
+  });
+
   test('makes committed prompts searchable through prompt_fts', () => {
     // Arrange
     const { repository, db } = setup();

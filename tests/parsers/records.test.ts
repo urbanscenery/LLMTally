@@ -49,6 +49,7 @@ describe('classifyClaudeLine', () => {
     expect(record).toEqual({
       kind: 'usage',
       uuid: 'a1',
+      messageId: null,
       parentUuid: 'u1',
       isSidechain: false,
       tsUtc: 1_785_578_405,
@@ -62,6 +63,25 @@ describe('classifyClaudeLine', () => {
       cacheWrite: 100,
       cacheRead: 200,
     });
+  });
+
+  test('extracts the API message id when present', () => {
+    // Arrange — Claude Code repeats message.id across the block lines of
+    // one assistant message, so it must surface for dedup keying
+    const line = usageLine({
+      message: {
+        id: 'msg_abc123',
+        role: 'assistant',
+        model: 'claude-fable-5',
+        usage: { input_tokens: 12, output_tokens: 34 },
+      },
+    });
+
+    // Act
+    const record = classifyClaudeLine(line);
+
+    // Assert
+    expect(record).toMatchObject({ kind: 'usage', messageId: 'msg_abc123' });
   });
 
   test('extracts string prompts from user records', () => {

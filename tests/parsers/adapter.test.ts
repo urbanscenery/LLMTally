@@ -75,6 +75,41 @@ describe('ClaudeCodeAdapter.scan', () => {
     expect(entries[2]?.promptText).toBe('Second question\nabout offsets');
   });
 
+  test('block lines of one assistant message share the msg: natural id', async () => {
+    // Arrange — one API response written as two JSONL lines (text block +
+    // tool_use block) with distinct uuids but the same message.id, the
+    // usage snapshot growing on the later line
+    const dir = makeTempDir();
+    const path = join(dir, 'session.jsonl');
+    const base = {
+      type: 'assistant',
+      parentUuid: 'u1',
+      isSidechain: false,
+      sessionId: 'sess-dup',
+      cwd: '/tmp/proj',
+      requestId: 'req_dup',
+      effort: 'high',
+    };
+    const usage = (outputTokens: number) => ({
+      role: 'assistant',
+      id: 'msg_dup01',
+      model: 'claude-fable-5',
+      usage: { input_tokens: 3, output_tokens: outputTokens },
+    });
+    writeFileSync(
+      path,
+      `${JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, isSidechain: false, message: { role: 'user', content: 'dup question' } })}\n${JSON.stringify({ ...base, uuid: 'a1', timestamp: '2026-08-01T10:00:05.000Z', message: usage(7) })}\n${JSON.stringify({ ...base, uuid: 'a2', timestamp: '2026-08-01T10:00:06.000Z', message: usage(250) })}\n`,
+    );
+
+    // Act
+    const { entries } = await scanAll(path);
+
+    // Assert — both lines resolve to one natural id so the ledger unique
+    // key collapses them; the second carries the final (billed) snapshot
+    expect(entries.map((entry) => entry.naturalId)).toEqual(['msg:msg_dup01', 'msg:msg_dup01']);
+    expect(entries.map((entry) => entry.outputTokens)).toEqual([7, 250]);
+  });
+
   test('keeps sidechain usage separate from the main prompt', async () => {
     // Act
     const { entries, batches } = await scanAll(fixturePath('claude-code', 'sidechain.jsonl'));

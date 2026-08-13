@@ -1,6 +1,6 @@
 export const CLAUDE_AGENT = 'claude-code';
 export const CLAUDE_PROVIDER = 'anthropic';
-export const CLAUDE_PARSER_VERSION = 1;
+export const CLAUDE_PARSER_VERSION = 2;
 
 const MILLISECONDS_PER_SECOND = 1000;
 const SYSTEM_MESSAGE_PREFIX = '<';
@@ -16,6 +16,7 @@ export interface ClaudeUserRecord {
 export interface ClaudeUsageRecord {
   readonly kind: 'usage';
   readonly uuid: string | null;
+  readonly messageId: string | null;
   readonly parentUuid: string | null;
   readonly isSidechain: boolean;
   readonly tsUtc: number;
@@ -135,6 +136,7 @@ function classifyAssistant(
   return {
     kind: 'usage',
     uuid: asString(raw.uuid),
+    messageId: asString(message?.id),
     parentUuid: asString(raw.parentUuid),
     isSidechain: raw.isSidechain === true,
     tsUtc,

@@ -9,14 +9,26 @@ import type {
 } from '../scan/types.ts';
 import { migrate } from './migrate.ts';
 
-// ON CONFLICT DO NOTHING (instead of OR IGNORE) so only natural-key
-// duplicates are skipped; any other constraint violation aborts the batch
+// Natural-key duplicates are normally skipped (any other constraint
+// violation aborts the batch), with one carve-out: a duplicate carrying a
+// LARGER output count refreshes the token columns. Claude Code duplicates
+// the usage block across the JSONL lines of one assistant message, and
+// while the message is still streaming those copies are cumulative
+// snapshots — the last one is what the API actually billed. Only token
+// columns are updated: prompt_text must stay untouched so agePrompts
+// redactions survive rescans. For sources whose duplicates are exact
+// copies the WHERE guard never fires, so this stays a plain skip.
 const INSERT_ENTRY_SQL = `INSERT INTO usage_ledger
   (ts_utc, agent, account, provider, model, effort, prompt_text,
    input_tokens, output_tokens, cache_write, cache_read, reasoning_tokens,
    cost_usd, session_id, cwd, natural_id, parser_version, is_sidechain, parent_uuid)
  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
- ON CONFLICT (agent, natural_id) DO NOTHING
+ ON CONFLICT (agent, natural_id) DO UPDATE SET
+   input_tokens = excluded.input_tokens,
+   output_tokens = excluded.output_tokens,
+   cache_write = excluded.cache_write,
+   cache_read = excluded.cache_read
+ WHERE excluded.output_tokens > usage_ledger.output_tokens
  RETURNING id`;
 
 const UPSERT_SCAN_STATE_SQL = `INSERT INTO scan_state
@@ -59,7 +71,7 @@ export class SqliteLedgerRepository implements LedgerRepository {
    * `prompt_text` becomes NULL (the AU trigger removes the FTS entry in
    * the same statement) while tokens, model, cost, and timing stay
    * forever. Re-scanning an old source cannot resurrect the text — the
-   * natural-key INSERT OR IGNORE leaves the aged row untouched.
+   * natural-key conflict clause never writes prompt_text on a duplicate.
    */
   agePrompts(cutoffUtc: number): number {
     // count first, in the same transaction: the changes counter is
@@ -96,8 +108,10 @@ export class SqliteLedgerRepository implements LedgerRepository {
     const runCommit = this.#db.transaction(() => {
       let inserted = 0;
       for (const entry of batch.entries) {
-        // RETURNING id yields a row only for real inserts; the changes
-        // counter is unreliable here because the FTS triggers inflate it
+        // RETURNING id yields a row for real inserts and for the rare
+        // token-refresh update (both advanced the ledger); exact-duplicate
+        // skips return nothing. The changes counter is unreliable here
+        // because the FTS triggers inflate it.
         inserted += insertEntry.get(...entryParams(entry)) === null ? 0 : 1;
       }
       if (batch.nextOffset !== null) {

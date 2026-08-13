@@ -8,8 +8,13 @@ export interface NaturalIdContext {
 }
 
 /**
- * Message uuid is the natural key. The requestId fallback is namespaced
- * because requestIds can repeat across sessions; the namespace only uses
+ * The API message id is the natural key: Claude Code writes one JSONL line
+ * per content block of the same assistant message, each with a distinct
+ * line uuid but the same message.id and a copy of the usage block. Keying
+ * on message.id collapses those copies into one ledger entry (the line
+ * uuid would count every block as a separate API call). The uuid fallback
+ * covers records without a message id; the requestId fallback is
+ * namespaced because requestIds can repeat across sessions, using only
  * values that stay stable across rescans of an append-only file (session
  * id, device/inode, byte offset) so idempotency is preserved.
  */
@@ -17,6 +22,9 @@ export function buildNaturalId(
   record: ClaudeUsageRecord,
   context: NaturalIdContext,
 ): string | null {
+  if (record.messageId !== null && record.messageId.length > 0) {
+    return `msg:${record.messageId}`;
+  }
   if (record.uuid !== null && record.uuid.length > 0) {
     return record.uuid;
   }

@@ -114,6 +114,43 @@ describe('001_initial migration', () => {
   });
 });
 
+describe('008 claude message dedup reset', () => {
+  test('drops claude-code rows and cursors but keeps other agents', async () => {
+    // Arrange — a v7 ledger holding parser-v1 claude rows (line-uuid keys,
+    // possibly duplicated per API message) plus unrelated codex data
+    const { migrate } = await import('@llmtally/core/db/migrate.ts');
+    const db = new Database(':memory:', { strict: true });
+    migrate(db);
+    db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '7')", []);
+    const insert = `INSERT INTO usage_ledger
+        (ts_utc, agent, model, natural_id, parser_version)
+      VALUES (1786350000, ?, 'model-x', ?, 1)`;
+    db.run(insert, ['claude-code', 'line-uuid-1']);
+    db.run(insert, ['claude-code', 'line-uuid-2']);
+    db.run(insert, ['codex', 'codex-1']);
+    db.run(
+      "INSERT INTO scan_state (agent, path, mtime, size) VALUES ('claude-code', '/tmp/a.jsonl', 0, 0), ('codex', '/tmp/b.jsonl', 0, 0)",
+      [],
+    );
+
+    // Act
+    migrate(db);
+
+    // Assert — claude data is gone (next run rescans with msg: keys)
+    const agents = db
+      .query<{ agent: string; n: number }, []>(
+        'SELECT agent, COUNT(*) AS n FROM usage_ledger GROUP BY agent',
+      )
+      .all();
+    expect(agents).toEqual([{ agent: 'codex', n: 1 }]);
+    const cursors = db
+      .query<{ agent: string }, []>('SELECT agent FROM scan_state')
+      .all();
+    expect(cursors).toEqual([{ agent: 'codex' }]);
+    db.close();
+  });
+});
+
 describe('005 quota sample identity upgrade', () => {
   test('a pre-004 ledger upgrades with its label-only history intact', async () => {
     // Arrange — build a v2 ledger by hand and give it a legacy sample

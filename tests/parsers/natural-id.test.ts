@@ -8,6 +8,7 @@ function usageRecord(overrides: Partial<ClaudeUsageRecord>): ClaudeUsageRecord {
   return {
     kind: 'usage',
     uuid: 'a1',
+    messageId: null,
     parentUuid: null,
     isSidechain: false,
     tsUtc: 1_785_578_405,
@@ -31,7 +32,18 @@ const context: NaturalIdContext = {
 };
 
 describe('buildNaturalId', () => {
-  test('uses the message uuid when present', () => {
+  test('prefers the API message id so block lines of one message collapse', () => {
+    // Arrange — two lines of the same assistant message differ in uuid
+    // but share message.id; both must map to the same natural id
+    const firstBlock = usageRecord({ uuid: 'a1', messageId: 'msg_001' });
+    const secondBlock = usageRecord({ uuid: 'a2', messageId: 'msg_001' });
+
+    // Act & Assert
+    expect(buildNaturalId(firstBlock, context)).toBe('msg:msg_001');
+    expect(buildNaturalId(secondBlock, context)).toBe('msg:msg_001');
+  });
+
+  test('falls back to the line uuid when there is no message id', () => {
     // Act & Assert
     expect(buildNaturalId(usageRecord({}), context)).toBe('a1');
   });
