@@ -10,7 +10,7 @@ enum StatusComposer {
     static let barHeight: CGFloat = 16
     static let defaultBudget: CGFloat = 336
     /// History spark track width (user-tuned).
-    static let sparkTrack: CGFloat = 60
+    static let sparkTrack: CGFloat = 45
     private static let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
     private static let gap: CGFloat = 6
 
