@@ -31,6 +31,7 @@ import type { ChartGlyphMode } from './components/daily-block-chart.ts';
 import type { ResourceState, TuiKeyEvent, TuiScreen } from './types.ts';
 import type { PromptListResult } from '@llmtally/core/report/prompts.ts';
 import type { PromptsViewModel } from './view-model/prompts.ts';
+import { isSwitchable } from './view-model/accounts.ts';
 import { clampCursor } from './views/accounts.ts';
 import { accountsTabView } from './views/accounts.ts';
 import { agentsTabView, modelsTabView } from './views/breakdown.ts';
@@ -288,6 +289,12 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       return true;
     }
     if (key.name === 'd') {
+      // detach is a codex-only, destructive-adjacent action: firing it
+      // from a Claude row logged out live codex by surprise (audit
+      // GK-38). The cursor names the target; require a codex row.
+      if (selectedRow()?.agent !== 'codex') {
+        return true;
+      }
       controller.setOverlay({
         kind: 'confirm',
         topic: 'account-detach',
@@ -307,7 +314,11 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
     }
     const row = selectedRow();
     if ((key.name === 's' || key.name === 'return' || key.name === 'enter') && row !== undefined) {
-      if (row.accountId === null || row.isActive) {
+      // gate on switchable agents: opening a switch confirm on a
+      // grok/cline/antigravity row would fall through to the Claude
+      // switch path and could move the WRONG product's login
+      // (audit GK-26)
+      if (row.accountId === null || row.isActive || !isSwitchable(row)) {
         return true;
       }
       controller.setOverlay({
@@ -334,9 +345,18 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
     return false;
   }
 
+  /**
+   * Production OpenTUI normalizes a shifted letter to lowercase name +
+   * shift=true; test fakes historically sent the literal capital. Both
+   * must reach the Doctor actions (audit CX-21).
+   */
+  function isShifted(key: TuiKeyEvent, letter: string): boolean {
+    return key.name === letter.toUpperCase() || (key.name === letter && key.shift);
+  }
+
   /** Returns true when the Doctor tab consumed the key. */
   function handleDoctorKey(key: TuiKeyEvent): boolean {
-    if (key.name === 'D') {
+    if (isShifted(key, 'd')) {
       controller.setOverlay({
         kind: 'confirm',
         topic: 'daemon-install',
@@ -346,7 +366,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       });
       return true;
     }
-    if (key.name === 'U') {
+    if (isShifted(key, 'u')) {
       controller.setOverlay({
         kind: 'confirm',
         topic: 'daemon-uninstall',
@@ -356,7 +376,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       });
       return true;
     }
-    if (key.name === 'V') {
+    if (isShifted(key, 'v')) {
       controller.setOverlay({
         kind: 'confirm',
         topic: 'ledger-compact',

@@ -290,8 +290,15 @@ export class TuiController {
         }
         return;
       case 'toggle-help': {
-        // Esc only closes; ? toggles
-        const open = this.state.overlay?.kind === 'help';
+        // Esc only closes; ? toggles. But ? must never REPLACE a
+        // standing confirm/input/picker — swapping a destructive
+        // confirmation for the help card silently dropped the action
+        // (audit GK-23)
+        const overlayKind = this.state.overlay?.kind;
+        if (overlayKind !== undefined && overlayKind !== 'help' && key.name !== 'escape') {
+          return;
+        }
+        const open = overlayKind === 'help';
         this.setOverlay(key.name === 'escape' || open ? null : HELP_OVERLAY);
         return;
       }

@@ -1,7 +1,10 @@
 # @llmtally/app
 
-The macOS menubar app. Scaffold phase — the Swift shell, the Bun
-sidecar seam, and the app icon exist; the real popover UI comes next.
+The macOS menubar app — local preview stage. The Swift shell renders a
+descriptor-driven status item, an Overview/Provider popover with account
+switching, a Builder + Settings window, and threshold notifications; a
+Bun sidecar speaks JSON-RPC to @llmtally/core. Not yet notarized — the
+TUI remains the canonical surface for investigation.
 
 Design canon: `local_docs/mac_menubar_app_init/` (01_plan §9 fixes the
 architecture: SwiftUI + AppKit `NSStatusItem` + Bun sidecar).

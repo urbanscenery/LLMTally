@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Appearance presets — the six editor themes fixed in
-/// design-tokens.json v1.1.0, plus the system default. A theme swaps
+/// Appearance presets — fifteen presets (System plus seven light and
+/// seven dark editor palettes, keyword-color accents). A theme swaps
 /// accent and state colors; the meaning channels (glyph + text) never
 /// depend on it.
 struct Theme {

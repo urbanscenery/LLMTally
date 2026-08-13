@@ -29,6 +29,8 @@ describe('renderDaemonPlist', () => {
     expect(plist).toContain('<string>--db</string>');
     expect(plist).not.toContain('sh -c');
     expect(plist).toContain('<key>Umask</key>');
+    // launchd's schema types Umask as integer; 63 == 0o77 (audit GK-8)
+    expect(plist).toContain('<integer>63</integer>');
     expect(plist).not.toContain('RunAtLoad');
   });
 

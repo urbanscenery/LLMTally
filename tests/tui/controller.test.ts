@@ -122,3 +122,37 @@ describe('TuiController', () => {
     expect(seen).toEqual(['accounts', 'models']);
   });
 });
+
+describe('help vs standing overlays (GK-23)', () => {
+  test('? does not replace a confirm overlay with the help card', () => {
+    const controller = makeController(new FakeScreen());
+    controller.start();
+    controller.setOverlay({
+      kind: 'confirm',
+      topic: 'daemon-install',
+      title: 'Background collection',
+      message: 'Install?',
+      payload: '',
+    });
+
+    controller.handleKey({ name: '?', ctrl: false, shift: true });
+
+    expect(controller.getState().overlay?.kind).toBe('confirm');
+  });
+
+  test('Esc still closes the confirm', () => {
+    const controller = makeController(new FakeScreen());
+    controller.start();
+    controller.setOverlay({
+      kind: 'confirm',
+      topic: 'daemon-install',
+      title: 'Background collection',
+      message: 'Install?',
+      payload: '',
+    });
+
+    controller.handleKey({ name: 'escape', ctrl: false, shift: false });
+
+    expect(controller.getState().overlay).toBeNull();
+  });
+});

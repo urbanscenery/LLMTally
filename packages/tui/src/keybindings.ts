@@ -179,7 +179,7 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
     priority: 26,
   },
   {
-    matches: [{ name: 'D' }],
+    matches: [{ name: 'D' }, { name: 'd', shift: true }],
     action: 'noop',
     scope: ['doctor'],
     group: 'Data',
@@ -188,7 +188,7 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
     priority: 24,
   },
   {
-    matches: [{ name: 'U' }],
+    matches: [{ name: 'U' }, { name: 'u', shift: true }],
     action: 'noop',
     scope: ['doctor'],
     group: 'Data',
@@ -197,7 +197,7 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
     priority: 23,
   },
   {
-    matches: [{ name: 'V' }],
+    matches: [{ name: 'V' }, { name: 'v', shift: true }],
     action: 'noop',
     scope: ['doctor'],
     group: 'Data',

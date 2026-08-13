@@ -486,7 +486,7 @@ private struct AppearancePane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Appearance").font(.title2.weight(.semibold))
-            Text("The six most-used editor palettes (design tokens v1.1.0). Meaning channels never depend on color alone.")
+            Text("Fifteen presets: System plus seven light and seven dark editor palettes. Meaning channels never depend on color alone.")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
             ForEach(Theme.presets, id: \.id) { theme in

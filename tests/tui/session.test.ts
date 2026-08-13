@@ -294,6 +294,25 @@ describe('models drill-down and search', () => {
     expect(frame).toContain('model-a');
   });
 
+  test('a normalized shift+d reaches the Doctor daemon action', async () => {
+    // Arrange — production OpenTUI reports Shift-D as name:'d',
+    // shift:true; the literal 'D' never arrives from a real terminal
+    const { screen, session, done } = await start();
+
+    // Act — Doctor tab, then the normalized keypress
+    screen.pressKey('6');
+    await settle(80);
+    screen.pressKey('d', { shift: true });
+    await settle(40);
+    const frame = screen.frames.at(-1)?.join('\n') ?? '';
+    session.stop();
+    await done;
+
+    // Assert — the install confirmation opened
+    expect(frame).toContain('Background collection');
+    expect(frame).toContain('hourly scans');
+  });
+
   test('entering the search tab does not list every prompt', async () => {
     // Arrange
     const promptCalls: string[] = [];

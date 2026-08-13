@@ -4,7 +4,8 @@
 
 LLMTally는 로컬에서 사용하는 AI 코딩 에이전트(Claude Code, Codex CLI, OpenCode, Cline, Antigravity, Grok Build)의
 세션 로그를 스캔하여 **per-prompt 사용 원장**을 만들고, **잔여 사용량과 멀티 계정을 터미널 대시보드(TUI)에서
-모니터링**하는 도구입니다. (macOS 메뉴바 앱은 로드맵에 있으며 아직 구현되지 않았습니다.)
+모니터링**하는 도구입니다. macOS 메뉴바 앱은 로컬 프리뷰 단계로 동작합니다
+(정식 배포 서명 전 — 조회는 TUI가 정본입니다).
 
 ## 핵심 기능
 
@@ -19,7 +20,7 @@ LLMTally는 로컬에서 사용하는 AI 코딩 에이전트(Claude Code, Codex 
 ```
 [에이전트 로컬 로그 6종] --(최초 풀스캔 + launchd 주기 증분 수집)--> [SQLite 원장]
                                                                      ├── TUI (조회 직전 증분 수집)
-                                                                     └── macOS 메뉴바 앱 (예정)
+                                                                     └── macOS 메뉴바 앱 (로컬 프리뷰)
 ```
 
 - 비용은 저장하지 않고 조회 시점에 가격표(LiteLLM/models.dev/OpenRouter)를 곱해 계산

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 import { installDaemon, uninstallDaemon } from '@llmtally/core/daemon/service.ts';
 import { compactLedger } from '@llmtally/core/db/maintenance.ts';
@@ -17,6 +18,7 @@ import {
   switchOpencodeAccount,
 } from '@llmtally/core/accounts/opencode.ts';
 import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
+import { defaultGrokAuthPath, readGrokIdentities } from '@llmtally/core/accounts/grok.ts';
 import { createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import { captureActiveAccount, switchAccount } from '@llmtally/core/accounts/switch.ts';
 import { AccountVault } from '@llmtally/core/accounts/vault.ts';
@@ -56,7 +58,12 @@ export interface TuiDataSource {
   detachCodexAccount(): Promise<string>;
 }
 
-/** Identity of the live opencode credential set; null when none. */
+/** The one live grok identity; null when none or ambiguous. */
+function singleGrokIdentity(): string | null {
+  const identities = readGrokIdentities(defaultGrokAuthPath(homedir()));
+  return identities.length === 1 ? (identities[0]?.accountId ?? null) : null;
+}
+
 function readLiveOpencodeId(): string | null {
   try {
     const text = readFileSync(defaultOpencodeAuthPath(), 'utf8');
@@ -107,6 +114,9 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
           codex: readCodexAuth()?.accountId ?? null,
           antigravity: resolveActiveAccount(defaultAntigravityStoreDir())?.email ?? null,
           opencode: readLiveOpencodeId(),
+          // one live grok identity is unambiguous; two logins at once
+          // means nobody can say which is "active" — show none
+          grok: singleGrokIdentity(),
         },
       };
     },
@@ -177,6 +187,12 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
           ...result.warnings,
         ].join('\n');
       }
+      if (agent !== 'claude-code') {
+        // never fall through to the Claude switch for an agent whose
+        // switch mechanics do not exist — a same-named Claude account
+        // could be moved instead (audit GK-26)
+        throw new Error(`switch is not supported for agent: ${agent}`);
+      }
       const result = await switchAccount(accountId, {
         vault,
         activeStore: createActiveCredentialStore(),
@@ -209,7 +225,13 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
     },
 
     async installDaemon(): Promise<string> {
-      const result = installDaemon({ ledgerPath: options.databasePath, allowDevCheckout: true });
+      // a dev checkout's absolute worker path in the plist becomes an
+      // hourly crash loop the moment the tree moves (audit GK-10) —
+      // opt in explicitly instead of always allowing it
+      const result = installDaemon({
+        ledgerPath: options.databasePath,
+        allowDevCheckout: process.env.LLMTALLY_ALLOW_DEV_DAEMON === '1',
+      });
       if (!result.ok) {
         throw new Error(result.message);
       }

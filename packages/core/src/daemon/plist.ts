@@ -68,7 +68,7 @@ ${args}
   <key>ProcessType</key>
   <string>Background</string>
   <key>Umask</key>
-  <string>077</string>
+  <integer>63</integer>
   <key>StandardOutPath</key>
   <string>${escapeXml(join(config.logDirectory, 'scan.log'))}</string>
   <key>StandardErrorPath</key>

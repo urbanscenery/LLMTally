@@ -10,5 +10,5 @@
   "dependencies": {
     "@llmtally/core": "workspace:*"
   },
-  "description": "macOS menubar app for llmtally (not implemented yet)"
+  "description": "macOS menubar app for llmtally (local preview; Swift shell + Bun sidecar)"
 }

@@ -81,8 +81,18 @@ export class TabLoader {
     }
     if (tab === 'search') {
       // the session drives searching; entering the tab must not list
-      // every prompt in the ledger just because nothing was typed yet
-      return toPromptsViewModel({ rows: [], truncated: false, warnings: [] }, '');
+      // every prompt in the ledger just because nothing was typed yet.
+      // But when a query IS standing, a refresh-driven reload must
+      // re-run it — replacing held results with an empty list made
+      // every auto-refresh wipe the search (audit CX-22/GK-22)
+      const query = this.controller.getState().searchQuery.trim();
+      if (query === '') {
+        return toPromptsViewModel({ rows: [], truncated: false, warnings: [] }, '');
+      }
+      return toPromptsViewModel(
+        await this.dataSource.loadPrompts({ model: null, search: query }),
+        query,
+      );
     }
     if (tab === 'doctor') {
       return toDoctorViewModel(await this.dataSource.loadDoctorChecks());

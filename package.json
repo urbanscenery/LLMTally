@@ -1,7 +1,7 @@
 {
   "name": "llmtally",
   "version": "0.1.0",
-  "description": "Per-prompt usage ledger and quota monitor for local AI coding agents (Claude Code, Codex CLI, OpenCode). Requires the Bun runtime.",
+  "description": "Per-prompt usage ledger and quota monitor for local AI coding agents (Claude Code, Codex CLI, OpenCode, Cline, Antigravity, Grok Build). Requires the Bun runtime.",
   "type": "module",
   "license": "MIT",
   "repository": {
