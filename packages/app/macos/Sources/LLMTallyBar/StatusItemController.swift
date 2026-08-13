@@ -19,7 +19,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     /// grow to the screen's visible frame and scroll past it, so that
     /// is the clamp. The last granted height is remembered so a reopen
     /// starts at the size the cached content will need.
-    private static let panelWidth: CGFloat = 400
+    // keep in lockstep with OverviewView's frame(width:)
+    private static let panelWidth: CGFloat = 330
     private static let minPanelHeight: CGFloat = 320
     private static let panelScreenMargin: CGFloat = 24
     private static let panelHeightDefaultsKey = "panelHeight"

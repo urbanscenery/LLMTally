@@ -48,7 +48,8 @@ struct OverviewView: View {
             Divider()
             footer
         }
-        .frame(width: 400)
+        // keep in lockstep with StatusItemController.panelWidth
+        .frame(width: 330)
         // content-fit panel: the scroll content reports its natural
         // height; the controller sizes the panel to it (clamped to the
         // screen), so scrolling only starts past the screen's work area
@@ -462,13 +463,11 @@ struct AgentRow: View {
                 Text("no windows reported").font(.caption2).foregroundStyle(.secondary)
                     .padding(.leading, 32)
             } else {
-                HStack(spacing: 10) {
-                    ForEach(item.snapshot.windows.prefix(3)) { window in
+                // one full-width rail per line: rows read the same
+                // whether a provider reports one window or four
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(item.snapshot.windows) { window in
                         WindowRail(window: window)
-                    }
-                    if item.snapshot.windows.count > 3 {
-                        Text("+\(item.snapshot.windows.count - 3)")
-                            .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 .padding(.leading, 32)
@@ -993,7 +992,8 @@ struct SwitchSheet: View {
             }
         }
         .padding(16)
-        .frame(width: 340)
+        // narrower than the 320pt panel that presents it
+        .frame(width: 300)
         .interactiveDismissDisabled(phase == .inFlight)
     }
 
