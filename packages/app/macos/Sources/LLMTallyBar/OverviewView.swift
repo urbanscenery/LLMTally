@@ -146,10 +146,16 @@ struct OverviewView: View {
         ScrollView {
             VStack(spacing: 0) {
                 if let headline = model.headline() {
-                    HeadlineView(item: headline, privacy: privacy,
-                                 alias: aliases[headline.snapshot.agent] ?? "P?")
-                        .contentShape(Rectangle())
-                        .onTapGesture { selectedAgent = headline.snapshot.agent }
+                    // quiet = nothing needs attention — a plain one-liner,
+                    // not a card that singles out one account
+                    if headline.rank == .quiet {
+                        AllClearLine()
+                    } else {
+                        HeadlineView(item: headline, privacy: privacy,
+                                     alias: aliases[headline.snapshot.agent] ?? "P?")
+                            .contentShape(Rectangle())
+                            .onTapGesture { selectedAgent = headline.snapshot.agent }
+                    }
                     Divider()
                 }
                 ForEach(Array(model.agentGroups().enumerated()), id: \.element.agent) { index, group in
@@ -210,6 +216,22 @@ struct SwitchIntent: Identifiable {
 }
 
 // MARK: - Headline
+
+/// The quiet-state headline: one line, no account details.
+struct AllClearLine: View {
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle().fill(Theme.current().accent).frame(width: 6, height: 6)
+            Text("All clear")
+                .font(.caption.weight(.semibold))
+                .textCase(.uppercase)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+}
 
 struct HeadlineView: View {
     let item: AgentAttention
