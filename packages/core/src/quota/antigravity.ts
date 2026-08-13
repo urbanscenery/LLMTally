@@ -507,8 +507,22 @@ export async function readAntigravityQuota(options: {
     });
   }
   if (now - cached.observedAtUtc > CACHE_STALE_SECONDS) {
+    // The cache is the antigravity-usage CLI's frozen state from the
+    // last time THAT tool ran — possibly weeks ago. Serving it as the
+    // current reading resurrects ancient percentages (a 42-day-old
+    // "99% used" fired critical alerts on every transient timeout).
+    // Return no windows instead so the caller's own stored last-good
+    // — usually minutes old — stands in.
     const hours = Math.floor((now - cached.observedAtUtc) / 3600);
-    warnings.push(`cached antigravity reading is ${hours}h old (not live)`);
+    return makeQuotaSnapshot({
+      agent: ANTIGRAVITY_AGENT,
+      accountId: account.email,
+      account: account.email,
+      source: 'third_party_cache',
+      observedAtUtc: now,
+      windows: [],
+      warnings: [...warnings, `cached antigravity reading is ${hours}h old — ignored`],
+    });
   }
   return makeQuotaSnapshot({
     agent: ANTIGRAVITY_AGENT,

@@ -345,8 +345,10 @@ describe('readAntigravityQuota', () => {
     expect(snapshot.warnings.some((warning) => warning.includes('token refresh failed'))).toBe(true);
   });
 
-  test('a stale cache adds an age warning', async () => {
-    // Arrange — cache is 26 hours old
+  test('a stale cache is dropped, not served as current', async () => {
+    // Arrange — cache is 26 hours old: the antigravity-usage CLI's
+    // frozen state, not a reading. Serving it resurrected a 42-day-old
+    // "99% used" on every transient timeout.
     const cachedAt = new Date((NOW - 26 * 3600) * 1000).toISOString();
     const root = writeStore({
       accounts: [{ email: 'a@test.dev', cache: cacheFixture(cachedAt) }],
@@ -355,7 +357,8 @@ describe('readAntigravityQuota', () => {
     // Act
     const snapshot = await readAntigravityQuota({ storeDir: root, nowUtc: NOW, allowRefresh: false });
 
-    // Assert
+    // Assert — no windows (stored last-good takes over downstream)
+    expect(snapshot.windows).toHaveLength(0);
     expect(snapshot.warnings.some((warning) => warning.includes('26h old'))).toBe(true);
   });
 
