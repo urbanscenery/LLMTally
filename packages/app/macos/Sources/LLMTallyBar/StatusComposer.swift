@@ -216,72 +216,24 @@ enum StatusComposer {
         slash.stroke()
     }
 
-    /// Monochrome provider glyphs — the same placeholder shapes as
-    /// ProviderGlyph (SwiftUI) and prototypes/icons.js, in labelColor.
-    /// Coordinates are in a 16-unit box, drawn bottom-up (non-flipped).
+    /// Monochrome provider glyphs — traced brand logomarks from
+    /// BrandGlyphs (shared with ProviderGlyph), filled in labelColor.
     private static func drawGlyph(agent: String, at originX: CGFloat) {
         let scale: CGFloat = barHeight / 16
         NSColor.labelColor.setStroke()
         NSColor.labelColor.setFill()
 
         // vendors with a real logomark render the traced brand path
-        // (shared with ProviderGlyph); the rest keep drawn shapes
+        // (shared with ProviderGlyph); unknown agents fall back to a
+        // neutral circle
         if let commands = brandGlyphCommands(agent: agent) {
             brandGlyphBezier(commands, originX: originX, scale: barHeight / 24).fill()
             return
         }
-
-        func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
-            // flip y: source coordinates are top-down like the SwiftUI Canvas
-            NSPoint(x: originX + x * scale, y: (16 - y) * scale)
-        }
-        let path = NSBezierPath()
+        let path = NSBezierPath(ovalIn: NSRect(
+            x: originX + 2.4 * scale, y: 2.4 * scale,
+            width: 11.2 * scale, height: 11.2 * scale))
         path.lineWidth = 1.4
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
-        func line(_ x1: CGFloat, _ y1: CGFloat, _ x2: CGFloat, _ y2: CGFloat) {
-            path.move(to: point(x1, y1))
-            path.line(to: point(x2, y2))
-        }
-        func circle(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, into target: NSBezierPath) {
-            target.appendOval(in: NSRect(
-                x: originX + x * scale, y: (16 - y - h) * scale,
-                width: w * scale, height: h * scale))
-        }
-
-        switch agent {
-        case "codex":
-            let center = NSPoint(x: originX + 8 * scale, y: 8 * scale)
-            for step in 0..<3 {
-                let stadium = NSBezierPath(
-                    roundedRect: NSRect(x: originX + 5.3 * scale, y: 1.7 * scale,
-                                        width: 5.4 * scale, height: 12.6 * scale),
-                    xRadius: 2.7 * scale, yRadius: 2.7 * scale)
-                var transform = AffineTransform(translationByX: center.x, byY: center.y)
-                transform.rotate(byRadians: CGFloat(step) * .pi / 3)
-                transform.translate(x: -center.x, y: -center.y)
-                stadium.transform(using: transform)
-                stadium.lineWidth = 1.2
-                path.append(stadium)
-            }
-        case "cline":
-            path.append(NSBezierPath(
-                roundedRect: NSRect(x: originX + 2.6 * scale, y: (16 - 13.4) * scale,
-                                    width: 10.8 * scale, height: 8 * scale),
-                xRadius: 2 * scale, yRadius: 2 * scale))
-            line(8, 5.4, 8, 3.5)
-            circle(7.1, 1.5, 1.8, 1.8, into: path)
-            let eyes = NSBezierPath()
-            circle(5, 8.4, 2, 2, into: eyes)
-            circle(9, 8.4, 2, 2, into: eyes)
-            eyes.fill()
-        case "grok":
-            line(13.2, 2.2, 4, 13.8)
-            line(8.6, 7.9, 3.4, 2.2)
-            line(9.9, 10.9, 13.2, 13.8)
-        default:
-            circle(2.4, 2.4, 11.2, 11.2, into: path)
-        }
         path.stroke()
     }
 }

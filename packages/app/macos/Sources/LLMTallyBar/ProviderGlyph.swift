@@ -2,9 +2,9 @@ import SwiftUI
 import LLMTallyKit
 
 /// Monochrome provider identity (03_design_spec §7.2): every glyph is
-/// drawn in currentColor, never in a provider brand color. These are
-/// the same placeholder shapes as prototypes/icons.js; production
-/// swaps in licensed monochrome vendor assets behind the same view.
+/// drawn in currentColor, never in a provider brand color. The shapes
+/// are traced vendor logomarks from BrandGlyphs — the exact paths the
+/// status item's composer renders, so the two surfaces cannot drift.
 struct ProviderGlyph: View {
     let agent: String
     var size: CGFloat = 14
@@ -12,57 +12,18 @@ struct ProviderGlyph: View {
     var body: some View {
         Canvas { context, canvasSize in
             let scale = min(canvasSize.width, canvasSize.height) / 16
-            let style = StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
-            var strokes = Path()
-            var fills = Path()
-
-            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-                CGPoint(x: x * scale, y: y * scale)
-            }
-            func line(_ x1: CGFloat, _ y1: CGFloat, _ x2: CGFloat, _ y2: CGFloat) {
-                strokes.move(to: point(x1, y1))
-                strokes.addLine(to: point(x2, y2))
-            }
-
-            // vendors with a real logomark render the traced brand
-            // path (shared with StatusComposer via BrandGlyphs)
             if let commands = brandGlyphCommands(agent: agent) {
                 let brand = brandGlyphPath(commands, scale: scale * 16 / 24)
                 context.fill(brand, with: .color(.primary), style: FillStyle(eoFill: true))
                 return
             }
-
-            switch agent {
-            case "codex":
-                let center = point(8, 8)
-                for step in 0..<3 {
-                    var stadium = Path()
-                    stadium.addRoundedRect(
-                        in: CGRect(x: 5.3 * scale, y: 1.7 * scale, width: 5.4 * scale, height: 12.6 * scale),
-                        cornerSize: CGSize(width: 2.7 * scale, height: 2.7 * scale))
-                    let rotation = CGAffineTransform(translationX: center.x, y: center.y)
-                        .rotated(by: CGFloat(step) * .pi / 3)
-                        .translatedBy(x: -center.x, y: -center.y)
-                    strokes.addPath(stadium.applying(rotation))
-                }
-            case "cline":
-                strokes.addRoundedRect(
-                    in: CGRect(x: 2.6 * scale, y: 5.4 * scale, width: 10.8 * scale, height: 8 * scale),
-                    cornerSize: CGSize(width: 2 * scale, height: 2 * scale))
-                line(8, 5.4, 8, 3.5)
-                strokes.addEllipse(in: CGRect(x: 7.1 * scale, y: 1.5 * scale, width: 1.8 * scale, height: 1.8 * scale))
-                fills.addEllipse(in: CGRect(x: 5 * scale, y: 8.4 * scale, width: 2 * scale, height: 2 * scale))
-                fills.addEllipse(in: CGRect(x: 9 * scale, y: 8.4 * scale, width: 2 * scale, height: 2 * scale))
-            case "grok":
-                line(13.2, 2.2, 4, 13.8)
-                line(8.6, 7.9, 3.4, 2.2)
-                line(9.9, 10.9, 13.2, 13.8)
-            default:
-                strokes.addEllipse(in: CGRect(x: 2.4 * scale, y: 2.4 * scale, width: 11.2 * scale, height: 11.2 * scale))
-            }
-
-            context.stroke(strokes, with: .color(.primary), style: style)
-            context.fill(fills, with: .color(.primary))
+            // unknown agent: neutral circle
+            var strokes = Path()
+            strokes.addEllipse(in: CGRect(
+                x: 2.4 * scale, y: 2.4 * scale,
+                width: 11.2 * scale, height: 11.2 * scale))
+            context.stroke(strokes, with: .color(.primary),
+                           style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
         }
         .frame(width: size, height: size)
     }
