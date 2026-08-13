@@ -50,7 +50,10 @@ final class SidecarClient {
     private var lastLaunchAt: Date?
     /// Consecutive request timeouts — a wedged helper answers nothing,
     /// so three strikes terminate it and let the restart path recover.
+    /// A batch expiring together counts once: five reads killed by one
+    /// slow scan are one silence, not five (audit grok C2-01).
     private var timeoutStrikes = 0
+    private var lastStrikeAt: Date?
     /// Last stderr line — surfaced with failures for diagnosis.
     private(set) var lastStderrLine: String?
 
@@ -222,6 +225,11 @@ final class SidecarClient {
                 // a helper that keeps timing out is wedged, and the
                 // serial pipe means everything behind it dies too —
                 // kill it so the backoff restart can recover (C1-04)
+                let now = Date()
+                if let last = self.lastStrikeAt, now.timeIntervalSince(last) < 2 {
+                    return
+                }
+                self.lastStrikeAt = now
                 self.timeoutStrikes += 1
                 if self.timeoutStrikes >= 3, self.running, let launch = self.launch {
                     NSLog("llmtally sidecar unresponsive (3 timeouts); terminating for restart")

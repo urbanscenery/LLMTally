@@ -186,16 +186,6 @@ function parseUtcTimestamp(value: unknown): number | null {
   return Math.floor(milliseconds / MILLISECONDS_PER_SECOND);
 }
 
-function asTokenCount(value: unknown): number | null {
-  if (value === undefined || value === null) {
-    return 0;
-  }
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    return null;
-  }
-  return value;
-}
-
 function asString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
@@ -210,3 +200,4 @@ function asObject(value: unknown): Record<string, unknown> | null {
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+import { asTokenCount } from '../shared.ts';

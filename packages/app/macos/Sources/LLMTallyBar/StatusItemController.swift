@@ -34,6 +34,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var lastActive: [String: String?] = [:]
     /// nil = no successful reading yet; an empty map is a real zero.
     private var lastTodayRows: [String: Int]?
+    /// One-shot: re-read after the first scan lands on an empty cache.
+    private var didRetryAfterFirstScan = false
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -262,9 +264,19 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         // serially, so the scan is queued AFTER the four reads above —
         // sending it first parked every read behind a multi-second scan
         // until the 20s deadline killed them (audit C1-01).
-        SidecarClient.shared.request("scan") { result in
-            if case .failure(let error) = result {
+        SidecarClient.shared.request("scan") { [weak self] result in
+            switch result {
+            case .failure(let error):
                 NSLog("llmtally scan tick failed: %@", error.localizedDescription)
+            case .success:
+                // first run: the reads above raced a ledger that did
+                // not exist yet — one follow-up read after the first
+                // successful scan beats waiting a full cadence tick
+                DispatchQueue.main.async {
+                    guard let self, self.lastQuota.isEmpty, !self.didRetryAfterFirstScan else { return }
+                    self.didRetryAfterFirstScan = true
+                    self.refreshStatusText()
+                }
             }
         }
 

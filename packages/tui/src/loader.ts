@@ -21,6 +21,8 @@ type TabData = NonNullable<TabResource['data']>;
  */
 export class TabLoader {
   private readonly inFlight = new Set<TuiTab>();
+  /** Tabs invalidated while their load was in flight — replayed after. */
+  private readonly reloadQueued = new Set<TuiTab>();
   /** Bumped after every successful scan; loads started before the bump are stale. */
   private scanEpoch = 0;
 
@@ -38,6 +40,11 @@ export class TabLoader {
   loadIfNeeded(tab: TuiTab): void {
     const resource = this.controller.getState()[tab];
     if (this.inFlight.has(tab) || resource.phase === 'loading') {
+      // an invalidation that lands mid-flight must not be dropped: the
+      // running load answers the PRE-mutation world (audit grok C2-07)
+      if (resource.invalidated) {
+        this.reloadQueued.add(tab);
+      }
       return;
     }
     if (resource.phase === 'ready' && !resource.invalidated) {
@@ -57,14 +64,26 @@ export class TabLoader {
         const queryMoved =
           queryAtStart !== null &&
           this.controller.getState().searchQuery.trim() !== queryAtStart;
-        const stale = this.scanEpoch !== epochAtStart || queryMoved;
-        this.commitResource(tab, {
-          phase: 'ready',
-          data,
-          error: null,
-          updatedAtUtc: this.nowUtc(),
-          invalidated: stale,
-        } as TabResource);
+        if (queryMoved) {
+          // never show query A's rows under query B's title: keep what
+          // is on screen, stay invalidated, and let the replay below
+          // re-run with the current query (audit codex C2-04)
+          const previous = this.controller.getState()[tab];
+          this.commitResource(tab, {
+            ...previous,
+            phase: previous.data === null ? 'idle' : 'ready',
+            invalidated: true,
+          } as TabResource);
+        } else {
+          const stale = this.scanEpoch !== epochAtStart || this.reloadQueued.has(tab);
+          this.commitResource(tab, {
+            phase: 'ready',
+            data,
+            error: null,
+            updatedAtUtc: this.nowUtc(),
+            invalidated: stale,
+          } as TabResource);
+        }
       })
       .catch((error: unknown) => {
         const previous = this.controller.getState()[tab];
@@ -79,7 +98,8 @@ export class TabLoader {
         const queryMoved =
           queryAtStart !== null &&
           this.controller.getState().searchQuery.trim() !== queryAtStart;
-        if (this.scanEpoch !== epochAtStart || queryMoved) {
+        const replay = this.reloadQueued.delete(tab);
+        if (this.scanEpoch !== epochAtStart || queryMoved || replay) {
           this.loadIfNeeded(tab);
         }
       });

@@ -5,6 +5,7 @@ import {
   firstVarint,
   hasUnusableVarint,
 } from './proto.ts';
+import { MAX_TOKENS_PER_EVENT } from '../shared.ts';
 
 export const ANTIGRAVITY_AGENT = 'antigravity-cli';
 export const ANTIGRAVITY_PROVIDER = 'google';
@@ -67,6 +68,12 @@ export function parseGenMetadataBlob(blob: Uint8Array): ParsedGenMetadata {
   const cacheRead = firstVarint(usage, 5) ?? 0;
   const outputTokens = firstVarint(usage, 9) ?? 0;
   const reasoningTokens = firstVarint(usage, 10) ?? 0;
+  // the shared per-event token cap applies here too: a corrupt varint
+  // below 2^53 would still poison SQL SUM exactness (audit C2-03)
+  if ([fixedInput, newInput, cacheRead, outputTokens, reasoningTokens]
+      .some((count) => count > MAX_TOKENS_PER_EVENT)) {
+    return { kind: 'invalid', reason: 'usage field value exceeds the per-event token cap' };
+  }
   if (fixedInput + newInput + cacheRead + outputTokens + reasoningTokens === 0) {
     return { kind: 'skipped' };
   }

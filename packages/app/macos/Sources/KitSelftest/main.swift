@@ -459,13 +459,19 @@ do {
         print("FAIL - cost history did not render a spark")
     }
 
-    // 5h/24h ranges ride hour buckets; line presentation carries through
+    // 5h/24h ranges ride hour buckets; line presentation carries through.
+    // The renderer cuts by wall time now, so the fixture pins `now` to
+    // the evening of its own fixed day.
+    let hourFormatter = DateFormatter()
+    hourFormatter.locale = Locale(identifier: "en_US_POSIX")
+    hourFormatter.dateFormat = "yyyy-MM-dd HH:mm"
+    let fixtureNow = hourFormatter.date(from: "2026-08-13 23:30")!
     let hourly = (0..<24).map { bucket("2026-08-13 \(String(format: "%02d", $0)):00", tokens: Double($0 + 1), usd: nil) }
     let dayRange = renderStatusSegments(
         descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .consumedTokenHistory,
                                          presentation: "line", timeRange: "last_24h",
                                          providerIdentityPresentation: nil)],
-        quota: quota, buckets: buckets, activeAccounts: [:], hourBuckets: hourly)
+        quota: quota, buckets: buckets, activeAccounts: [:], hourBuckets: hourly, now: fixtureNow)
     if case .spark(let values, _, let isLine)? = dayRange.segments.first {
         expectEqual(values.count, 24, "last_24h consumes 24 hour buckets")
         expect(isLine, "line presentation renders a line")
@@ -477,7 +483,7 @@ do {
         descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .consumedTokenHistory,
                                          presentation: "bar", timeRange: "last_5h",
                                          providerIdentityPresentation: nil)],
-        quota: quota, buckets: buckets, activeAccounts: [:], hourBuckets: hourly)
+        quota: quota, buckets: buckets, activeAccounts: [:], hourBuckets: hourly, now: fixtureNow)
     if case .spark(let values, _, _)? = fiveHour.segments.first {
         expectEqual(values.count, 5, "last_5h consumes the last 5 hour buckets")
         expectEqual(values.last, 24, "and they are the most recent hours")

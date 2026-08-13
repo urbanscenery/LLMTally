@@ -220,7 +220,7 @@ export function detachCodexLogin(ports: {
   // moved bytes. A rotation landing between the compare above and the
   // rename shows up as a mismatch on the staged copy — restore it and
   // abort instead of deleting a login the vault never captured.
-  const staged = `${authPath}.llmtally-detach-${process.pid}`;
+  const staged = `${authPath}.llmtally-detach-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   renameSync(authPath, staged);
   if (readAuthFile(staged) !== stored) {
     if (readAuthFile(authPath) === null) {

@@ -123,32 +123,23 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
         ? context.activeAccountId
         : getVault().activeAccountId(agent);
     }
-    const liveCodex = readCodexAuth(options.codexAuthPath)?.accountId ?? null;
-    if (liveCodex !== null) {
-      active['codex'] = liveCodex;
-    }
-    // the same rule for every agent with a live store: the file the
-    // agent itself maintains beats a vault marker that only exists
-    // after an llmtally switch (audit C1-03)
-    const liveOpencode = readLiveOpencodeId(options.opencodeAuthPath ?? defaultOpencodeAuthPath());
-    if (liveOpencode !== null) {
-      active['opencode'] = liveOpencode;
-    }
+    // Live stores are AUTHORITATIVE for the agents that keep one: a
+    // logged-out or ambiguous live state must clear a stale vault
+    // marker, not survive behind it (audit grok C2-05). cline has no
+    // live identity store, so its vault marker stands.
+    active['codex'] = readCodexAuth(options.codexAuthPath)?.accountId ?? null;
+    active['opencode'] = readLiveOpencodeId(options.opencodeAuthPath ?? defaultOpencodeAuthPath());
     try {
       const antigravity = resolveActiveAccount(
         options.antigravityStoreDir ?? defaultAntigravityStoreDir(),
       );
-      if (antigravity !== null) {
-        active['antigravity'] = antigravity.email;
-      }
+      active['antigravity'] = antigravity?.email ?? null;
     } catch {
-      // no antigravity store is the common case, not an error
+      active['antigravity'] = null;
     }
     const grokIdentities = readGrokIdentities(options.grokAuthPath ?? defaultGrokAuthPath(homedir()));
-    if (grokIdentities.length === 1) {
-      // two simultaneous logins are ambiguous — show none rather than guess
-      active['grok'] = grokIdentities[0]?.accountId ?? null;
-    }
+    // two simultaneous logins are ambiguous — show none rather than guess
+    active['grok'] = grokIdentities.length === 1 ? (grokIdentities[0]?.accountId ?? null) : null;
     return active;
   });
 

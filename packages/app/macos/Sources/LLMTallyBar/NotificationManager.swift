@@ -49,14 +49,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func process(quota: [QuotaSnapshotDTO], privacy: Bool) {
-        let result = planNotifications(state: loadState(), quota: quota, privacy: privacy)
-
-        guard !result.notifications.isEmpty else {
-            // no crossings: the re-arm bookkeeping is still real state
-            saveState(result.state)
-            return
-        }
         guard canDeliver else {
+            let result = planNotifications(state: loadState(), quota: quota, privacy: privacy)
             saveState(result.state)
             for notification in result.notifications {
                 FileHandle.standardError.write(
@@ -64,16 +58,19 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             }
             return
         }
-        // deliver first, persist "already notified" only when delivery
-        // was actually possible: recording the episode while the user
-        // had notifications denied would mute it forever, even after
-        // they enable notifications (audit C1-02)
+        // authorization gates PLANNING, not just delivery: consuming an
+        // episode while notifications are denied would mute it forever,
+        // and persisting re-arm removals alone is not separable from
+        // the planner's state (audit C1-02 / C2-09). While denied, the
+        // whole state machine pauses; it resumes from the old state the
+        // moment authorization appears.
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             guard settings.authorizationStatus == .authorized ||
                   settings.authorizationStatus == .provisional else {
-                NSLog("llmtally: notifications not authorized; keeping episodes armed")
+                NSLog("llmtally: notifications not authorized; planner paused, episodes stay armed")
                 return
             }
+            let result = planNotifications(state: self.loadState(), quota: quota, privacy: privacy)
             self.saveState(result.state)
             for notification in result.notifications {
                 let content = UNMutableNotificationContent()

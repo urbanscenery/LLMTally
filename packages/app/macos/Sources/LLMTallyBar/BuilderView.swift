@@ -617,13 +617,23 @@ struct BuilderView: View {
                 current[index].scope = .provider(provider)
             }
             // items added before any quota arrived carry an empty
-            // window id — fill it now that the catalog is real
+            // window id — fill it now that the catalog is real. When
+            // the pinned provider never showed up (the pre-data
+            // "claude-code" guess), repoint to a provider that DID
+            // (audit grok C2-15)
             for index in current.indices {
                 if case .pin(let provider, let windowId) = current[index].binding,
                    windowId.isEmpty {
                     let fresh = firstWindowId(of: provider)
                     if !fresh.isEmpty {
                         current[index].binding = .pin(provider: provider, nativeWindowId: fresh)
+                    } else if !catalogProviders().contains(provider) {
+                        let fallback = firstProvider()
+                        let window = firstWindowId(of: fallback)
+                        if !window.isEmpty {
+                            current[index].binding = .pin(provider: fallback, nativeWindowId: window)
+                            current[index].scope = .provider(fallback)
+                        }
                     }
                 }
             }

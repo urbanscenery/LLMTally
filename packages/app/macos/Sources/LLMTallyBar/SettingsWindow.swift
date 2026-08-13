@@ -319,6 +319,11 @@ private struct CostPane: View {
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(20)
+        // the status item's cost spark reads this mode — re-render now,
+        // not on the next fetch (audit grok C2-13)
+        .onChange(of: costMode) { _ in
+            NotificationCenter.default.post(name: .llmtallyDescriptorsChanged, object: nil)
+        }
     }
 }
 
@@ -419,7 +424,7 @@ private struct AccountsPane: View {
                     ForEach(Array(quota.enumerated()), id: \.offset) { _, snapshot in
                         HStack {
                             Text(PrivacySetting.enabled
-                                 ? "\(agentDisplayName(snapshot.agent)) · Account hidden"
+                                 ? "\(privacyAliases(for: quota)[snapshot.agent] ?? "P?") · Account hidden"
                                  : "\(agentDisplayName(snapshot.agent)) · \(snapshot.account ?? snapshot.accountId ?? "?")")
                                 .font(.caption).lineLimit(1)
                             Spacer()

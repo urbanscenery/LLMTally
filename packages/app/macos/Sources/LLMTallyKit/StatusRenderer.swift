@@ -387,16 +387,20 @@ public func renderStatusSegments(
             // buckets, 7d rides day buckets — never resampled guesses
             let source: [ReportBucketDTO]
             let rangeLabel: String
+            // buckets exist only for hours WITH usage, so a plain
+            // suffix(N) on a sparse ledger reaches days back while
+            // claiming a short range (audit C2-13/C2-10): cut by the
+            // bucket's own local-time key instead
             switch descriptor.timeRange {
             case "last_5h":
-                source = Array(hourBuckets.suffix(5)); rangeLabel = "5h"
+                source = bucketsWithin(hourBuckets, hours: 5, now: now); rangeLabel = "5h"
             case "last_24h":
-                source = Array(hourBuckets.suffix(24)); rangeLabel = "24h"
+                source = bucketsWithin(hourBuckets, hours: 24, now: now); rangeLabel = "24h"
             default:
                 // 7d prefers hour grain (~168 points) so a longer range
                 // reads denser in the same fixed track width
                 source = hourBuckets.count >= 8
-                    ? Array(hourBuckets.suffix(168))
+                    ? bucketsWithin(hourBuckets, hours: 7 * 24, now: now)
                     : recentBuckets
                 rangeLabel = "7d"
             }
@@ -471,6 +475,21 @@ public func renderStatusSegments(
     }
     return SegmentRendering(segments: segments, metrics: metrics,
                             tooltip: tooltip.joined(separator: "\n"))
+}
+
+
+/// Hour buckets whose local-time key falls inside the trailing window.
+/// Keys are `yyyy-MM-dd HH:00` in the machine's timezone (report layer
+/// buckets via SQLite localtime).
+func bucketsWithin(_ buckets: [ReportBucketDTO], hours: Int, now: Date) -> [ReportBucketDTO] {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd HH:mm"
+    let cutoff = now.addingTimeInterval(-Double(hours) * 3600)
+    return buckets.filter { bucket in
+        guard let date = formatter.date(from: bucket.key) else { return false }
+        return date >= cutoff
+    }
 }
 
 /// 1st window (required) + optional 2nd window. The legacy fixed pair

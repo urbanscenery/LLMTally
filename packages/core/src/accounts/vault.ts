@@ -445,9 +445,11 @@ export class AccountVault {
     // unlocked read-modify-write here could resurrect the account by
     // racing a CAS that re-writes the registry from its earlier read
     this.#requireMutationLock(() => {
+      // registry first: a corrupt registry must abort BEFORE the only
+      // copy of the secret is destroyed (audit codex C2-05)
+      const registry = this.#readRegistry();
       this.#keychain.remove(VAULT_KEYCHAIN_SERVICE, this.#keychainAccount(agent, accountId));
       rmSync(this.#credentialPath(agent, accountId), { force: true });
-      const registry = this.#readRegistry();
       this.#retireLegacyFile(registry, agent, accountId);
       const { [keyFor(agent, accountId)]: removed, ...remaining } = registry.accounts;
       this.#writeRegistry({
@@ -685,8 +687,16 @@ export class AccountVault {
           `account registry entry "${rawKey}" is not an object (${this.#registryPath()}) — fix or move the file`,
         );
       }
+      // v2 stores identity in the entry — silently defaulting a
+      // missing agent/id would launder corruption into valid-looking
+      // rows the next mutation persists (audit codex C2-08). A v1 key
+      // IS the id, and v1 predates the agent field.
+      if (isV2 && (asString(entry.agent) === null || asString(entry.accountId) === null)) {
+        throw new VaultError(
+          `account registry entry "${rawKey}" is missing its agent/accountId (${this.#registryPath()}) — fix or move the file`,
+        );
+      }
       const agent = asString(entry.agent) ?? 'claude-code';
-      // v2 stores the id in the entry; a v1 key IS the id
       const accountId = (isV2 ? asString(entry.accountId) : rawKey) ?? rawKey;
       const addedAtUtc = entry.addedAtUtc;
       const refreshDeadAtUtc = entry.refreshDeadAtUtc;

@@ -739,7 +739,7 @@ struct ProviderDetailView: View {
                             Text("Model").gridColumnAlignment(.leading)
                             Text("Prompts").gridColumnAlignment(.trailing)
                             Text("Tokens").gridColumnAlignment(.trailing)
-                            Text("Actual").gridColumnAlignment(.trailing)
+                            Text(AppConfig.nominalMode ? "Nominal" : "Actual").gridColumnAlignment(.trailing)
                         }
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -915,13 +915,17 @@ struct SwitchSheet: View {
                 // raw error text can carry emails/account ids — privacy
                 // mode gets the fact of failure, not the details
                 Text(PrivacySetting.enabled
-                     ? "Switch failed and rolled back. Details hidden (Privacy mode)."
+                     ? "Switch failed. Details hidden (Privacy mode)."
                      : message)
                     .font(.caption)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.15)))
-                Text("The transaction rolled back; the live login is unchanged.")
+                // a timeout is NOT proof of rollback: the helper may
+                // still be mid-switch or already done (audit grok C2-08)
+                Text(message.contains("did not answer in time")
+                     ? "The request timed out — the switch may still have completed. Check the accounts list before retrying."
+                     : "The transaction rolled back; the live login is unchanged.")
                     .font(.caption2).foregroundStyle(.secondary)
                 HStack { Spacer(); Button("Close") { dismiss() } }
             }
@@ -940,7 +944,11 @@ struct SwitchSheet: View {
                 let pids = outcome.liveSessions ?? []
                 var message = "Switched. Now following \(intent.label)."
                 if !pids.isEmpty { message += " \(pids.count) running session(s) still hold the old token." }
-                if !warnings.isEmpty { message += "\n" + warnings.joined(separator: "\n") }
+                // core warnings can carry emails/paths — privacy keeps
+                // the outcome, not the identifiers (audit grok C2-12)
+                if !warnings.isEmpty && !PrivacySetting.enabled {
+                    message += "\n" + warnings.joined(separator: "\n")
+                }
                 phase = .done(message)
             case .failure(let error):
                 phase = .failed(error.localizedDescription)

@@ -27,16 +27,19 @@ export function asTokenCount(value: unknown): number | null {
   if (value === undefined || value === null) {
     return 0;
   }
-  if (!isNonNegativeInteger(value)) {
+  if (!isNonNegativeInteger(value) || value > MAX_TOKENS_PER_EVENT) {
     return null;
   }
   return value;
 }
 
 /**
- * Hard per-event cap: no real prompt reaches a trillion tokens, and a
- * cap this far below 2^53 keeps SQL SUMs inside exact float range even
- * across millions of rows (audit codex C1-12).
+ * Hard per-event cap for TOKEN COUNTS: no real prompt reaches a
+ * trillion tokens, and a cap this far below 2^53 keeps SQL SUMs inside
+ * exact float range even across millions of rows (audit codex C1-12).
+ * This cap must NOT leak into general integer validation — epoch
+ * milliseconds are ~1.78e12 and clamping them reset the OpenCode scan
+ * cursor on every cycle (audit C2-01/C2-02 regression).
  */
 export const MAX_TOKENS_PER_EVENT = 1_000_000_000_000;
 
@@ -45,7 +48,7 @@ export function isNonNegativeInteger(value: unknown): value is number {
     typeof value === 'number' &&
     Number.isInteger(value) &&
     value >= 0 &&
-    value <= MAX_TOKENS_PER_EVENT
+    value <= Number.MAX_SAFE_INTEGER
   );
 }
 

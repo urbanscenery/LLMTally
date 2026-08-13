@@ -319,7 +319,10 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       // grok/cline/antigravity row would fall through to the Claude
       // switch path and could move the WRONG product's login
       // (audit GK-26)
-      if (row.accountId === null || row.isActive || !isSwitchable(row)) {
+      // the hint line already refuses these; the key handler must
+      // agree or a dead login gets a confirm it can only fail
+      // (audit codex C2-15 / grok C2-14)
+      if (row.accountId === null || row.isActive || !isSwitchable(row) || row.refreshDead) {
         return true;
       }
       controller.setOverlay({
