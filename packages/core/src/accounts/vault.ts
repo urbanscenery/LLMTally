@@ -674,9 +674,11 @@ export class AccountVault {
     // not an object, or an entry that is not an object, means the file
     // was corrupted — normalizing it away and persisting on the next
     // mutation would erase real account metadata (audit codex C1-02)
-    if (parsed.accounts !== undefined && asObject(parsed.accounts) === null) {
+    if (asObject(parsed.accounts) === null) {
+      // present file, missing/broken accounts map = damage, not empty:
+      // every writer always serializes the key (audit codex C3-04)
       throw new VaultError(
-        `account registry "accounts" is not an object (${this.#registryPath()}) — fix or move the file`,
+        `account registry "accounts" is missing or not an object (${this.#registryPath()}) — fix or move the file`,
       );
     }
     const raw = asObject(parsed.accounts) ?? {};

@@ -70,7 +70,7 @@ export function parseGenMetadataBlob(blob: Uint8Array): ParsedGenMetadata {
   const reasoningTokens = firstVarint(usage, 10) ?? 0;
   // the shared per-event token cap applies here too: a corrupt varint
   // below 2^53 would still poison SQL SUM exactness (audit C2-03)
-  if ([fixedInput, newInput, cacheRead, outputTokens, reasoningTokens]
+  if ([fixedInput, newInput, fixedInput + newInput, cacheRead, outputTokens, reasoningTokens]
       .some((count) => count > MAX_TOKENS_PER_EVENT)) {
     return { kind: 'invalid', reason: 'usage field value exceeds the per-event token cap' };
   }

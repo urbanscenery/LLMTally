@@ -87,6 +87,15 @@ export class TabLoader {
       })
       .catch((error: unknown) => {
         const previous = this.controller.getState()[tab];
+        const queryMoved =
+          queryAtStart !== null &&
+          this.controller.getState().searchQuery.trim() !== queryAtStart;
+        if (queryMoved) {
+          // query A's failure must not stain query B's screen — keep
+          // the state and let the replay run B (audit codex C3-06)
+          this.commitResource(tab, { ...previous, invalidated: true });
+          return;
+        }
         this.commitResource(tab, {
           ...previous,
           phase: 'error',

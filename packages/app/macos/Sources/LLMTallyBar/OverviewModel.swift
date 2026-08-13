@@ -38,8 +38,15 @@ final class OverviewModel: ObservableObject {
     @Published var loadError: String?
     @Published var lastLoadedAt: Date?
 
+    /// A user Refresh during a background load must not be dropped —
+    /// it re-runs when the in-flight batch settles (audit grok C3-10).
+    private var pendingUserRefresh = false
+
     func load(refresh: Bool) {
-        guard !loading else { return }
+        guard !loading else {
+            if refresh { pendingUserRefresh = true }
+            return
+        }
         loading = true
         loadError = nil
 
@@ -82,6 +89,10 @@ final class OverviewModel: ObservableObject {
             }
             if let hourResult {
                 self.hourBuckets = hourResult
+            }
+            if self.pendingUserRefresh {
+                self.pendingUserRefresh = false
+                self.load(refresh: true)
             }
         }
     }

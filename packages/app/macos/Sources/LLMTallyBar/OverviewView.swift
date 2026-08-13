@@ -693,7 +693,7 @@ struct WeeklyChart: View {
         let tokens = formatTokens(last.tokens.inputTokens + last.tokens.outputTokens)
         return privacy
             ? "Weekly tokens, latest \(tokens). Cost hidden."
-            : "Weekly tokens and actual cost, latest \(tokens)."
+            : "Weekly tokens and \(AppConfig.nominalMode ? "nominal" : "actual") cost, latest \(tokens)."
     }
 }
 
@@ -810,9 +810,15 @@ struct ProviderDetailView: View {
                     Text("current").font(.caption2).foregroundStyle(.secondary)
                 } else if SWITCHABLE_AGENTS.contains(agent) && snapshot.accountId != nil {
                     StatusChip(item: item)
-                    Button("Switch") { onSwitch(snapshot) }
-                        .buttonStyle(HoverActionButtonStyle())
-                        .font(.caption)
+                    if item.rank == .authInvalid {
+                        // installing a refused login can only fail —
+                        // say so instead of opening a doomed sheet
+                        Text("re-login needed").font(.caption2).foregroundStyle(.orange)
+                    } else {
+                        Button("Switch") { onSwitch(snapshot) }
+                            .buttonStyle(HoverActionButtonStyle())
+                            .font(.caption)
+                    }
                 } else {
                     StatusChip(item: item)
                 }

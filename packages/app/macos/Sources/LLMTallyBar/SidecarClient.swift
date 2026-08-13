@@ -38,6 +38,9 @@ final class SidecarClient {
     }
 
     private static let requestTimeout: TimeInterval = 20
+    /// A first-run full scan legitimately outlives the read deadline —
+    /// it gets minutes, and its timeout never counts as a strike.
+    private static let scanTimeout: TimeInterval = 300
     private static let restartBackoff: TimeInterval = 5
 
     private let queue = DispatchQueue(label: "llmtally.sidecar")
@@ -207,6 +210,8 @@ final class SidecarClient {
             }
             data.append(0x0A)
             self.pending[id] = completion
+            let deadline = method == "scan" ? Self.scanTimeout : Self.requestTimeout
+            let countsAsStrike = method != "scan"
             do {
                 // throwing write: a broken pipe becomes a failed request
                 // (with SIGPIPE ignored in main.swift), not a dead app
@@ -219,12 +224,13 @@ final class SidecarClient {
             }
             // deadline: one unanswered request must not park the UI in
             // loading forever (and pending must never grow unbounded)
-            self.queue.asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
+            self.queue.asyncAfter(deadline: .now() + deadline) { [weak self] in
                 guard let self, let waiting = self.pending.removeValue(forKey: id) else { return }
                 waiting(.failure(SidecarError.timeout))
                 // a helper that keeps timing out is wedged, and the
                 // serial pipe means everything behind it dies too —
                 // kill it so the backoff restart can recover (C1-04)
+                guard countsAsStrike else { return }
                 let now = Date()
                 if let last = self.lastStrikeAt, now.timeIntervalSince(last) < 2 {
                     return

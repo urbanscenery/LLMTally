@@ -48,6 +48,11 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         completionHandler()
     }
 
+    /// Planning is serialized: two overlapping ticks would otherwise
+    /// read-modify-write the same persisted state in whichever order
+    /// their permission callbacks land (audit codex C3-03).
+    private let planQueue = DispatchQueue(label: "llmtally.notifications.plan")
+
     func process(quota: [QuotaSnapshotDTO], privacy: Bool) {
         guard canDeliver else {
             let result = planNotifications(state: loadState(), quota: quota, privacy: privacy)
@@ -70,6 +75,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 NSLog("llmtally: notifications not authorized; planner paused, episodes stay armed")
                 return
             }
+            self.planQueue.async {
             let result = planNotifications(state: self.loadState(), quota: quota, privacy: privacy)
             self.saveState(result.state)
             for notification in result.notifications {
@@ -84,6 +90,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                         NSLog("llmtally notification add failed: %@", String(describing: error))
                     }
                 }
+            }
             }
         }
     }

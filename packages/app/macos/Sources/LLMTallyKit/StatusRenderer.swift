@@ -401,7 +401,7 @@ public func renderStatusSegments(
                 // reads denser in the same fixed track width
                 source = hourBuckets.count >= 8
                     ? bucketsWithin(hourBuckets, hours: 7 * 24, now: now)
-                    : recentBuckets
+                    : dayBucketsWithin(recentBuckets, days: 7, now: now)
                 rangeLabel = "7d"
             }
             let values = source.map { bucket in
@@ -477,6 +477,20 @@ public func renderStatusSegments(
                             tooltip: tooltip.joined(separator: "\n"))
 }
 
+
+
+/// Day buckets (`yyyy-MM-dd` keys) inside the trailing local window —
+/// a sparse ledger's last 7 ROWS can be far older than 7 days.
+func dayBucketsWithin(_ buckets: [ReportBucketDTO], days: Int, now: Date) -> [ReportBucketDTO] {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    guard let cutoffDay = Calendar.current.date(byAdding: .day, value: -(days - 1), to: now) else {
+        return buckets
+    }
+    let cutoffKey = formatter.string(from: cutoffDay)
+    return buckets.filter { $0.key >= cutoffKey }
+}
 
 /// Hour buckets whose local-time key falls inside the trailing window.
 /// Keys are `yyyy-MM-dd HH:00` in the machine's timezone (report layer

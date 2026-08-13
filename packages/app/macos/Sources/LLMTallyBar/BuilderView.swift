@@ -384,7 +384,7 @@ struct BuilderView: View {
                     Text("7 days").tag("last_7d")
                 }
                 .pickerStyle(.segmented).labelsHidden()
-                Text("5h and 1 day ride hour buckets; 7 days rides daily buckets.")
+                Text("5h and 1 day ride hour buckets; 7 days rides hour buckets too when enough exist, else daily.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             section("Chart") {

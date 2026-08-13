@@ -215,10 +215,7 @@ export function renderBreakdownTable(
   // rows that were never drawn, and Enter opened an invisible model
   // (audit CX-23/GK-25)
   const capacity = Math.max(1, visibleRows);
-  const start = Math.min(
-    Math.max(0, cursor - capacity + 1),
-    Math.max(0, model.rows.length - capacity),
-  );
+  const { start } = tableWindow(model.rows.length, cursor, visibleRows);
   if (start > 0) {
     lines.push([{ text: `   … ${start} above`, role: 'muted' }]);
   }
@@ -232,6 +229,25 @@ export function renderBreakdownTable(
   lines.push(rule);
   lines.push(dataLine(model.totals, true));
   return lines;
+}
+
+
+/**
+ * The cursor-following window shared by the renderer AND the mouse
+ * hit-test — computing it twice let clicks select a row four positions
+ * off once the table scrolled (audit grok C3-05).
+ */
+export function tableWindow(
+  rowCount: number,
+  cursor: number,
+  visibleRows: number,
+): { start: number; hasAboveLine: boolean } {
+  const capacity = Math.max(1, visibleRows);
+  const start = Math.min(
+    Math.max(0, cursor - capacity + 1),
+    Math.max(0, rowCount - capacity),
+  );
+  return { start, hasAboveLine: start > 0 };
 }
 
 /** k9s-style context summary above the table. */

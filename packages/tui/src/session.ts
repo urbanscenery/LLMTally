@@ -31,6 +31,7 @@ import type { ChartGlyphMode } from './components/daily-block-chart.ts';
 import type { ResourceState, TuiKeyEvent, TuiScreen } from './types.ts';
 import type { PromptListResult } from '@llmtally/core/report/prompts.ts';
 import type { PromptsViewModel } from './view-model/prompts.ts';
+import { tableWindow } from './components/breakdown-table.ts';
 import { isSwitchable } from './view-model/accounts.ts';
 import { clampCursor } from './views/accounts.ts';
 import { accountsTabView } from './views/accounts.ts';
@@ -586,9 +587,15 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         return false;
       }
       const rows = sortBreakdownRows(state.models.data?.rows ?? [], sortSpecFor(state, 'models'));
-      const index = bodyRow - MODELS_TABLE_HEADER_LINES;
-      if (index >= 0 && index < rows.length) {
-        controller.commit(withModelsCursor(state, index));
+      // mirror the renderer's cursor-following window: the clicked line
+      // maps to start + offset, and the "… N above" marker is not a row
+      const tableRows = Math.max(3, bodyHeight - 8);
+      const { start, hasAboveLine } = tableWindow(rows.length, state.modelsCursor, tableRows);
+      const dataTop = MODELS_TABLE_HEADER_LINES + (hasAboveLine ? 1 : 0);
+      const offset = bodyRow - dataTop;
+      const visibleCount = Math.min(rows.length - start, Math.max(1, tableRows));
+      if (offset >= 0 && offset < visibleCount) {
+        controller.commit(withModelsCursor(state, start + offset));
         return true;
       }
       return false;

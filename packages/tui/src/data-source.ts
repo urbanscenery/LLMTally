@@ -15,6 +15,7 @@ import {
   captureOpencodeAccount,
   defaultOpencodeAuthPath,
   opencodeAccountId,
+  readOpencodeProviders,
   switchOpencodeAccount,
 } from '@llmtally/core/accounts/opencode.ts';
 import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
@@ -67,7 +68,12 @@ function singleGrokIdentity(): string | null {
 function readLiveOpencodeId(): string | null {
   try {
     const text = readFileSync(defaultOpencodeAuthPath(), 'utf8');
-    return text.length === 0 ? null : opencodeAccountId(text);
+    // parity with the sidecar (audit grok C3-09): an auth file with no
+    // usable providers is "logged out", not a synthetic '.xxxxxx' id
+    if (text.length === 0 || readOpencodeProviders(text).length === 0) {
+      return null;
+    }
+    return opencodeAccountId(text);
   } catch {
     return null;
   }

@@ -480,7 +480,11 @@ private struct AccountsPane: View {
         SidecarClient.shared.request("detachCodex") { result in
             DispatchQueue.main.async {
                 switch result {
-                case .success: detachResult = "Detached. The vault kept a verified capture."
+                case .success:
+                    detachResult = "Detached. The vault kept a verified capture."
+                    // the active marker just changed — stale "active"
+                    // rows otherwise linger (audit codex C3-09)
+                    load()
                 case .failure(let error): detachResult = error.localizedDescription
                 }
             }

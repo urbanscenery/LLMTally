@@ -89,9 +89,36 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
   server.register('report', (params) => reportFor(params, databasePath));
 
   server.register('overview', async (params) => {
+    // the report half must not sink live quota with it: before the
+    // first scan there IS no ledger, and the first paint should still
+    // show the vendor gauges (audit grok C3-03)
     const [quota, report] = await Promise.all([
       loadQuota({ allowRefresh: readBool(params, 'refresh') ?? true }),
-      reportFor({ groupBy: 'day' }, databasePath),
+      reportFor({ groupBy: 'day' }, databasePath).catch((error: unknown) => ({
+        command: 'report' as const,
+        databasePath,
+        groupBy: 'day' as const,
+        agent: null,
+        range: buildReportRange(null, null) as { fromDate: null; toDate: null },
+        buckets: [],
+        totals: {
+          key: 'total',
+          rowCount: 0,
+          tokens: {
+            inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0, reasoningTokens: 0,
+          },
+          actual: { usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0 },
+          nominal: null,
+        },
+        pricing: {
+          status: 'stale' as const,
+          asOfUtc: null,
+          sources: [],
+          warnings: [
+            `report unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          ],
+        },
+      })),
     ]);
     return { quota, report };
   });

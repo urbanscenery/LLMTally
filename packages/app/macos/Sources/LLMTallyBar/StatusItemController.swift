@@ -36,6 +36,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var lastTodayRows: [String: Int]?
     /// One-shot: re-read after the first scan lands on an empty cache.
     private var didRetryAfterFirstScan = false
+    /// True once any overview answered — empty quota is then real.
+    private var hasOverview = false
+    /// Last overview failure — the AX label's honest reason.
+    private var lastOverviewError: String?
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -237,8 +241,12 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let group = DispatchGroup()
 
         group.enter()
-        SidecarClient.shared.requestDecodable("overview", params: ["refresh": true], as: OverviewDTO.self) { result in
-            if case .success(let value) = result { overview = value }
+        SidecarClient.shared.requestDecodable("overview", params: ["refresh": true], as: OverviewDTO.self) { [weak self] result in
+            switch result {
+            case .success(let value): overview = value
+            case .failure(let error):
+                self?.queue(setError: error.localizedDescription)
+            }
             group.leave()
         }
         group.enter()
@@ -269,11 +277,12 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             case .failure(let error):
                 NSLog("llmtally scan tick failed: %@", error.localizedDescription)
             case .success:
-                // first run: the reads above raced a ledger that did
-                // not exist yet — one follow-up read after the first
-                // successful scan beats waiting a full cadence tick
+                // one follow-up read after the FIRST successful scan of
+                // this process: the batch above ran against a pre-scan
+                // ledger whether or not quota was already cached
+                // (audit grok C3-02)
                 DispatchQueue.main.async {
-                    guard let self, self.lastQuota.isEmpty, !self.didRetryAfterFirstScan else { return }
+                    guard let self, !self.didRetryAfterFirstScan else { return }
                     self.didRetryAfterFirstScan = true
                     self.refreshStatusText()
                 }
@@ -285,14 +294,19 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             guard let overview else {
                 // before any data has ever arrived, a failed fetch must
                 // not masquerade as the placid startup tally — mark the
-                // item and say why in the AX label (audit GK-49)
-                if self.lastQuota.isEmpty, let button = self.statusItem.button {
+                // item and say why in the AX label (audit GK-49). The
+                // RPC's own error beats a stale stderr line (C3-11).
+                if !self.hasOverview, let button = self.statusItem.button {
                     button.image = StatusComposer.compose(segments: [.text("!")])
-                    let reason = SidecarClient.shared.lastStderrLine ?? "sidecar not answering"
+                    let reason = self.lastOverviewError
+                        ?? SidecarClient.shared.lastStderrLine
+                        ?? "sidecar not answering"
                     button.setAccessibilityLabel("LLMTally: no data — \(reason)")
                 }
                 return
             }
+            self.hasOverview = true
+            self.lastOverviewError = nil
             self.lastQuota = overview.quota
             self.lastBuckets = overview.report.buckets
             self.lastHourBuckets = hourBuckets ?? self.lastHourBuckets
@@ -303,8 +317,15 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         }
     }
 
+    private func queue(setError message: String) {
+        DispatchQueue.main.async { self.lastOverviewError = message }
+    }
+
     private func renderFromCache() {
-        guard !lastQuota.isEmpty, let button = statusItem.button else { return }
+        // empty quota after a successful overview is a REAL state (all
+        // accounts signed out) — rendering must not freeze the previous
+        // image (audit codex C3-08)
+        guard hasOverview, let button = statusItem.button else { return }
         let rendering = renderStatusSegments(
             descriptors: descriptorStore.load(),
             quota: lastQuota,
