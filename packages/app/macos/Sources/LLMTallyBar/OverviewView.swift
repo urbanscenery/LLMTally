@@ -770,9 +770,16 @@ struct ProviderDetailView: View {
                                 .font(.caption).monospacedDigit()
                                 .frame(minWidth: 34, alignment: .trailing)
                         }
-                        // the countdown ticks live while the panel is open
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            Text("\(window.id) · \(resetTextDetailed(window.resetsAtUtc, now: context.date))")
+                        // two lines: the (possibly long) native id gets
+                        // its own, ellipsized before it could wrap; the
+                        // countdown ticks live underneath
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(window.id)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            TimelineView(.periodic(from: .now, by: 1)) { context in
+                                Text(resetTextDetailed(window.resetsAtUtc, now: context.date))
+                            }
                         }
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                         .padding(.leading, 48)
