@@ -240,6 +240,14 @@ struct BuilderView: View {
                     Text("Active account is read-only. Each quota item pins one provider's native window.")
                         .font(.caption2).foregroundStyle(.secondary)
 
+                    if item.metric == .agentActive {
+                        section("What counts as active") {
+                            Text("The number of agents with at least one prompt in today's local ledger (calendar day, local midnight reset). Quota is not involved — this is pure usage. \"2 act\" means two agents logged prompts today; VoiceOver reads which ones.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
                     if isQuotaMetric(item.metric) {
                         providerSection(item, index: index)
                         windowSection(item, index: index)
