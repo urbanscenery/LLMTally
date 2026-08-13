@@ -171,9 +171,6 @@ struct OverviewView: View {
                 TodaySection(bucket: model.todayBucket(),
                              totals: model.overview?.report.totals,
                              privacy: privacy)
-                if let prompt = model.lastPrompt {
-                    RecentLine(prompt: prompt, privacy: privacy)
-                }
                 WeeklyChart(buckets: model.overview?.report.buckets ?? [],
                             privacy: privacy,
                             hourBuckets: model.hourBuckets)
@@ -472,9 +469,9 @@ struct TodaySection: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title.uppercased()).font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
             Text(value).font(.callout.weight(.semibold)).monospacedDigit()
-            if let note {
-                Text(note).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-            }
+            // the note line always occupies its row so all three cards
+            // share one height regardless of which have a note
+            Text(note ?? " ").font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
@@ -482,7 +479,7 @@ struct TodaySection: View {
     }
 }
 
-// MARK: - Header freshness + Recent line
+// MARK: - Header freshness
 
 /// `Fresh · 42s` / `N stale` / `auth` — the header's one-line answer to
 /// "can I trust these numbers" (§3 헤더).
@@ -515,30 +512,6 @@ struct FreshnessSummary: View {
         let newest = quota.map { epochSeconds($0.observedAtUtc) }.max()
         guard let newest else { return ("—", "no reading", .secondary) }
         return ("●", "Fresh · \(shortAge(sinceEpoch: newest, now: now))", theme.accent)
-    }
-}
-
-/// The single recent-activity line (§3): the popover previews one row;
-/// investigation belongs to the TUI.
-struct RecentLine: View {
-    let prompt: PromptRowDTO
-    var privacy = false
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Text("last ·").foregroundStyle(.secondary)
-            Text("\(agentDisplayName(prompt.agent)) · \(prompt.model ?? "?") · \(shortAge(sinceEpoch: prompt.tsUtc))")
-                .foregroundStyle(.secondary).monospacedDigit()
-            if let text = prompt.text, !privacy {
-                Text("· \(text)").foregroundStyle(.tertiary).lineLimit(1)
-            } else if privacy {
-                Text("· Prompt hidden").foregroundStyle(.tertiary)
-            }
-            Spacer(minLength: 0)
-        }
-        .font(.caption2)
-        .padding(.horizontal, 12)
-        .padding(.bottom, 8)
     }
 }
 

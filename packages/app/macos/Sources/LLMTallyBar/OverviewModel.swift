@@ -15,7 +15,6 @@ final class OverviewModel: ObservableObject {
 
     @Published var overview: OverviewDTO?
     @Published var activeAccounts: [String: String?] = [:]
-    @Published var lastPrompt: PromptRowDTO?
     @Published var hourBuckets: [ReportBucketDTO] = []
     @Published var providerDetails: [String: ProviderDetailData] = [:]
 
@@ -54,12 +53,6 @@ final class OverviewModel: ObservableObject {
             activeResult = result
             group.leave()
         }
-        var promptResult: PromptRowDTO?
-        group.enter()
-        SidecarClient.shared.requestDecodable("prompts", params: ["limit": 1], as: PromptListDTO.self) { result in
-            if case .success(let list) = result { promptResult = list.rows.first }
-            group.leave()
-        }
         var hourResult: [ReportBucketDTO]?
         group.enter()
         SidecarClient.shared.requestDecodable("report", params: Self.hourReportParams(), as: ReportSummaryDTO.self) { result in
@@ -82,9 +75,6 @@ final class OverviewModel: ObservableObject {
             }
             if case .success(let active) = activeResult {
                 self.activeAccounts = active
-            }
-            if let promptResult {
-                self.lastPrompt = promptResult
             }
             if let hourResult {
                 self.hourBuckets = hourResult
