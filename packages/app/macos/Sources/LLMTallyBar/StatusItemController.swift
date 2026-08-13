@@ -118,13 +118,22 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         fresh.level = .popUpMenu
         fresh.collectionBehavior = [.transient, .ignoresCycle]
         fresh.isReleasedWhenClosed = false
-        fresh.delegate = self
         fresh.setFrame(panelFrame(anchoredTo: button), display: false)
         panel = fresh
 
+        fresh.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
         fresh.makeKeyAndOrderFront(nil)
-        installMonitors()
+        // NSApp.activate settles asynchronously and can bounce key off
+        // the panel for a moment — arming resign-to-close (and the
+        // outside-click monitor) immediately closed the panel the
+        // instant it appeared. Arm them only once the show settles.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self, let shown = self.panel, shown === fresh else { return }
+            shown.delegate = self
+            shown.makeKey()
+            self.installMonitors()
+        }
     }
 
     func closePanel() {
@@ -262,7 +271,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             leadingTally: rendering.segments.isEmpty)
         button.imagePosition = .imageOnly
         button.attributedTitle = NSAttributedString(string: "")
-        button.toolTip = rendering.tooltip
+        // no hover tooltip (user decision) — the detail stays available
+        // to assistive tech through the accessibility label
+        button.toolTip = nil
         button.setAccessibilityLabel("LLMTally. \(rendering.tooltip)")
     }
 
