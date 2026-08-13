@@ -103,7 +103,7 @@ enum StatusComposer {
             }
             for bar in bars {
                 let track = NSBezierPath(
-                    roundedRect: NSRect(x: cursor, y: 1, width: 5, height: barHeight - 2),
+                    roundedRect: NSRect(x: cursor, y: 0.5, width: 5, height: barHeight - 1),
                     xRadius: 2, yRadius: 2)
                 // the rail track wears the theme surface — dark themes
                 // get a dark well, light themes a light one
@@ -113,9 +113,9 @@ enum StatusComposer {
                 // remaining inverts the height; severity color always
                 // tracks usage so a nearly-empty rail still warns
                 let displayed = remaining ? 100 - bar.usedPercent : bar.usedPercent
-                let filledHeight = max(2, (barHeight - 2) * displayed / 100)
+                let filledHeight = max(2, (barHeight - 1) * displayed / 100)
                 let fill = NSBezierPath(
-                    roundedRect: NSRect(x: cursor, y: 1, width: 5, height: filledHeight),
+                    roundedRect: NSRect(x: cursor, y: 0.5, width: 5, height: filledHeight),
                     xRadius: 2, yRadius: 2)
                 stateColor(bar.usedPercent).setFill()
                 fill.fill()
@@ -134,7 +134,7 @@ enum StatusComposer {
             if let surface = theme.nsBackground {
                 surface.setFill()
                 NSBezierPath(
-                    roundedRect: NSRect(x: x - 2, y: 0.5, width: track + 4, height: barHeight - 1),
+                    roundedRect: NSRect(x: x - 2, y: 0, width: track + 4, height: barHeight),
                     xRadius: 3, yRadius: 3).fill()
             }
             if line {
@@ -145,7 +145,7 @@ enum StatusComposer {
                 for (index, value) in values.enumerated() {
                     let point = NSPoint(
                         x: x + CGFloat(index) * step,
-                        y: 1.5 + (barHeight - 4) * value / maximum)
+                        y: 1 + (barHeight - 2) * value / maximum)
                     index == 0 ? path.move(to: point) : path.line(to: point)
                 }
                 color.setStroke()
@@ -154,10 +154,10 @@ enum StatusComposer {
                 let step = track / CGFloat(values.count)
                 let barWidth = max(0.6, min(step * 0.7, 4))
                 for (index, value) in values.enumerated() {
-                    let height = max(1.5, (barHeight - 4) * value / maximum)
+                    let height = max(1.5, (barHeight - 2) * value / maximum)
                     color.setFill()
                     NSBezierPath(
-                        roundedRect: NSRect(x: x + CGFloat(index) * step, y: 1,
+                        roundedRect: NSRect(x: x + CGFloat(index) * step, y: 0.5,
                                             width: barWidth, height: height),
                         xRadius: barWidth / 2, yRadius: barWidth / 2).fill()
                 }
