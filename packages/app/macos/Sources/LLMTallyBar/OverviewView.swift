@@ -353,6 +353,9 @@ struct StatusChip: View {
             switch failure.kind {
             case "auth_invalid": return "auth"
             case "rate_limited": return "429"
+            // an intentionally skipped live fetch (budget/cadence/claim)
+            // is normal operation: the user-facing word is "cached"
+            case "deferred": return "cached"
             default: return failure.kind
             }
         }
@@ -363,6 +366,8 @@ struct StatusChip: View {
     private var color: Color {
         let theme = Theme.current()
         if item.snapshot.failure?.kind == "auth_invalid" { return theme.crit }
+        // cached is healthy — same color as fresh/live, never a warning
+        if item.snapshot.failure?.kind == "deferred" { return theme.live }
         if item.snapshot.failure != nil || item.rank == .stale { return theme.warn }
         return item.snapshot.source == "vendor_api" ? theme.live : .secondary
     }
