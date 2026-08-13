@@ -10,6 +10,7 @@ struct OverviewView: View {
     @State private var switchIntent: SwitchIntent?
     @State private var focusedRow: Int?
     @AppStorage(PrivacySetting.key) private var privacy = false
+    @AppStorage(Theme.storageKey) private var themeId = "system"
 
     private var aliases: [String: String] {
         privacyAliases(for: model.overview?.quota ?? [])
@@ -24,6 +25,9 @@ struct OverviewView: View {
             footer
         }
         .frame(width: 400, height: 560)
+        // reading themeId keeps every themed child live while the
+        // panel stays open next to Settings
+        .tint((Theme.presets.first { $0.id == themeId } ?? Theme.system).accent)
         .onAppear {
             model.load(refresh: true)
             if let target = PendingNavigation.consume() {

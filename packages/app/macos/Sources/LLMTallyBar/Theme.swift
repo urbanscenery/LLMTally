@@ -72,11 +72,15 @@ struct ThemedSurface<Content: View>: View {
     }
 
     var body: some View {
-        let theme = Theme.current()
+        // resolve from the @AppStorage property itself — an unread
+        // wrapper is not a re-render dependency, which left cached
+        // windows (Settings) stuck on the old theme
+        let theme = Theme.presets.first { $0.id == themeId } ?? Theme.system
         if let background = theme.background, let scheme = theme.colorScheme {
             content
                 .background(background)
                 .environment(\.colorScheme, scheme)
+                .tint(theme.accent)
         } else {
             content
                 .background(Color(nsColor: .windowBackgroundColor))
