@@ -204,12 +204,56 @@ private func identityText(_ descriptor: MenuItemDescriptor, code: String) -> Str
 /// renderer, two surfaces (03_design_spec §6.1).
 public enum StatusSegment: Equatable {
     case text(String)
+    /// Monochrome provider glyph — emitted when identity is "icon".
+    case glyph(agent: String)
     /// Vertical bottom-anchored rails — identity code + one bar per
     /// actual native window (pair = 5h+7d).
     case rails(identity: String, bars: [RailValue])
     /// Ledger history sparkline; `money` obeys privacy.
     case spark(values: [Double], money: Bool)
     case placeholder
+}
+
+/// Rendering plus per-segment metric provenance so overflow folding
+/// can tell what may fold (§6.5: quota, rails, freshness never fold).
+public struct SegmentRendering {
+    public let segments: [StatusSegment]
+    public let metrics: [MenuItemMetric]
+    public let tooltip: String
+}
+
+public let FOLDABLE_METRICS: Set<MenuItemMetric> = [
+    .quotaReset, .consumedTokenHistory, .actualCostHistory,
+    .providerLabel, .agentActive, .spacer,
+]
+
+/// Which trailing segments to fold into `+N` when the track is over
+/// budget. Pure: widths are measured by the caller. Only foldable
+/// metrics fold, from the end, and the saved order never changes.
+public func foldSegmentIndices(
+    metrics: [MenuItemMetric],
+    widths: [Double],
+    budget: Double,
+    gap: Double,
+    indicatorWidth: Double
+) -> (visible: [Int], hiddenCount: Int) {
+    precondition(metrics.count == widths.count)
+    var visible = Array(metrics.indices)
+    func totalWidth(extra: Double) -> Double {
+        let sum = visible.reduce(0.0) { $0 + widths[$1] }
+        let joints = Double(max(0, visible.count - (extra > 0 ? 0 : 1)))
+        return sum + joints * gap + extra
+    }
+    if totalWidth(extra: 0) <= budget { return (visible, 0) }
+
+    var hidden = 0
+    for index in metrics.indices.reversed() {
+        guard FOLDABLE_METRICS.contains(metrics[index]) else { continue }
+        visible.removeAll { $0 == index }
+        hidden += 1
+        if totalWidth(extra: indicatorWidth) <= budget { break }
+    }
+    return (visible, hidden)
 }
 
 public struct RailValue: Equatable {
@@ -230,12 +274,29 @@ public func renderStatusSegments(
     quota: [QuotaSnapshotDTO],
     buckets: [ReportBucketDTO],
     activeAccounts: [String: String?],
+    todayAgentRows: [String: Int]? = nil,
     privacy: Bool = false,
     now: Date = Date()
-) -> (segments: [StatusSegment], tooltip: String) {
+) -> SegmentRendering {
     var segments: [StatusSegment] = []
+    var metrics: [MenuItemMetric] = []
     var tooltip: [String] = []
     let names = PrivacyNames(privacy: privacy, quota: quota)
+
+    func append(_ segment: StatusSegment, _ metric: MenuItemMetric) {
+        segments.append(segment)
+        metrics.append(metric)
+    }
+    /// "icon" identity becomes a drawable glyph segment; privacy keeps
+    /// the neutral alias text instead (a glyph would identify).
+    func wantsGlyph(_ descriptor: MenuItemDescriptor) -> Bool {
+        (descriptor.providerIdentityPresentation ?? "icon") == "icon" && !privacy
+    }
+    func withoutIdentity(_ descriptor: MenuItemDescriptor) -> MenuItemDescriptor {
+        var copy = descriptor
+        copy.providerIdentityPresentation = "none"
+        return copy
+    }
 
     var rowsByAgent: [String: AgentAttention] = [:]
     for snapshot in quota {
@@ -259,14 +320,19 @@ public func renderStatusSegments(
         case .quotaMiniBar:
             guard let resolved = resolveQuotaBinding(descriptor, rows: rows),
                   let bars = railBars(descriptor, item: resolved.0, resolvedWindow: resolved.1) else {
-                if descriptor.unavailableBehavior == "placeholder" { segments.append(.placeholder) }
+                if descriptor.unavailableBehavior == "placeholder" { append(.placeholder, descriptor.metric) }
                 tooltip.append("rails: window not returned by the source")
                 continue
             }
             let item = resolved.0
-            segments.append(.rails(
-                identity: identityText(descriptor, code: names.code(item.snapshot.agent)),
-                bars: bars))
+            if wantsGlyph(descriptor) {
+                append(.glyph(agent: item.snapshot.agent), descriptor.metric)
+                append(.rails(identity: "", bars: bars), descriptor.metric)
+            } else {
+                append(.rails(
+                    identity: identityText(descriptor, code: names.code(item.snapshot.agent)),
+                    bars: bars), descriptor.metric)
+            }
             for bar in bars {
                 tooltip.append(
                     "\(names.display(item.snapshot.agent)) \(bar.windowId) used "
@@ -276,7 +342,7 @@ public func renderStatusSegments(
             let money = descriptor.metric == .actualCostHistory
             if money && privacy {
                 // costs neutralize under privacy — no spark, no number
-                if descriptor.unavailableBehavior == "placeholder" { segments.append(.placeholder) }
+                if descriptor.unavailableBehavior == "placeholder" { append(.placeholder, descriptor.metric) }
                 tooltip.append("cost history: Private metric hidden")
                 continue
             }
@@ -287,28 +353,64 @@ public func renderStatusSegments(
             }
             if values.count < 2 {
                 // one sample is a snapshot, never a trend
-                if descriptor.unavailableBehavior == "placeholder" { segments.append(.placeholder) }
+                if descriptor.unavailableBehavior == "placeholder" { append(.placeholder, descriptor.metric) }
                 tooltip.append("history: not enough daily buckets")
                 continue
             }
-            segments.append(.spark(values: values, money: money))
+            append(.spark(values: values, money: money), descriptor.metric)
             tooltip.append(money
                 ? "Actual cost, last \(values.count) days"
                 : "Consumed tokens, last \(values.count) days")
+        case .agentActive:
+            // ledger activity, not quota. nil = no reading yet
+            // (placeholder); an empty map is a real "0 act".
+            guard let todayAgentRows else {
+                if descriptor.unavailableBehavior == "placeholder" { append(.placeholder, descriptor.metric) }
+                tooltip.append("agent activity: no ledger reading yet")
+                continue
+            }
+            let active = todayAgentRows.filter { $0.value > 0 }
+            append(.text("\(active.count) act"), descriptor.metric)
+            for (agent, rowCount) in active.sorted(by: { $0.key < $1.key }) {
+                tooltip.append("\(names.display(agent)): \(rowCount) prompts today")
+            }
+        case .quotaUsagePercentage where wantsGlyph(descriptor):
+            // glyph identity: drawable glyph + the text renderer's own
+            // output minus its identity code
+            guard let resolved = resolveQuotaBinding(descriptor, rows: rows) else {
+                if descriptor.unavailableBehavior == "placeholder" { append(.placeholder, descriptor.metric) }
+                tooltip.append("quota: window not returned by the source")
+                continue
+            }
+            append(.glyph(agent: resolved.0.snapshot.agent), descriptor.metric)
+            let rendering = renderStatusItems(
+                descriptors: [withoutIdentity(descriptor)], quota: quota,
+                activeAccounts: activeAccounts, privacy: privacy, now: now)
+            if rendering.title != "tally" && !rendering.title.isEmpty {
+                append(.text(rendering.title), descriptor.metric)
+            }
+            if !rendering.tooltip.isEmpty { tooltip.append(rendering.tooltip) }
+        case .providerLabel where wantsGlyph(descriptor):
+            if case .provider(let provider) = descriptor.scope {
+                append(.glyph(agent: provider), descriptor.metric)
+            } else if case .pin(let provider, _) = descriptor.binding {
+                append(.glyph(agent: provider), descriptor.metric)
+            }
         default:
             // text metrics share the text renderer's exact rules
             let rendering = renderStatusItems(
                 descriptors: [descriptor], quota: quota,
                 activeAccounts: activeAccounts, privacy: privacy, now: now)
             if rendering.title != "tally" && !rendering.title.isEmpty {
-                segments.append(.text(rendering.title))
+                append(.text(rendering.title), descriptor.metric)
             }
             if !rendering.tooltip.isEmpty {
                 tooltip.append(rendering.tooltip)
             }
         }
     }
-    return (segments, tooltip.joined(separator: "\n"))
+    return SegmentRendering(segments: segments, metrics: metrics,
+                            tooltip: tooltip.joined(separator: "\n"))
 }
 
 /// Pair = the provider's 5h + 7d windows, only when both actually

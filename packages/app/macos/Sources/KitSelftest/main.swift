@@ -259,18 +259,68 @@ do {
 
     expect(supportsPairWindows(agent: "claude-code", quota: quota), "claude returns a 5h+7d pair")
 
-    // pair rails carry both native windows
+    // pair rails carry both native windows; icon identity emits a glyph first
     let pair = renderStatusSegments(
         descriptors: [MenuItemDescriptor(
             scope: .provider("claude-code"), metric: .quotaMiniBar, presentation: "mini_bar",
             binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"), windowSet: "pair")],
         quota: quota, buckets: buckets, activeAccounts: [:])
-    if case .rails(_, let bars) = pair.segments.first {
+    expectEqual(pair.segments.first, StatusSegment.glyph(agent: "claude-code"),
+                "icon identity renders a drawable glyph segment")
+    if pair.segments.count > 1, case .rails(let identity, let bars) = pair.segments[1] {
         expectEqual(bars.map(\.windowId), ["five_hour", "seven_day"], "pair rails carry both native ids")
+        expectEqual(identity, "", "glyph replaces the inline identity code")
     } else {
         failures += 1
         print("FAIL - pair mini bar did not render rails")
     }
+    expectEqual(pair.metrics.count, pair.segments.count, "metrics stay aligned with segments")
+
+    // vertical_text identity keeps the single text segment (no glyph)
+    let coded = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(
+            scope: .provider("claude-code"), metric: .quotaUsagePercentage, direction: "used",
+            binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"),
+            providerIdentityPresentation: "vertical_text")],
+        quota: quota, buckets: buckets, activeAccounts: [:])
+    expectEqual(coded.segments, [StatusSegment.text("CLA 5h 33%")],
+                "vertical_text stays a single text segment")
+
+    // agent_active counts agents with rows today; empty map = placeholder
+    let active = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .agentActive,
+                                         providerIdentityPresentation: nil)],
+        quota: quota, buckets: buckets, activeAccounts: [:],
+        todayAgentRows: ["claude-code": 12, "codex": 3, "grok": 0])
+    expectEqual(active.segments, [StatusSegment.text("2 act")],
+                "agent_active counts agents with rows today")
+    let inactive = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .agentActive,
+                                         providerIdentityPresentation: nil)],
+        quota: quota, buckets: buckets, activeAccounts: [:])
+    expectEqual(inactive.segments, [StatusSegment.placeholder],
+                "no activity reading renders the missing behaviour")
+    let zero = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .agentActive,
+                                         providerIdentityPresentation: nil)],
+        quota: quota, buckets: buckets, activeAccounts: [:], todayAgentRows: [:])
+    expectEqual(zero.segments, [StatusSegment.text("0 act")],
+                "an empty map is a real zero, not a missing reading")
+
+    // folding: only optional metrics fold, from the end, order kept
+    let foldAll = foldSegmentIndices(
+        metrics: [.quotaUsagePercentage, .quotaReset, .sourceFreshness],
+        widths: [100, 50, 40], budget: 500, gap: 6, indicatorWidth: 20)
+    expectEqual(foldAll.hiddenCount, 0, "under budget nothing folds")
+    let foldSome = foldSegmentIndices(
+        metrics: [.quotaUsagePercentage, .quotaReset, .sourceFreshness],
+        widths: [100, 50, 40], budget: 160, gap: 6, indicatorWidth: 20)
+    expectEqual(foldSome.hiddenCount, 1, "over budget the reset folds")
+    expectEqual(foldSome.visible, [0, 2], "quota and freshness never fold; order kept")
+    let foldNone = foldSegmentIndices(
+        metrics: [.quotaUsagePercentage, .quotaMiniBar],
+        widths: [200, 200], budget: 100, gap: 6, indicatorWidth: 20)
+    expectEqual(foldNone.hiddenCount, 0, "unfoldable metrics never fold even over budget")
 
     // a provider without the pair renders the missing behaviour, never a fake rail
     let grokQuota = [snapshot(agent: "grok", windows: [

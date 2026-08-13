@@ -1,23 +1,22 @@
 #!/bin/sh
 # Builds packages/app/build/LLMTally.app from the SwiftPM release binary
-# plus the fixed icon. Ad-hoc signed; the bundle id unlocks
-# UserNotifications and SMAppService (launch at login).
-#
-# Dev-machine bundle: the sidecar still resolves to this checkout's
-# packages/app/src/sidecar-main.ts (compile-time #filePath fallback,
-# override with LLMTALLY_SIDECAR) and bun is probed at the usual
-# install paths. A distributable bundle would embed both; that is a
-# later phase.
+# plus the fixed icon AND a self-contained sidecar (bun build --compile)
+# so the bundle needs no bun install and no repo checkout at runtime.
+# Ad-hoc signed; the bundle id unlocks UserNotifications and
+# SMAppService (launch at login).
 set -eu
 cd "$(dirname "$0")/.."
 
 swift build -c release --package-path macos
+bun build --compile src/sidecar-main.ts --outfile build/llmtally-sidecar
 
 APP=build/LLMTally.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp macos/.build/release/LLMTallyBar "$APP/Contents/MacOS/LLMTally"
 cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+mkdir -p "$APP/Contents/Helpers"
+cp build/llmtally-sidecar "$APP/Contents/Helpers/llmtally-sidecar"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -39,6 +38,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+codesign --force -s - "$APP/Contents/Helpers/llmtally-sidecar"
 codesign --force -s - "$APP"
-echo "built $APP"
+echo "built $APP (self-contained sidecar embedded)"
 echo "run:  open $APP"

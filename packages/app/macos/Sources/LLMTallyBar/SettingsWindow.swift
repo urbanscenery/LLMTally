@@ -10,6 +10,9 @@ extension Notification.Name {
     /// Posted when the privacy toggle flips — one policy across the
     /// status item, popover, tooltips, and notifications.
     static let llmtallyPrivacyChanged = Notification.Name("llmtallyPrivacyChanged")
+    /// Posted when a delivered notification is clicked — the status
+    /// item opens its popover in response.
+    static let llmtallyOpenPopover = Notification.Name("llmtallyOpenPopover")
 }
 
 /// Single source for the privacy switch (03_design_spec §11).

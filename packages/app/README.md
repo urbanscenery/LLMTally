@@ -43,9 +43,12 @@ login — all gated on a bundle identifier):
 sh packages/app/scripts/bundle.sh && open packages/app/build/LLMTally.app
 ```
 
-The dev bundle still runs the sidecar from this checkout and probes
-bun at its usual install paths (`LLMTALLY_BUN` / `LLMTALLY_SIDECAR`
-override); embedding both is a later distribution phase.
+The bundle is self-contained: `bun build --compile` embeds the sidecar
+as a single binary in `Contents/Helpers/llmtally-sidecar`, so a
+bundled app needs neither a bun install nor this checkout. Resolution
+order: `LLMTALLY_SIDECAR` (TypeScript via bun, dev override) → the
+embedded helper → the checkout's `src/sidecar-main.ts` via a probed
+bun (`LLMTALLY_BUN` override) for unbundled dev binaries.
 
 The status item renders the user's ordered `MenuItemDescriptor[]`
 (`menuBarBuilderV1` in UserDefaults, Auto-seeded on first run) against

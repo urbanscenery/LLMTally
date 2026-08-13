@@ -25,6 +25,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var lastQuota: [QuotaSnapshotDTO] = []
     private var lastBuckets: [ReportBucketDTO] = []
     private var lastActive: [String: String?] = [:]
+    /// nil = no successful reading yet; an empty map is a real zero.
+    private var lastTodayRows: [String: Int]?
+    private var openObserver: NSObjectProtocol?
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -51,6 +54,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         ) { [weak self] _ in
             self?.renderFromCache()
         }
+        openObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyOpenPopover, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.showPopover()
+        }
     }
 
     deinit {
@@ -61,14 +69,22 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         if let privacyObserver {
             NotificationCenter.default.removeObserver(privacyObserver)
         }
+        if let openObserver {
+            NotificationCenter.default.removeObserver(openObserver)
+        }
     }
 
     @objc private func togglePopover() {
-        guard let button = statusItem.button else { return }
         if let shown = popover, shown.isShown {
             shown.performClose(nil)
             return
         }
+        showPopover()
+    }
+
+    private func showPopover() {
+        guard let button = statusItem.button else { return }
+        if let shown = popover, shown.isShown { return }
 
         let fresh = NSPopover()
         fresh.behavior = .transient
@@ -147,12 +163,19 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             if case .success(let value) = result { active = value }
             group.leave()
         }
+        var todayRows: [String: Int]?
+        group.enter()
+        SidecarClient.shared.requestDecodable("todayByAgent", as: [String: Int].self) { result in
+            if case .success(let value) = result { todayRows = value }
+            group.leave()
+        }
 
         group.notify(queue: .main) { [weak self] in
             guard let self, let overview else { return }
             self.lastQuota = overview.quota
             self.lastBuckets = overview.report.buckets
             self.lastActive = active ?? self.lastActive
+            self.lastTodayRows = todayRows ?? self.lastTodayRows
             self.renderFromCache()
             NotificationManager.shared.process(quota: overview.quota, privacy: PrivacySetting.enabled)
         }
@@ -165,8 +188,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             quota: lastQuota,
             buckets: lastBuckets,
             activeAccounts: lastActive,
+            todayAgentRows: lastTodayRows,
             privacy: PrivacySetting.enabled)
-        button.image = StatusComposer.compose(segments: rendering.segments)
+        button.image = StatusComposer.compose(
+            segments: rendering.segments,
+            metrics: rendering.metrics,
+            budget: StatusComposer.defaultBudget)
         button.imagePosition = .imageOnly
         button.attributedTitle = NSAttributedString(string: "")
         button.toolTip = rendering.tooltip

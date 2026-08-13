@@ -35,22 +35,28 @@ final class SidecarClient {
 
         // Dev checkout default: packages/app/src/sidecar-main.ts relative
         // to this source file. A bundled app overrides via environment.
-        let sidecarPath = ProcessInfo.processInfo.environment["LLMTALLY_SIDECAR"]
-            ?? URL(fileURLWithPath: #filePath)
+        // Resolution order: explicit override → the self-contained
+        // binary shipped inside the bundle (bun build --compile, no bun
+        // install needed) → the dev checkout's TypeScript via bun.
+        let environment = ProcessInfo.processInfo.environment
+        // Contents/Helpers, not Resources: a Mach-O in Resources is
+        // treated as data by codesign and weakens verification
+        let bundledSidecar = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Helpers/llmtally-sidecar")
+
+        if let override = environment["LLMTALLY_SIDECAR"] {
+            configureBunLaunch(scriptPath: override)
+        } else if FileManager.default.isExecutableFile(atPath: bundledSidecar.path) {
+            process.executableURL = bundledSidecar
+            process.arguments = []
+        } else {
+            let checkoutScript = URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()  // LLMTallyBar
                 .deletingLastPathComponent()  // Sources
                 .deletingLastPathComponent()  // macos
                 .deletingLastPathComponent()  // app
                 .appendingPathComponent("src/sidecar-main.ts").path
-
-        // A bundled app launched from Finder inherits a bare PATH, so
-        // `/usr/bin/env bun` fails there; probe the usual install spots.
-        if let bun = Self.findBun() {
-            process.executableURL = URL(fileURLWithPath: bun)
-            process.arguments = [sidecarPath]
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["bun", sidecarPath]
+            configureBunLaunch(scriptPath: checkoutScript)
         }
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
@@ -73,6 +79,18 @@ final class SidecarClient {
         }
         try process.run()
         running = true
+    }
+
+    /// Dev path: run the checkout's TypeScript through bun. A Finder-
+    /// launched app inherits a bare PATH, so probe the usual installs.
+    private func configureBunLaunch(scriptPath: String) {
+        if let bun = Self.findBun() {
+            process.executableURL = URL(fileURLWithPath: bun)
+            process.arguments = [scriptPath]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["bun", scriptPath]
+        }
     }
 
     private static func findBun() -> String? {

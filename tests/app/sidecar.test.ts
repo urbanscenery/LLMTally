@@ -147,6 +147,18 @@ describe('sidecar server', () => {
     expect(Object.values(reply.result).every((value) => value === null)).toBe(true);
   });
 
+  test('todayByAgent maps agents to row counts, empty ledger to empty map', async () => {
+    // Arrange
+    const server = createSidecarServer({ databasePath: makeLedger() });
+
+    // Act
+    const reply = await call(server, 'todayByAgent');
+
+    // Assert
+    expect(reply.error).toBeUndefined();
+    expect(reply.result).toEqual({});
+  });
+
   test('a bad report range comes back as an RPC error, not a crash', async () => {
     const server = createSidecarServer({ databasePath: makeLedger() });
 

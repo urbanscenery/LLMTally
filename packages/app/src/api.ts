@@ -128,6 +128,24 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
     return switchClaudeAccount(selector, { vault: getVault(), activeStore: getActiveStore() });
   });
 
+  server.register('todayByAgent', async () => {
+    // ledger activity for the agent_active status metric: which agents
+    // have rows today (local calendar day, ledger only, no refresh)
+    const today = localDayKey();
+    const range = buildReportRange(today, today);
+    if ('error' in range) {
+      throw new Error(range.error);
+    }
+    const summary = await generateReport({
+      databasePath,
+      groupBy: 'agent',
+      agent: null,
+      range,
+      noRefresh: true,
+    });
+    return Object.fromEntries(summary.buckets.map((bucket) => [bucket.key, bucket.rowCount]));
+  });
+
   server.register('invalidateQuotaCache', () => {
     // Only the soft reset: 429 backoff and the shared fetch budget stay
     // intact so a refresh-happy user cannot re-burn a refused budget.
@@ -149,6 +167,12 @@ async function reportFor(params: unknown, databasePath: string): Promise<ReportS
     range,
     noRefresh: readBool(params, 'noRefresh') ?? false,
   });
+}
+
+/** Local calendar day, matching the report layer's local bucketing. */
+function localDayKey(now = new Date()): string {
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 function asRecord(params: unknown): Record<string, unknown> {

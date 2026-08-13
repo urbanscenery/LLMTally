@@ -13,6 +13,9 @@ struct BuilderView: View {
     @State private var selectedId: String?
     @State private var quota: [QuotaSnapshotDTO] = []
     @State private var buckets: [ReportBucketDTO] = []
+    @State private var todayRows: [String: Int]?
+    /// Squeeze simulation (§6.5): reproduces a crowded menu bar.
+    @State private var budget: Double = Double(StatusComposer.defaultBudget)
     private let store = DescriptorStore()
 
     init(onBack: @escaping () -> Void) {
@@ -63,21 +66,53 @@ struct BuilderView: View {
     private var preview: some View {
         let rendering = renderStatusSegments(
             descriptors: items, quota: quota, buckets: buckets,
-            activeAccounts: [:], privacy: PrivacySetting.enabled)
-        return HStack(spacing: 14) {
-            Text("Finder").font(.system(size: 12, weight: .semibold)).opacity(0.6)
-            Text("File").font(.system(size: 12)).opacity(0.5)
-            Text("Edit").font(.system(size: 12)).opacity(0.5)
-            Spacer()
-            Image(nsImage: StatusComposer.compose(segments: rendering.segments))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
-                .help(rendering.tooltip)
+            activeAccounts: [:], todayAgentRows: todayRows,
+            privacy: PrivacySetting.enabled)
+        // the note must agree with the composer: same content budget,
+        // same +N indicator width
+        let widths = rendering.segments.map { Double(StatusComposer.width(of: $0)) }
+        let fold = foldSegmentIndices(
+            metrics: rendering.metrics, widths: widths,
+            budget: StatusComposer.contentBudget(budget), gap: 6,
+            indicatorWidth: StatusComposer.indicatorWidth)
+        let fullWidth = widths.reduce(0, +) + Double(max(0, widths.count - 1)) * 6 + 24
+
+        return VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                Text("Finder").font(.system(size: 12, weight: .semibold)).opacity(0.6)
+                Text("File").font(.system(size: 12)).opacity(0.5)
+                Text("Edit").font(.system(size: 12)).opacity(0.5)
+                Spacer()
+                Image(nsImage: StatusComposer.compose(
+                    segments: rendering.segments,
+                    metrics: rendering.metrics,
+                    budget: CGFloat(budget)))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
+                    .help(rendering.tooltip)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .background(Color.primary.opacity(0.05))
+
+            HStack(spacing: 10) {
+                Text("\(Int(fullWidth)) / \(Int(budget)) pt")
+                    .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                Slider(value: $budget, in: 200...Double(StatusComposer.defaultBudget)) {
+                    Text("Squeeze")
+                }
+                .controlSize(.small)
+                .frame(maxWidth: 220)
+                Spacer()
+                if fold.hiddenCount > 0 {
+                    Text("Compacted · \(fold.hiddenCount) folded · order kept")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 26)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 30)
-        .background(Color.primary.opacity(0.05))
     }
 
     // MARK: list
@@ -130,6 +165,7 @@ struct BuilderView: View {
             Section("Context") {
                 Button("Freshness") { add(.sourceFreshness) }
                 Button("Provider label") { add(.providerLabel) }
+                Button("Agent active") { add(.agentActive) }
                 Button("Spacer") { add(.spacer) }
             }
         }
@@ -395,6 +431,11 @@ struct BuilderView: View {
                     quota = value.quota
                     buckets = value.report.buckets
                 }
+            }
+        }
+        SidecarClient.shared.requestDecodable("todayByAgent", as: [String: Int].self) { result in
+            DispatchQueue.main.async {
+                if case .success(let value) = result { todayRows = value }
             }
         }
     }
