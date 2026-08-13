@@ -122,8 +122,8 @@ enum StatusComposer {
                 cursor += 7
             }
         case .stack(let top, let bottom):
-            microAttributed(top).draw(at: NSPoint(x: x, y: 8))
-            microAttributed(bottom).draw(at: NSPoint(x: x, y: 0.5))
+            microAttributed(top).draw(at: NSPoint(x: x, y: 7.5))
+            microAttributed(bottom).draw(at: NSPoint(x: x, y: -0.5))
         case .spark(let values, let money, let line):
             let maximum = max(values.max() ?? 1, 0.000_001)
             let theme = Theme.current()
@@ -179,7 +179,7 @@ enum StatusComposer {
     }
 
     /// Micro type for the two-line stacked label (iStat-style).
-    private static let microFont = NSFont.monospacedDigitSystemFont(ofSize: 6.5, weight: .medium)
+    private static let microFont = NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .medium)
 
     private static func microAttributed(_ string: String) -> NSAttributedString {
         NSAttributedString(string: string, attributes: [
