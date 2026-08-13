@@ -211,11 +211,23 @@ export function renderBreakdownTable(
   ];
 
   const lines: RichLine[] = [headerLine(), rule];
-  model.rows.slice(0, Math.max(1, visibleRows)).forEach((row, index) => {
-    lines.push(dataLine(row, false, index === cursor));
+  // window FOLLOWS the cursor: a fixed head slice let j/k walk onto
+  // rows that were never drawn, and Enter opened an invisible model
+  // (audit CX-23/GK-25)
+  const capacity = Math.max(1, visibleRows);
+  const start = Math.min(
+    Math.max(0, cursor - capacity + 1),
+    Math.max(0, model.rows.length - capacity),
+  );
+  if (start > 0) {
+    lines.push([{ text: `   … ${start} above`, role: 'muted' }]);
+  }
+  model.rows.slice(start, start + capacity).forEach((row, index) => {
+    lines.push(dataLine(row, false, start + index === cursor));
   });
-  if (model.rows.length > visibleRows) {
-    lines.push([{ text: `   … ${model.rows.length - visibleRows} more`, role: 'muted' }]);
+  const below = model.rows.length - (start + capacity);
+  if (below > 0) {
+    lines.push([{ text: `   … ${below} more`, role: 'muted' }]);
   }
   lines.push(rule);
   lines.push(dataLine(model.totals, true));

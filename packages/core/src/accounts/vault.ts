@@ -371,8 +371,15 @@ export class AccountVault {
     let lockDb: Database;
     try {
       lockDb = new Database(lockPath, { create: true, strict: true });
-    } catch {
-      return 'busy';
+    } catch (error) {
+      // an unopenable lock file is an environment fault, not contention:
+      // reporting it as 'busy' made callers silently drop a rotated
+      // refresh token and later quarantine the account (audit GK-18)
+      throw new VaultError(
+        `cannot open the vault mutation lock (${lockPath}): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
     try {
       chmodSync(lockPath, 0o600);

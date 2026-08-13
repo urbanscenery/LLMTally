@@ -118,6 +118,12 @@ export class TuiController {
       return;
     }
     if (event.type === 'scroll') {
+      // wheel over a confirm/notice must not move a hidden picker or
+      // the list behind the modal (audit GK-40); pickers do scroll
+      const overlayKind = this.state.overlay?.kind;
+      if (overlayKind !== undefined && overlayKind !== 'picker') {
+        return;
+      }
       const name = event.scroll === 'up' ? 'up' : 'down';
       this.handleKey({ name, ctrl: false, shift: false });
       return;
@@ -349,6 +355,15 @@ export class TuiController {
     this.state = withActiveTab(this.state, tab);
     this.render();
     this.onTabChange?.(tab);
+  }
+
+  /** Re-renders the current state — the footer's clock and spinner
+   * change with wall time, which no state commit represents. */
+  redraw(): void {
+    if (this.stopped) {
+      return;
+    }
+    this.render();
   }
 
   private render(): void {

@@ -6,6 +6,7 @@ import { AccountVault, defaultVaultDir, vaultPaths } from '../accounts/vault.ts'
 
 import { LedgerUnavailableError, openReadOnlyDatabase } from '../db/connection.ts';
 import { ledgerSpaceReport } from '../db/maintenance.ts';
+import { opencodeDataDir } from '../config/paths.ts';
 import { LATEST_SCHEMA_VERSION } from '../db/migrate.ts';
 import { defaultAntigravityStoreDir, listAntigravityAccounts } from '../quota/antigravity.ts';
 import { defaultGrokCredentials, isGrokTokenExpired } from '../quota/grok.ts';
@@ -48,7 +49,9 @@ export function runDoctorChecks(options: DoctorOptions): readonly DoctorCheck[] 
   checks.push(...claudeChecks(home));
   checks.push(directoryCheck('source.codex', join(home, '.codex', 'sessions'), 'Codex CLI'));
   checks.push(
-    fileCheck('source.opencode', join(home, '.local', 'share', 'opencode', 'opencode.db'), 'OpenCode'),
+    // the parser resolves XDG_DATA_HOME; Doctor must look in the same
+    // place or a Linux install collects data Doctor calls missing
+    fileCheck('source.opencode', join(opencodeDataDir(home), 'opencode.db'), 'OpenCode'),
   );
   checks.push(directoryCheck('source.cline', join(home, '.cline', 'data', 'sessions'), 'Cline'));
   checks.push(

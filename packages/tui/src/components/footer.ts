@@ -51,8 +51,12 @@ function describeScanStatus(state: TuiState, nowUtc: number): RichLine {
     }
     case 'busy':
       return joinLine(span('scan busy (daemon)', 'warning'));
-    case 'error':
-      return joinLine(span('refresh error', 'danger'));
+    case 'error': {
+      const detail = state.refresh.lastError;
+      return joinLine(
+        span(detail === null ? 'refresh error' : `refresh error: ${detail}`, 'danger'),
+      );
+    }
     default:
       return [];
   }

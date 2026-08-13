@@ -48,8 +48,26 @@ const MAX_LABEL_LENGTH = 256;
 
 export const GROK_AGENT = 'grok';
 
-/** Tokens whose billing route answered 404/410, until restart. */
-const goneTokens = new Set<string>();
+/**
+ * Tokens whose billing route answered 404/410. A gone marker expires
+ * after 6 hours: a long-lived sidecar must retry after the vendor
+ * recovers, and one transient 410 must not kill the gauge for the
+ * whole process lifetime (audit GK-14).
+ */
+const GONE_TTL_SECONDS = 6 * 3600;
+const goneTokens = new Map<string, number>();
+
+function isGone(fingerprint: string, nowUtc: number): boolean {
+  const markedAt = goneTokens.get(fingerprint);
+  if (markedAt === undefined) {
+    return false;
+  }
+  if (nowUtc - markedAt >= GONE_TTL_SECONDS) {
+    goneTokens.delete(fingerprint);
+    return false;
+  }
+  return true;
+}
 
 /** Test seam: forgets the auto-disable. */
 export function resetGrokQuotaState(): void {
@@ -155,8 +173,8 @@ async function getBilling(
   fetchFn: FetchLike,
 ): Promise<GetResult> {
   const fingerprint = accessTokenFingerprint(accessToken);
-  if (goneTokens.has(fingerprint)) {
-    return { kind: 'gone', warning: 'grok: billing endpoint is gone; stopped polling until restart' };
+  if (isGone(fingerprint, nowUtc)) {
+    return { kind: 'gone', warning: 'grok: billing endpoint is gone; retrying in a few hours' };
   }
   let response: Response;
   try {
@@ -179,10 +197,10 @@ async function getBilling(
     return { kind: 'rate_limited', retryAfterSeconds: parseRetryAfterSeconds(response, nowUtc) };
   }
   if (response.status === 404 || response.status === 410) {
-    goneTokens.add(fingerprint);
+    goneTokens.set(fingerprint, nowUtc);
     return {
       kind: 'gone',
-      warning: `grok: billing endpoint is gone (http ${response.status}); stopped polling until restart`,
+      warning: `grok: billing endpoint is gone (http ${response.status}); retrying in a few hours`,
     };
   }
   if (response.status === 401 || response.status === 403) {

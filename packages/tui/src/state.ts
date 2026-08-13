@@ -152,6 +152,7 @@ export function createInitialState(): TuiState {
       reason: null,
       scanStatus: 'idle',
       warningTotal: 0,
+      lastError: null,
       lastCompletedAtUtc: null,
       autoIntervalSeconds: null,
     },

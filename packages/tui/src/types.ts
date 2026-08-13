@@ -32,6 +32,8 @@ export interface RefreshState {
   readonly scanStatus: ScanRefreshStatus;
   /** Recoverable warnings from the last completed scan (0 = clean). */
   readonly warningTotal: number;
+  /** Sanitized message of the last scan failure; null when none. */
+  readonly lastError: string | null;
   readonly lastCompletedAtUtc: number | null;
   /** Auto-refresh interval; null = off (the initial state). */
   readonly autoIntervalSeconds: number | null;

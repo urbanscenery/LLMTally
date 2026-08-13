@@ -47,6 +47,18 @@ jobs:
       # and the scan worker the launchd plist points at (R-02/R-03)
       - run: bun run verify:pack
 
+  swift-app:
+    name: swift build · kit-selftest (macOS)
+    if: github.event_name != 'schedule'
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # the menubar shell and its kit ship from this repo too — a DTO
+      # field drift between TS and Swift otherwise only fails locally
+      - run: swift build --package-path packages/app/macos
+      - run: swift run --package-path packages/app/macos kit-selftest
+
   linux-signal:
     name: portability signal (Linux, non-blocking)
     if: github.event_name != 'schedule'

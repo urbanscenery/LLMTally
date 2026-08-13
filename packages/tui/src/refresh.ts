@@ -1,4 +1,5 @@
 import { ScanLockError } from '@llmtally/core/scan/lock.ts';
+import { sanitizeTerminalLine } from '@llmtally/core/terminal/sanitize.ts';
 import type { TuiController } from './controller.ts';
 import type { TuiDataSource } from './data-source.ts';
 import type { TabLoader } from './loader.ts';
@@ -143,6 +144,7 @@ export class RefreshScheduler {
 
     let scanStatus: ScanRefreshStatus;
     let warningTotal = 0;
+    let lastError: string | null = null;
     try {
       const summary = await this.dataSource.scan();
       // a scan can complete AND report recoverable warnings (source
@@ -152,6 +154,13 @@ export class RefreshScheduler {
       scanStatus = warningTotal > 0 ? 'ok-with-warnings' : 'ok';
     } catch (error) {
       scanStatus = error instanceof ScanLockError ? 'busy' : 'error';
+      if (scanStatus === 'error') {
+        // EACCES, a broken DB, and a parser bug are different problems;
+        // 'refresh error' alone made them indistinguishable (audit S-2)
+        lastError = sanitizeTerminalLine(
+          error instanceof Error ? error.message : String(error),
+        ).slice(0, 120);
+      }
     }
 
     if (this.stopped) {
@@ -173,6 +182,7 @@ export class RefreshScheduler {
       reason: null,
       scanStatus,
       warningTotal,
+      lastError,
       lastCompletedAtUtc: this.nowUtc(),
     });
     this.controller.commit(state);

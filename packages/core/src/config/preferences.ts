@@ -40,6 +40,23 @@ function readConfig(path: string): Record<string, unknown> | null {
   }
 }
 
+/** Missing file → empty base; present-but-corrupt → throws. */
+function readConfigForWrite(path: string): Record<string, unknown> {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return {};
+  }
+  // a corrupt config must not be silently replaced by a version+ui
+  // skeleton — that destroys pricing/privacy settings (audit CX-20)
+  const parsed = asObject(JSON.parse(text));
+  if (parsed === null) {
+    throw new Error('config.json is not an object');
+  }
+  return parsed;
+}
+
 export function loadUiPreferences(path: string = defaultPreferencesPath()): UiPreferences {
   const root = readConfig(path);
   const ui = root === null ? null : asObject(root.ui);
@@ -72,7 +89,7 @@ export function saveUiPreferences(
     // a hand-written pricing override must not disappear because the
     // user picked a theme, and stamping the version we understand is
     // what makes the file readable again afterwards
-    const base = readConfig(path) ?? {};
+    const base = readConfigForWrite(path);
     const ui = { ...(asObject(base.ui) ?? {}) };
     if ('theme' in patch) {
       ui.theme = patch.theme;

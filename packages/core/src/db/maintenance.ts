@@ -10,6 +10,7 @@
 import { statSync } from 'node:fs';
 
 import { acquireScanLock } from '../scan/lock.ts';
+import { Database } from 'bun:sqlite';
 import { openDatabase } from './connection.ts';
 
 export class MaintenanceError extends Error {
@@ -43,7 +44,9 @@ export function ledgerSpaceReport(databasePath: string): LedgerSpaceReport | nul
   if (fileBytes === 0) {
     return null;
   }
-  const db = openDatabase(databasePath);
+  // read-only: a diagnostic must not chmod the file or spawn WAL
+  // sidecars on a ledger it only inspects (audit GK-17)
+  const db = new Database(databasePath, { readonly: true });
   try {
     const pageSize = db.query<{ page_size: number }, []>('PRAGMA page_size').get()?.page_size ?? 0;
     const freelist =

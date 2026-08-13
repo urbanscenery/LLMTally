@@ -146,6 +146,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
   let scheduler: RefreshScheduler | null = null;
   let running = false;
   let quotaTimer: ReturnType<typeof setInterval> | null = null;
+  let footerTicker: ReturnType<typeof setInterval> | null = null;
 
   const screen = await options.createScreen(() => theme.current());
   const controller = new TuiController({
@@ -407,7 +408,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       controller.setOverlay({
         kind: 'input',
         title: 'Search prompts',
-        prompt: 'Matches whole words in stored prompt text.',
+        prompt: 'Matches the words as one exact phrase in stored prompt text.',
         value: state.searchQuery,
       });
       return true;
@@ -713,12 +714,15 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       running = true;
       controller.start();
       startQuotaPolling();
+      // 'updated Ns ago' and the spinner track wall time; without a
+      // tick they freeze until the next state commit (audit CX-33)
+      footerTicker = setInterval(() => controller.redraw(), 1000);
       if (options.firstRun === true) {
         // the first import walks every agent log on the machine, so say
         // so rather than leaving an empty dashboard that looks broken
         notice(
           'First launch',
-          'Importing your local agent logs.\nThis happens once; later launches only collect what changed.',
+          'Importing your local agent logs.\nThis happens once; later launches only collect what changed.\nq quits — the import resumes on the next launch.',
           true,
         );
         dismissNoticeWhenScanned();
@@ -730,6 +734,10 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         clearInterval(quotaTimer);
         quotaTimer = null;
       }
+      if (footerTicker !== null) {
+        clearInterval(footerTicker);
+        footerTicker = null;
+      }
       running = false;
     },
     stop(): void {
@@ -737,6 +745,10 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       if (quotaTimer !== null) {
         clearInterval(quotaTimer);
         quotaTimer = null;
+      }
+      if (footerTicker !== null) {
+        clearInterval(footerTicker);
+        footerTicker = null;
       }
       if (running) {
         scheduler?.stop();

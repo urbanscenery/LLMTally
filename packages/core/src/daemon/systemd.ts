@@ -37,6 +37,11 @@ export function systemdTimerPath(home: string = homedir()): string {
  * a user unit gets no shell and an unpredictable PATH.
  */
 function quoteExecArg(argument: string): string {
+  // a newline inside an argument would end the ExecStart line and turn
+  // the rest into directive-shaped unit content (audit CX-39)
+  if (argument.includes('\n') || argument.includes('\r')) {
+    throw new Error(`refusing to serialize a path containing a newline: ${JSON.stringify(argument)}`);
+  }
   return `"${argument.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
