@@ -47,7 +47,7 @@ struct Theme {
         make("onedark", "One Dark", accent: 0x61AFEF, live: 0x98C379, warn: 0xE5C07B, crit: 0xE06C75, actual: 0xD19A66, background: 0x282C34, dark: true),
         make("dracula", "Dracula", accent: 0xBD93F9, live: 0x50FA7B, warn: 0xFFB86C, crit: 0xFF5555, actual: 0xFF79C6, background: 0x282A36, dark: true),
         make("tokyonight", "Tokyo Night", accent: 0x7AA2F7, live: 0x9ECE6A, warn: 0xE0AF68, crit: 0xF7768E, actual: 0xFF9E64, background: 0x1A1B26, dark: true),
-        make("monokai", "Monokai", accent: 0x66D9EF, live: 0xA6E22E, warn: 0xFD971F, crit: 0xF92672, actual: 0xE6DB74, background: 0x272822, dark: true),
+        make("monokai", "Monokai", accent: 0xF92672, live: 0xA6E22E, warn: 0xFD971F, crit: 0xC4265E, actual: 0xE6DB74, background: 0x272822, dark: true),
         make("vue", "Vue Dark", accent: 0x42B883, live: 0x42D392, warn: 0xFFC517, crit: 0xED3C50, actual: 0xFF7043, background: 0x273849, dark: true),
         make("material", "Material Dark", accent: 0x80CBC4, live: 0xC3E88D, warn: 0xFFCB6B, crit: 0xF07178, actual: 0xF78C6C, background: 0x263238, dark: true),
         make("mono", "Mono Dark", accent: 0xEEEEEE, live: 0xCFCFCF, warn: 0x8A8A8A, crit: 0xFFFFFF, actual: 0xB0B0B0, background: 0x111213, dark: true),
