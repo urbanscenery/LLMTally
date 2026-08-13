@@ -21,6 +21,12 @@ extension Notification.Name {
     static let llmtallyKeyCommand = Notification.Name("llmtallyKeyCommand")
     /// The popover view asks the controller to close it (Esc at root).
     static let llmtallyClosePopover = Notification.Name("llmtallyClosePopover")
+    /// The popover content reports its natural height (object: NSNumber,
+    /// full panel points) so the panel can fit the content instead of a
+    /// fixed size. The controller clamps to the screen's visible frame —
+    /// the menu-bar convention (HIG sets no point cap; system menus grow
+    /// to the work area and scroll past it).
+    static let llmtallyPanelDesiredHeight = Notification.Name("llmtallyPanelDesiredHeight")
 }
 
 /// Single source for the privacy switch (03_design_spec §11).

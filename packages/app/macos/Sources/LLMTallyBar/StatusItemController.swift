@@ -14,7 +14,22 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private static var refreshIntervalSeconds: TimeInterval {
         TimeInterval(AppConfig.cadenceMinutes * 60)
     }
-    private static let panelSize = NSSize(width: 400, height: 560)
+    /// Width is fixed; height fits the content. HIG gives no point cap
+    /// for menu-bar dropdowns — the platform convention (NSMenu) is to
+    /// grow to the screen's visible frame and scroll past it, so that
+    /// is the clamp. The last granted height is remembered so a reopen
+    /// starts at the size the cached content will need.
+    private static let panelWidth: CGFloat = 400
+    private static let minPanelHeight: CGFloat = 320
+    private static let panelScreenMargin: CGFloat = 24
+    private static let panelHeightDefaultsKey = "panelHeight"
+    private var panelHeight: CGFloat {
+        get {
+            let stored = CGFloat(UserDefaults.standard.double(forKey: Self.panelHeightDefaultsKey))
+            return stored >= Self.minPanelHeight ? stored : 560
+        }
+        set { UserDefaults.standard.set(Double(newValue), forKey: Self.panelHeightDefaultsKey) }
+    }
 
     private let statusItem: NSStatusItem
     private var panel: NSPanel?
@@ -25,6 +40,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var openObserver: NSObjectProtocol?
     private var closeObserver: NSObjectProtocol?
     private var configObserver: NSObjectProtocol?
+    private var heightObserver: NSObjectProtocol?
     private var keyMonitor: Any?
     private var outsideClickMonitor: Any?
     // last-good inputs so a Builder edit re-renders without a new fetch
@@ -78,11 +94,17 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         ) { [weak self] _ in
             self?.closePanel()
         }
+        heightObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyPanelDesiredHeight, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let height = notification.userInfo?["height"] as? CGFloat else { return }
+            self?.resizePanel(toDesired: height)
+        }
     }
 
     deinit {
         refreshTimer?.invalidate()
-        for observer in [descriptorObserver, privacyObserver, openObserver, closeObserver, configObserver] {
+        for observer in [descriptorObserver, privacyObserver, openObserver, closeObserver, configObserver, heightObserver] {
             if let observer { NotificationCenter.default.removeObserver(observer) }
         }
         removeMonitors()
@@ -110,10 +132,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private func showPanel() {
         guard panel == nil, let button = statusItem.button else { return }
 
+        let size = NSSize(width: Self.panelWidth, height: clampedPanelHeight(panelHeight))
         let hosting = NSHostingController(rootView: PanelRoot())
-        hosting.view.frame = NSRect(origin: .zero, size: Self.panelSize)
+        hosting.view.frame = NSRect(origin: .zero, size: size)
         let fresh = KeyablePanel(
-            contentRect: NSRect(origin: .zero, size: Self.panelSize),
+            contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered, defer: false)
         fresh.contentViewController = hosting
@@ -125,7 +148,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         fresh.level = .popUpMenu
         fresh.collectionBehavior = [.transient, .ignoresCycle]
         fresh.isReleasedWhenClosed = false
-        fresh.setFrame(panelFrame(anchoredTo: button), display: false)
+        fresh.setFrame(panelFrame(anchoredTo: button, size: size), display: false)
         panel = fresh
 
         fresh.orderFrontRegardless()
@@ -149,11 +172,29 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         panel = nil
     }
 
+    /// The height the screen actually allows for a given wish.
+    private func clampedPanelHeight(_ desired: CGFloat) -> CGFloat {
+        let visible = (statusItem.button?.window?.screen ?? NSScreen.main)?.visibleFrame
+        let ceiling = (visible?.height ?? 900) - Self.panelScreenMargin
+        return min(max(desired, Self.minPanelHeight), ceiling)
+    }
+
+    /// Content reported its natural height — refit the open panel,
+    /// keeping the top edge anchored under the menu bar.
+    private func resizePanel(toDesired desired: CGFloat) {
+        let height = clampedPanelHeight(desired)
+        panelHeight = height
+        guard let panel, let button = statusItem.button,
+              abs(panel.frame.height - height) > 0.5 else { return }
+        panel.setFrame(
+            panelFrame(anchoredTo: button, size: NSSize(width: Self.panelWidth, height: height)),
+            display: true)
+    }
+
     /// Computed BEFORE the panel appears — no visible reposition. The
     /// anchor is the button's screen rect; a menu-bar manager (Ice)
     /// may have moved it, so the frame clamps into the visible frame.
-    private func panelFrame(anchoredTo button: NSStatusBarButton) -> NSRect {
-        let size = Self.panelSize
+    private func panelFrame(anchoredTo button: NSStatusBarButton, size: NSSize) -> NSRect {
         let buttonRect = button.window.map {
             $0.convertToScreen(button.convert(button.bounds, to: nil))
         } ?? .zero

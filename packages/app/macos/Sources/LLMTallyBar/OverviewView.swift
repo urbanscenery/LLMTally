@@ -4,7 +4,29 @@ import LLMTallyKit
 /// The popover (03_design_spec §3–§5): Overview with attention headline,
 /// agent rows, Today cards — and Provider detail with per-account
 /// windows and the Switch confirmation sheet.
+/// Natural height of the popover's scrollable content — bubbles up from
+/// whichever branch (overview list / provider detail) is on screen.
+struct PanelContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+extension View {
+    /// Applied to a ScrollView's inner stack: reports its laid-out
+    /// height so the panel can fit the content.
+    func reportsPanelContentHeight() -> some View {
+        background(GeometryReader { proxy in
+            Color.clear.preference(key: PanelContentHeightKey.self, value: proxy.size.height)
+        })
+    }
+}
+
 struct OverviewView: View {
+    /// Header (40) + footer (34) + the two 1pt dividers.
+    static let chromeHeight: CGFloat = 76
+
     // the shared app-lifetime model: reopening paints last-good data
     // immediately, the refresh lands behind it
     @ObservedObject private var model = OverviewModel.shared
@@ -26,7 +48,16 @@ struct OverviewView: View {
             Divider()
             footer
         }
-        .frame(width: 400, height: 560)
+        .frame(width: 400)
+        // content-fit panel: the scroll content reports its natural
+        // height; the controller sizes the panel to it (clamped to the
+        // screen), so scrolling only starts past the screen's work area
+        .onPreferenceChange(PanelContentHeightKey.self) { contentHeight in
+            guard contentHeight > 0 else { return }
+            NotificationCenter.default.post(
+                name: .llmtallyPanelDesiredHeight, object: nil,
+                userInfo: ["height": contentHeight + Self.chromeHeight])
+        }
         // reading themeId keeps every themed child live while the
         // panel stays open next to Settings
         .tint((Theme.presets.first { $0.id == themeId } ?? Theme.system).accent)
@@ -191,6 +222,7 @@ struct OverviewView: View {
                             privacy: privacy,
                             hourBuckets: model.hourBuckets)
             }
+            .reportsPanelContentHeight()
         }
     }
 
@@ -723,6 +755,7 @@ struct ProviderDetailView: View {
                 }
                 lowerHalf
             }
+            .reportsPanelContentHeight()
         }
     }
 
