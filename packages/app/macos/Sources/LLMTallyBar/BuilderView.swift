@@ -84,24 +84,49 @@ struct BuilderView: View {
             indicatorWidth: StatusComposer.indicatorWidth)
         let fullWidth = widths.reduce(0, +) + Double(max(0, widths.count - 1)) * 6 + 24
 
+        // a framed mini-screen mockup (menu bar strip over a wallpaper)
+        // with a PREVIEW badge — unmistakably a simulation, not UI chrome
         return VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                Text("Finder").font(.system(size: 12, weight: .semibold)).opacity(0.6)
-                Text("File").font(.system(size: 12)).opacity(0.5)
-                Text("Edit").font(.system(size: 12)).opacity(0.5)
-                Spacer()
-                Image(nsImage: StatusComposer.compose(
-                    segments: rendering.segments,
-                    metrics: rendering.metrics,
-                    budget: CGFloat(budget)))
+            ZStack(alignment: .topLeading) {
+                VStack(spacing: 0) {
+                    HStack(spacing: 14) {
+                        Text("Finder").font(.system(size: 12, weight: .semibold)).opacity(0.6)
+                        Text("File").font(.system(size: 12)).opacity(0.5)
+                        Text("Edit").font(.system(size: 12)).opacity(0.5)
+                        Spacer()
+                        Image(nsImage: StatusComposer.compose(
+                            segments: rendering.segments,
+                            metrics: rendering.metrics,
+                            budget: CGFloat(budget)))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
+                            .help(rendering.tooltip)
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 26)
+                    .background(Color.primary.opacity(0.07))
+
+                    // fake desktop below the strip sells the screen mock
+                    LinearGradient(
+                        colors: [Color.accentColor.opacity(0.30), Color.accentColor.opacity(0.08)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing)
+                        .frame(height: 30)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7)
+                    .stroke(Color.primary.opacity(0.25), lineWidth: 1))
+
+                Text("PREVIEW")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color(nsColor: .windowBackgroundColor))
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
-                    .help(rendering.tooltip)
+                    .background(Capsule().fill(Color.primary.opacity(0.85)))
+                    .offset(x: 10, y: -9)
             }
             .padding(.horizontal, 12)
-            .frame(height: 30)
-            .background(Color.primary.opacity(0.05))
+            .padding(.top, 12)
 
             HStack(spacing: 10) {
                 Text("\(Int(fullWidth)) / \(Int(budget)) pt")
@@ -118,7 +143,7 @@ struct BuilderView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .frame(height: 26)
+            .frame(height: 28)
         }
     }
 
@@ -208,12 +233,18 @@ struct BuilderView: View {
                         if case .pin = item.binding ?? .followAttention {
                             providerSection(item, index: index)
                             windowSection(item, index: index)
-                        }
-                        if item.metric == .quotaMiniBar {
+                            if item.metric == .quotaMiniBar {
+                                secondWindowSection(item, index: index)
+                            }
+                        } else if item.metric == .quotaMiniBar {
+                            // follow-attention rails have no fixed window
+                            // list — the 5h+7d pair is the only 2-rail set
                             pairSection(item, index: index)
                         }
                         directionSection(item, index: index)
-                        labelSection(item, index: index)
+                        if item.metric != .quotaReset {
+                            labelSection(item, index: index)
+                        }
                     }
                     if isHistoryMetric(item.metric) {
                         historySection(item, index: index)
@@ -266,6 +297,9 @@ struct BuilderView: View {
                             provider: provider,
                             nativeWindowId: firstWindowId(of: provider))
                         current[index].scope = .provider(provider)
+                        // window ids are per-provider — a carried-over
+                        // 2nd rail would point at a foreign window
+                        current[index].secondNativeWindowId = nil
                     }
                 })) {
                 ForEach(catalogProviders(), id: \.self) { provider in
@@ -278,12 +312,19 @@ struct BuilderView: View {
 
     private func windowSection(_ item: MenuItemDescriptor, index: Int) -> some View {
         let provider = pinProvider(item.binding) ?? firstProvider()
+        let title = item.metric == .quotaMiniBar ? "1st window · required" : "Window · native id"
         // only windows the source actually returned — never a fixed enum
-        return section("Window · native id") {
+        return section(title) {
             Picker("", selection: Binding(
                 get: { pinWindowId(item.binding) ?? "" },
                 set: { windowId in
-                    mutate { $0[index].binding = .pin(provider: provider, nativeWindowId: windowId) }
+                    mutate { current in
+                        current[index].binding = .pin(provider: provider, nativeWindowId: windowId)
+                        // the same window can't be both rails
+                        if current[index].secondNativeWindowId == windowId {
+                            current[index].secondNativeWindowId = nil
+                        }
+                    }
                 })) {
                 ForEach(windowIds(of: provider), id: \.self) { windowId in
                     Text("\(shortWindowLabel(windowId)) · \(windowId)").tag(windowId)
@@ -294,6 +335,38 @@ struct BuilderView: View {
                 Text("This source has not returned any windows yet.")
                     .font(.caption2).foregroundStyle(.orange)
             }
+        }
+    }
+
+    /// Rails only: the optional 2nd rail. "None" keeps a single rail;
+    /// picking a window renders two. Replaces the fixed pair toggle for
+    /// pinned rails (a legacy saved pair pre-selects its 7d window).
+    private func secondWindowSection(_ item: MenuItemDescriptor, index: Int) -> some View {
+        let provider = pinProvider(item.binding) ?? firstProvider()
+        let firstId = pinWindowId(item.binding) ?? ""
+        let options = windowIds(of: provider).filter { $0 != firstId }
+        return section("2nd window · optional") {
+            Picker("", selection: Binding(
+                get: {
+                    if let second = item.secondNativeWindowId { return second }
+                    if item.windowSet == "pair",
+                       let legacy = options.first(where: { shortWindowLabel($0) == "7d" }) {
+                        return legacy
+                    }
+                    return ""
+                },
+                set: { windowId in
+                    mutate { current in
+                        current[index].secondNativeWindowId = windowId.isEmpty ? nil : windowId
+                        current[index].windowSet = windowId.isEmpty ? "single" : nil
+                    }
+                })) {
+                Text("None · single rail").tag("")
+                ForEach(options, id: \.self) { windowId in
+                    Text("\(shortWindowLabel(windowId)) · \(windowId)").tag(windowId)
+                }
+            }
+            .labelsHidden()
         }
     }
 
@@ -424,6 +497,7 @@ struct BuilderView: View {
                 resetDisplay: source.resetDisplay, showRangeLabel: source.showRangeLabel,
                 showWindowLabel: source.showWindowLabel, showPercentage: source.showPercentage,
                 binding: source.binding, windowSet: source.windowSet,
+                secondNativeWindowId: source.secondNativeWindowId,
                 providerIdentityPresentation: source.providerIdentityPresentation,
                 unavailableBehavior: source.unavailableBehavior)
             current.insert(copy, at: index + 1)
@@ -554,7 +628,11 @@ struct BuilderView: View {
     private func itemSubtitle(_ item: MenuItemDescriptor) -> String {
         switch item.binding {
         case .followAttention: return "follows attention"
-        case .pin(let provider, let windowId): return "\(provider) · \(windowId)"
+        case .pin(let provider, let windowId):
+            if let second = item.secondNativeWindowId {
+                return "\(provider) · \(windowId) + \(second)"
+            }
+            return "\(provider) · \(windowId)"
         case nil:
             if case .provider(let provider) = item.scope { return provider }
             return "aggregate"

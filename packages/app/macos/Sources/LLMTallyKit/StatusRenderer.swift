@@ -335,6 +335,18 @@ public func renderStatusSegments(
                     identity: identityText(descriptor, code: names.code(item.snapshot.agent)),
                     bars: bars), descriptor.metric)
             }
+            // visible labels apply to rails too — per bar, window label
+            // and/or percent, exactly what the Builder toggles promise
+            var labelParts: [String] = []
+            for bar in bars {
+                var piece: [String] = []
+                if descriptor.showWindowLabel ?? true { piece.append(shortWindowLabel(bar.windowId)) }
+                if descriptor.showPercentage ?? true { piece.append("\(Int(bar.usedPercent.rounded()))%") }
+                if !piece.isEmpty { labelParts.append(piece.joined(separator: " ")) }
+            }
+            if !labelParts.isEmpty {
+                append(.text(labelParts.joined(separator: " ")), descriptor.metric)
+            }
             for bar in bars {
                 tooltip.append(
                     "\(names.display(item.snapshot.agent)) \(bar.windowId) used "
@@ -433,14 +445,26 @@ public func renderStatusSegments(
                             tooltip: tooltip.joined(separator: "\n"))
 }
 
-/// Pair = the provider's 5h + 7d windows, only when both actually
-/// exist; a single rail otherwise. Missing windows are nil, never 0%.
+/// 1st window (required) + optional 2nd window. The legacy fixed pair
+/// (5h+7d) still renders when no explicit 2nd window is saved. Missing
+/// windows are nil, never 0%.
 private func railBars(
     _ descriptor: MenuItemDescriptor,
     item: AgentAttention,
     resolvedWindow: QuotaWindowDTO?
 ) -> [RailValue]? {
     let windows = item.snapshot.windows
+    if let secondId = descriptor.secondNativeWindowId {
+        guard let first = resolvedWindow else { return nil }
+        var bars = [RailValue(windowId: first.id, usedPercent: first.usedPercent)]
+        // the optional 2nd rail drops when its window vanished — the
+        // 1st stays; a vanished id is never fuzzy-matched
+        if secondId != first.id,
+           let second = windows.first(where: { $0.id == secondId }) {
+            bars.append(RailValue(windowId: second.id, usedPercent: second.usedPercent))
+        }
+        return bars
+    }
     if descriptor.windowSet == "pair" {
         let fiveHour = windows.first { shortWindowLabel($0.id) == "5h" }
         let sevenDay = windows.first { shortWindowLabel($0.id) == "7d" }

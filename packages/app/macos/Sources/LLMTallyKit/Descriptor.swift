@@ -90,6 +90,9 @@ public struct MenuItemDescriptor: Codable, Identifiable, Equatable {
     public var showPercentage: Bool?
     public var binding: ItemBinding?
     public var windowSet: String?
+    /// Rails only: an optional second native window — one rail when nil,
+    /// two when set. Supersedes the fixed `windowSet == "pair"`.
+    public var secondNativeWindowId: String?
     public var providerIdentityPresentation: String?
     public var unavailableBehavior: String
 
@@ -105,6 +108,7 @@ public struct MenuItemDescriptor: Codable, Identifiable, Equatable {
                 showPercentage: Bool? = true,
                 binding: ItemBinding? = nil,
                 windowSet: String? = nil,
+                secondNativeWindowId: String? = nil,
                 providerIdentityPresentation: String? = "icon",
                 unavailableBehavior: String = "placeholder") {
         self.id = id
@@ -119,6 +123,7 @@ public struct MenuItemDescriptor: Codable, Identifiable, Equatable {
         self.showPercentage = showPercentage
         self.binding = binding
         self.windowSet = windowSet
+        self.secondNativeWindowId = secondNativeWindowId
         self.providerIdentityPresentation = providerIdentityPresentation
         self.unavailableBehavior = unavailableBehavior
     }

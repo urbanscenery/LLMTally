@@ -276,6 +276,55 @@ do {
     }
     expectEqual(pair.metrics.count, pair.segments.count, "metrics stay aligned with segments")
 
+    // explicit 1st+2nd windows render two rails in saved order
+    let twoRails = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(
+            scope: .provider("claude-code"), metric: .quotaMiniBar, presentation: "mini_bar",
+            showWindowLabel: false, showPercentage: false,
+            binding: .pin(provider: "claude-code", nativeWindowId: "seven_day"),
+            secondNativeWindowId: "five_hour")],
+        quota: quota, buckets: buckets, activeAccounts: [:])
+    if case .rails(_, let bars)? = twoRails.segments.last {
+        expectEqual(bars.map(\.windowId), ["seven_day", "five_hour"],
+                    "explicit 2nd window renders after the pinned 1st")
+    } else {
+        failures += 1
+        print("FAIL - explicit 1st+2nd rails did not render")
+    }
+
+    // a vanished 2nd window drops silently; the 1st rail stays
+    let vanishedSecond = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(
+            scope: .provider("claude-code"), metric: .quotaMiniBar, presentation: "mini_bar",
+            showWindowLabel: false, showPercentage: false,
+            binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"),
+            secondNativeWindowId: "gone_window")],
+        quota: quota, buckets: buckets, activeAccounts: [:])
+    if case .rails(_, let bars)? = vanishedSecond.segments.last {
+        expectEqual(bars.map(\.windowId), ["five_hour"], "vanished 2nd window keeps a single rail")
+    } else {
+        failures += 1
+        print("FAIL - rails with a vanished 2nd window did not render")
+    }
+
+    // visible-label toggles act on rails: default on appends the text,
+    // off leaves only glyph+rails
+    let labeledRails = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(
+            scope: .provider("claude-code"), metric: .quotaMiniBar, presentation: "mini_bar",
+            binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"))],
+        quota: quota, buckets: buckets, activeAccounts: [:])
+    expectEqual(labeledRails.segments.last, StatusSegment.text("5h 33%"),
+                "rails render the window label + percent when toggled on")
+    let unlabeledRails = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(
+            scope: .provider("claude-code"), metric: .quotaMiniBar, presentation: "mini_bar",
+            showWindowLabel: false, showPercentage: false,
+            binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"))],
+        quota: quota, buckets: buckets, activeAccounts: [:])
+    expect(!unlabeledRails.segments.contains { if case .text = $0 { return true }; return false },
+           "labels off leaves rails without any text segment")
+
     // vertical_text identity keeps the single text segment (no glyph)
     let coded = renderStatusSegments(
         descriptors: [MenuItemDescriptor(
