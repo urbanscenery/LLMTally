@@ -267,7 +267,7 @@ do {
         quota: quota, buckets: buckets, activeAccounts: [:])
     expectEqual(pair.segments.first, StatusSegment.glyph(agent: "claude-code"),
                 "icon identity renders a drawable glyph segment")
-    if pair.segments.count > 1, case .rails(let identity, let bars) = pair.segments[1] {
+    if pair.segments.count > 1, case .rails(let identity, let bars, _) = pair.segments[1] {
         expectEqual(bars.map(\.windowId), ["five_hour", "seven_day"], "pair rails carry both native ids")
         expectEqual(identity, "", "glyph replaces the inline identity code")
     } else {
@@ -284,7 +284,7 @@ do {
             binding: .pin(provider: "claude-code", nativeWindowId: "seven_day"),
             secondNativeWindowId: "five_hour")],
         quota: quota, buckets: buckets, activeAccounts: [:])
-    if case .rails(_, let bars)? = twoRails.segments.last {
+    if case .rails(_, let bars, _)? = twoRails.segments.last {
         expectEqual(bars.map(\.windowId), ["seven_day", "five_hour"],
                     "explicit 2nd window renders after the pinned 1st")
     } else {
@@ -300,30 +300,55 @@ do {
             binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"),
             secondNativeWindowId: "gone_window")],
         quota: quota, buckets: buckets, activeAccounts: [:])
-    if case .rails(_, let bars)? = vanishedSecond.segments.last {
+    if case .rails(_, let bars, _)? = vanishedSecond.segments.last {
         expectEqual(bars.map(\.windowId), ["five_hour"], "vanished 2nd window keeps a single rail")
     } else {
         failures += 1
         print("FAIL - rails with a vanished 2nd window did not render")
     }
 
-    // visible-label toggles act on rails: default on appends the text,
-    // off leaves only glyph+rails
+    // visible-label toggles act on rails: both on = a two-line stack,
+    // one on = a single text line, off = glyph+rails only
     let labeledRails = renderStatusSegments(
         descriptors: [MenuItemDescriptor(
             scope: .provider("claude-code"), metric: .quotaMiniBar, presentation: "mini_bar",
             binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"))],
         quota: quota, buckets: buckets, activeAccounts: [:])
-    expectEqual(labeledRails.segments.last, StatusSegment.text("5h 33%"),
-                "rails render the window label + percent when toggled on")
+    expectEqual(labeledRails.segments.last, StatusSegment.stack(top: "5h", bottom: "33%"),
+                "both labels render an iStat-style stacked pair")
+    let percentOnly = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(
+            scope: .provider("claude-code"), metric: .quotaMiniBar, presentation: "mini_bar",
+            showWindowLabel: false,
+            binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"))],
+        quota: quota, buckets: buckets, activeAccounts: [:])
+    expectEqual(percentOnly.segments.last, StatusSegment.text("33%"),
+                "a single label stays one centered line")
     let unlabeledRails = renderStatusSegments(
         descriptors: [MenuItemDescriptor(
             scope: .provider("claude-code"), metric: .quotaMiniBar, presentation: "mini_bar",
             showWindowLabel: false, showPercentage: false,
             binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"))],
         quota: quota, buckets: buckets, activeAccounts: [:])
-    expect(!unlabeledRails.segments.contains { if case .text = $0 { return true }; return false },
-           "labels off leaves rails without any text segment")
+    expect(!unlabeledRails.segments.contains {
+        if case .text = $0 { return true }
+        if case .stack = $0 { return true }
+        return false
+    }, "labels off leaves rails without any label segment")
+
+    // remaining direction inverts the displayed percent and marks the rails
+    let remainingRails = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(
+            scope: .provider("claude-code"), metric: .quotaMiniBar, presentation: "mini_bar",
+            direction: "remaining", showWindowLabel: false,
+            binding: .pin(provider: "claude-code", nativeWindowId: "five_hour"))],
+        quota: quota, buckets: buckets, activeAccounts: [:])
+    expectEqual(remainingRails.segments.last, StatusSegment.text("67%"),
+                "remaining direction shows 100 - used")
+    expect(remainingRails.segments.contains {
+        if case .rails(_, _, let remaining) = $0 { return remaining }
+        return false
+    }, "rails carry the remaining flag for the fill direction")
 
     // vertical_text identity keeps the single text segment (no glyph)
     let coded = renderStatusSegments(

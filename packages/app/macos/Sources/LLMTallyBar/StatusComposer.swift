@@ -73,9 +73,12 @@ enum StatusComposer {
             return attributed(string).size().width.rounded(.up)
         case .glyph:
             return 16
-        case .rails(let identity, let bars):
+        case .rails(let identity, let bars, _):
             let identityWidth = identity.isEmpty ? 0 : attributed(identity).size().width.rounded(.up) + 3
             return identityWidth + CGFloat(bars.count) * 5 + CGFloat(max(0, bars.count - 1)) * 2
+        case .stack(let top, let bottom):
+            return max(microAttributed(top).size().width,
+                       microAttributed(bottom).size().width).rounded(.up)
         case .spark:
             // fixed track: the range changes density, not width
             return sparkTrack
@@ -92,7 +95,7 @@ enum StatusComposer {
             drawText("—", at: x)
         case .glyph(let agent):
             drawGlyph(agent: agent, at: x)
-        case .rails(let identity, let bars):
+        case .rails(let identity, let bars, let remaining):
             var cursor = x
             if !identity.isEmpty {
                 drawText(identity, at: cursor)
@@ -107,7 +110,10 @@ enum StatusComposer {
                 (Theme.current().nsBackground
                     ?? NSColor.secondaryLabelColor.withAlphaComponent(0.25)).setFill()
                 track.fill()
-                let filledHeight = max(2, (barHeight - 2) * bar.usedPercent / 100)
+                // remaining inverts the height; severity color always
+                // tracks usage so a nearly-empty rail still warns
+                let displayed = remaining ? 100 - bar.usedPercent : bar.usedPercent
+                let filledHeight = max(2, (barHeight - 2) * displayed / 100)
                 let fill = NSBezierPath(
                     roundedRect: NSRect(x: cursor, y: 1, width: 5, height: filledHeight),
                     xRadius: 2, yRadius: 2)
@@ -115,6 +121,9 @@ enum StatusComposer {
                 fill.fill()
                 cursor += 7
             }
+        case .stack(let top, let bottom):
+            microAttributed(top).draw(at: NSPoint(x: x, y: 8))
+            microAttributed(bottom).draw(at: NSPoint(x: x, y: 0.5))
         case .spark(let values, let money, let line):
             let maximum = max(values.max() ?? 1, 0.000_001)
             let theme = Theme.current()
@@ -165,6 +174,16 @@ enum StatusComposer {
     private static func attributed(_ string: String) -> NSAttributedString {
         NSAttributedString(string: string, attributes: [
             .font: font,
+            .foregroundColor: NSColor.labelColor,
+        ])
+    }
+
+    /// Micro type for the two-line stacked label (iStat-style).
+    private static let microFont = NSFont.monospacedDigitSystemFont(ofSize: 6.5, weight: .medium)
+
+    private static func microAttributed(_ string: String) -> NSAttributedString {
+        NSAttributedString(string: string, attributes: [
+            .font: microFont,
             .foregroundColor: NSColor.labelColor,
         ])
     }

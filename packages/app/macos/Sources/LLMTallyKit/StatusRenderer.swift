@@ -207,8 +207,12 @@ public enum StatusSegment: Equatable {
     /// Monochrome provider glyph — emitted when identity is "icon".
     case glyph(agent: String)
     /// Vertical bottom-anchored rails — identity code + one bar per
-    /// actual native window (pair = 5h+7d).
-    case rails(identity: String, bars: [RailValue])
+    /// actual native window. `remaining` inverts the fill height while
+    /// severity colors keep tracking usage.
+    case rails(identity: String, bars: [RailValue], remaining: Bool)
+    /// Two stacked micro lines (window label over percent), iStat-style
+    /// — emitted when both rail labels are on.
+    case stack(top: String, bottom: String)
     /// Ledger history sparkline; `money` obeys privacy, `line` draws a
     /// polyline instead of bars (descriptor presentation).
     case spark(values: [Double], money: Bool, line: Bool)
@@ -327,30 +331,39 @@ public func renderStatusSegments(
                 continue
             }
             let item = resolved.0
+            let direction = descriptor.direction ?? "used"
+            let remaining = direction == "remaining"
+            func displayPercent(_ bar: RailValue) -> Int {
+                remaining ? 100 - Int(bar.usedPercent.rounded()) : Int(bar.usedPercent.rounded())
+            }
             if wantsGlyph(descriptor) {
                 append(.glyph(agent: item.snapshot.agent), descriptor.metric)
-                append(.rails(identity: "", bars: bars), descriptor.metric)
+                append(.rails(identity: "", bars: bars, remaining: remaining), descriptor.metric)
             } else {
                 append(.rails(
                     identity: identityText(descriptor, code: names.code(item.snapshot.agent)),
-                    bars: bars), descriptor.metric)
+                    bars: bars, remaining: remaining), descriptor.metric)
             }
-            // visible labels apply to rails too — per bar, window label
-            // and/or percent, exactly what the Builder toggles promise
-            var labelParts: [String] = []
-            for bar in bars {
-                var piece: [String] = []
-                if descriptor.showWindowLabel ?? true { piece.append(shortWindowLabel(bar.windowId)) }
-                if descriptor.showPercentage ?? true { piece.append("\(Int(bar.usedPercent.rounded()))%") }
-                if !piece.isEmpty { labelParts.append(piece.joined(separator: " ")) }
-            }
-            if !labelParts.isEmpty {
-                append(.text(labelParts.joined(separator: " ")), descriptor.metric)
+            // visible labels: both on = an iStat-style two-line stack
+            // per bar; a single toggle stays one centered line
+            let wantLabel = descriptor.showWindowLabel ?? true
+            let wantPercent = descriptor.showPercentage ?? true
+            if wantLabel && wantPercent {
+                for bar in bars {
+                    append(.stack(top: shortWindowLabel(bar.windowId),
+                                  bottom: "\(displayPercent(bar))%"), descriptor.metric)
+                }
+            } else if wantLabel {
+                append(.text(bars.map { shortWindowLabel($0.windowId) }.joined(separator: " ")),
+                       descriptor.metric)
+            } else if wantPercent {
+                append(.text(bars.map { "\(displayPercent($0))%" }.joined(separator: " ")),
+                       descriptor.metric)
             }
             for bar in bars {
                 tooltip.append(
-                    "\(names.display(item.snapshot.agent)) \(bar.windowId) used "
-                    + "\(Int(bar.usedPercent.rounded()))% · \(names.account(item.snapshot.account))")
+                    "\(names.display(item.snapshot.agent)) \(bar.windowId) \(direction) "
+                    + "\(displayPercent(bar))% · \(names.account(item.snapshot.account))")
             }
         case .consumedTokenHistory, .actualCostHistory:
             let money = descriptor.metric == .actualCostHistory
