@@ -82,7 +82,8 @@ struct BuilderView: View {
         let widths = rendering.segments.map { Double(StatusComposer.width(of: $0)) }
         let fold = foldSegmentIndices(
             metrics: rendering.metrics, widths: widths,
-            budget: StatusComposer.contentBudget(budget), gap: 6,
+            budget: StatusComposer.contentBudget(budget, leadingTally: rendering.segments.isEmpty),
+            gap: 6,
             indicatorWidth: StatusComposer.indicatorWidth)
         let fullWidth = widths.reduce(0, +) + Double(max(0, widths.count - 1)) * 6 + 24
 
@@ -99,7 +100,11 @@ struct BuilderView: View {
                         Image(nsImage: StatusComposer.compose(
                             segments: rendering.segments,
                             metrics: rendering.metrics,
-                            budget: CGFloat(budget)))
+                            budget: CGFloat(budget),
+                            // same rule as the real status item: the
+                            // tally mark only stands in when there is
+                            // nothing else to draw
+                            leadingTally: rendering.segments.isEmpty))
                             .padding(.horizontal, 7)
                             .padding(.vertical, 2)
                             .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.08)))
