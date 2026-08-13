@@ -45,12 +45,19 @@ export class TabLoader {
     }
     this.inFlight.add(tab);
     const epochAtStart = this.scanEpoch;
+    const queryAtStart =
+      tab === 'search' ? this.controller.getState().searchQuery.trim() : null;
     this.commitResource(tab, { ...resource, phase: 'loading' });
     void this.load(tab)
       .then((data) => {
         // a scan finished while this query ran: the result is pre-scan,
-        // so it stays marked invalidated and a follow-up load runs below
-        const stale = this.scanEpoch !== epochAtStart;
+        // so it stays marked invalidated and a follow-up load runs below.
+        // Same for a search whose query moved on mid-flight — an A
+        // result must never land under a B title (audit codex C1-10)
+        const queryMoved =
+          queryAtStart !== null &&
+          this.controller.getState().searchQuery.trim() !== queryAtStart;
+        const stale = this.scanEpoch !== epochAtStart || queryMoved;
         this.commitResource(tab, {
           phase: 'ready',
           data,
@@ -69,7 +76,10 @@ export class TabLoader {
       })
       .finally(() => {
         this.inFlight.delete(tab);
-        if (this.scanEpoch !== epochAtStart) {
+        const queryMoved =
+          queryAtStart !== null &&
+          this.controller.getState().searchQuery.trim() !== queryAtStart;
+        if (this.scanEpoch !== epochAtStart || queryMoved) {
           this.loadIfNeeded(tab);
         }
       });
