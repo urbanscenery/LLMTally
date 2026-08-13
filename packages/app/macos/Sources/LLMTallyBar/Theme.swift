@@ -23,6 +23,10 @@ struct Theme {
     /// nil (System) follows macOS.
     let background: Color?
     let colorScheme: ColorScheme?
+    /// Same surface color for AppKit drawing (the status-item backdrop).
+    let nsBackground: NSColor?
+
+    var isDark: Bool { colorScheme == .dark }
 
     static let storageKey = "appearanceTheme"
 
@@ -31,7 +35,7 @@ struct Theme {
         accent: .accentColor, live: .green, warn: .orange, crit: .red, actual: .orange,
         nsLive: .systemGreen, nsWarn: .systemOrange, nsCrit: .systemRed,
         nsActual: .systemOrange, nsAccent: .controlAccentColor,
-        background: nil, colorScheme: nil)
+        background: nil, colorScheme: nil, nsBackground: nil)
 
     static let presets: [Theme] = [
         system,
@@ -66,7 +70,8 @@ struct Theme {
               crit: Color(hex: crit), actual: Color(hex: actual),
               nsLive: NSColor(hex: live), nsWarn: NSColor(hex: warn), nsCrit: NSColor(hex: crit),
               nsActual: NSColor(hex: actual), nsAccent: NSColor(hex: accent),
-              background: Color(hex: background), colorScheme: dark ? .dark : .light)
+              background: Color(hex: background), colorScheme: dark ? .dark : .light,
+              nsBackground: NSColor(hex: background))
     }
 }
 

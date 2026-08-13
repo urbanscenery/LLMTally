@@ -50,10 +50,22 @@ enum StatusComposer {
         let widths = visibleSegments.map { width(of: $0) }
         let tallyWidth: CGFloat = leadingTally ? 18 : 0
         let contentWidth = widths.reduce(0, +) + CGFloat(max(0, visibleSegments.count - 1)) * gap
-        let totalWidth = max(tallyWidth + (contentWidth > 0 ? contentWidth + (leadingTally ? gap : 0) : 0), 18)
+        // a themed backdrop chip carries the graphs on their own
+        // surface — a dark theme stays readable on a light menu bar
+        let backdrop = Theme.current().nsBackground
+        let pad: CGFloat = backdrop == nil ? 0 : 6
+        let totalWidth = max(
+            pad * 2 + tallyWidth + (contentWidth > 0 ? contentWidth + (leadingTally ? gap : 0) : 0),
+            18)
 
         let image = NSImage(size: NSSize(width: totalWidth, height: barHeight), flipped: false) { _ in
-            var x: CGFloat = 0
+            if let backdrop {
+                backdrop.setFill()
+                NSBezierPath(
+                    roundedRect: NSRect(x: 0, y: 0, width: totalWidth, height: barHeight),
+                    xRadius: 5, yRadius: 5).fill()
+            }
+            var x: CGFloat = pad
             if leadingTally {
                 drawTally(at: x)
                 x += tallyWidth + (contentWidth > 0 ? gap : 0)
@@ -102,7 +114,7 @@ enum StatusComposer {
                 let track = NSBezierPath(
                     roundedRect: NSRect(x: cursor, y: 1, width: 5, height: barHeight - 2),
                     xRadius: 2, yRadius: 2)
-                NSColor.secondaryLabelColor.withAlphaComponent(0.25).setFill()
+                contentTextColor.withAlphaComponent(0.2).setFill()
                 track.fill()
                 let filledHeight = max(2, (barHeight - 2) * bar.usedPercent / 100)
                 let fill = NSBezierPath(
@@ -151,10 +163,18 @@ enum StatusComposer {
         attributedString.draw(at: NSPoint(x: x, y: (barHeight - size.height) / 2))
     }
 
+    /// On a themed backdrop the text follows the theme's scheme, not
+    /// the menu bar's — that is the whole point of the backdrop.
+    static var contentTextColor: NSColor {
+        let theme = Theme.current()
+        guard theme.nsBackground != nil else { return .labelColor }
+        return theme.isDark ? NSColor(hex: 0xE8E8E8) : NSColor(hex: 0x1F1F1F)
+    }
+
     private static func attributed(_ string: String) -> NSAttributedString {
         NSAttributedString(string: string, attributes: [
             .font: font,
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: contentTextColor,
         ])
     }
 
@@ -166,9 +186,9 @@ enum StatusComposer {
         return theme.nsAccent
     }
 
-    /// The tally mark, drawn in labelColor so it matches the text.
+    /// The tally mark, drawn in the content color so it matches the text.
     private static func drawTally(at x: CGFloat) {
-        NSColor.labelColor.setStroke()
+        contentTextColor.setStroke()
         for index in 0..<4 {
             let strokeX = x + 3.0 + CGFloat(index) * 4.0
             let stroke = NSBezierPath()
@@ -191,8 +211,8 @@ enum StatusComposer {
     /// Coordinates are in a 16-unit box, drawn bottom-up (non-flipped).
     private static func drawGlyph(agent: String, at originX: CGFloat) {
         let scale: CGFloat = barHeight / 16
-        NSColor.labelColor.setStroke()
-        NSColor.labelColor.setFill()
+        contentTextColor.setStroke()
+        contentTextColor.setFill()
 
         func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
             // flip y: source coordinates are top-down like the SwiftUI Canvas
