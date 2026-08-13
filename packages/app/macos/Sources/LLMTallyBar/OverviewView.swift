@@ -189,10 +189,11 @@ struct HeadlineView: View {
     private var kicker: String { item.rank == .quiet ? "All clear" : "Needs attention" }
 
     private var accent: Color {
+        let theme = Theme.current()
         switch item.rank {
-        case .authInvalid, .critical: return .red
-        case .rateLimited, .stale, .warning, .resetSoon: return .orange
-        case .quiet: return .green
+        case .authInvalid, .critical: return theme.crit
+        case .rateLimited, .stale, .warning, .resetSoon: return theme.warn
+        case .quiet: return theme.live
         }
     }
 
@@ -257,7 +258,10 @@ struct AgentRow: View {
                     }
                 }
                 Spacer()
-                Text(bigValue).font(.callout).monospacedDigit()
+                // the row's big number — metric scale (§7.2)
+                Text(bigValue)
+                    .font(.system(size: 20, weight: .semibold))
+                    .monospacedDigit()
                 StatusChip(item: item)
             }
             if item.snapshot.windows.isEmpty {
@@ -312,9 +316,10 @@ struct StatusChip: View {
     }
 
     private var color: Color {
-        if item.snapshot.failure?.kind == "auth_invalid" { return .red }
-        if item.snapshot.failure != nil || item.rank == .stale { return .orange }
-        return item.snapshot.source == "vendor_api" ? .green : .secondary
+        let theme = Theme.current()
+        if item.snapshot.failure?.kind == "auth_invalid" { return theme.crit }
+        if item.snapshot.failure != nil || item.rank == .stale { return theme.warn }
+        return item.snapshot.source == "vendor_api" ? theme.live : .secondary
     }
 }
 
@@ -347,9 +352,10 @@ struct WindowRail: View {
     }
 
     private var fillColor: Color {
-        if window.usedPercent >= CRITICAL_USED_PERCENT { return .red }
-        if window.usedPercent >= WARNING_USED_PERCENT { return .orange }
-        return .green
+        let theme = Theme.current()
+        if window.usedPercent >= CRITICAL_USED_PERCENT { return theme.crit }
+        if window.usedPercent >= WARNING_USED_PERCENT { return theme.warn }
+        return theme.live
     }
 }
 
@@ -359,32 +365,41 @@ struct TodaySection: View {
     let bucket: ReportBucketDTO?
     let totals: ReportBucketDTO?
     var privacy = false
+    @AppStorage(AppConfig.costModeKey) private var costMode = "actual"
+
+    private var nominal: Bool { costMode == "nominal" }
+    private var modeLabel: String { nominal ? "Nominal" : "Actual" }
+    private var cost: CostResultDTO? {
+        guard let bucket else { return nil }
+        return nominal ? bucket.nominal : bucket.actual
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("TODAY · ACTUAL").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            Text("TODAY · \(modeLabel.uppercased())")
+                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 card("Prompts", bucket.map { "\($0.rowCount)" } ?? "0", nil)
                 card("Tokens", bucket.map { formatTokens($0.tokens.inputTokens + $0.tokens.outputTokens) } ?? "0", "in + out")
-                card("Actual", actualText, actualNote)
+                card(modeLabel, costText, costNote)
             }
         }
         .padding(12)
     }
 
-    private var actualText: String {
+    private var costText: String {
         if privacy { return "hidden" }
-        guard let bucket else { return "—" }
-        if let usd = bucket.actual.usd { return formatUsd(usd) }
-        if bucket.actual.pricedRows > 0 { return formatUsd(bucket.actual.pricedSubtotalUsd) }
+        guard let cost else { return "—" }
+        if let usd = cost.usd { return formatUsd(usd) }
+        if cost.pricedRows > 0 { return formatUsd(cost.pricedSubtotalUsd) }
         return "—"
     }
 
-    private var actualNote: String? {
+    private var costNote: String? {
         if privacy { return "Private metric hidden" }
-        guard let bucket else { return nil }
-        if bucket.actual.usd != nil { return "billable" }
-        if bucket.actual.pricedRows > 0 { return "partial · \(bucket.actual.unpricedRows) unpriced" }
+        guard let cost else { return nominal ? "list-price equivalent" : nil }
+        if cost.usd != nil { return nominal ? "list-price equivalent" : "billable" }
+        if cost.pricedRows > 0 { return "partial · \(cost.unpricedRows) unpriced" }
         return "unavailable"
     }
 
@@ -470,8 +485,16 @@ struct RecentLine: View {
 struct WeeklyChart: View {
     let buckets: [ReportBucketDTO]
     var privacy = false
+    @AppStorage(AppConfig.costModeKey) private var costMode = "actual"
+    @AppStorage(Theme.storageKey) private var themeId = "system"
 
+    private var nominal: Bool { costMode == "nominal" }
     private var recent: [ReportBucketDTO] { Array(buckets.suffix(7)) }
+
+    private func costOf(_ bucket: ReportBucketDTO) -> Double {
+        let cost = nominal ? bucket.nominal : bucket.actual
+        return cost?.usd ?? cost?.pricedSubtotalUsd ?? 0
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -479,9 +502,9 @@ struct WeeklyChart: View {
                 Text("THIS WEEK").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
                 if recent.count >= 2 {
-                    legendSwatch(color: .accentColor, label: "tokens")
+                    legendSwatch(color: Theme.current().accent, label: "tokens")
                     if !privacy {
-                        legendSwatch(color: .orange, label: "Actual")
+                        legendSwatch(color: Theme.current().actual, label: nominal ? "Nominal" : "Actual")
                     }
                 }
             }
@@ -490,14 +513,15 @@ struct WeeklyChart: View {
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 GeometryReader { geometry in
+                    let theme = Theme.current()
                     let tokens = recent.map { $0.tokens.inputTokens + $0.tokens.outputTokens }
-                    let prices = recent.map { $0.actual.usd ?? $0.actual.pricedSubtotalUsd }
+                    let prices = recent.map { costOf($0) }
                     ZStack {
                         linePath(values: tokens, in: geometry.size)
-                            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                            .stroke(theme.accent, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
                         if !privacy {
                             linePath(values: prices, in: geometry.size)
-                                .stroke(Color.orange, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                                .stroke(theme.actual, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
                         }
                     }
                 }
@@ -628,8 +652,10 @@ struct ProviderDetailView: View {
 
     private func modelActual(_ bucket: ReportBucketDTO) -> String {
         if privacy { return "hidden" }
-        if let usd = bucket.actual.usd { return formatUsd(usd) }
-        if bucket.actual.pricedRows > 0 { return formatUsd(bucket.actual.pricedSubtotalUsd) }
+        let cost = AppConfig.nominalMode ? bucket.nominal : .some(bucket.actual)
+        guard let cost else { return "—" }
+        if let usd = cost.usd { return formatUsd(usd) }
+        if cost.pricedRows > 0 { return formatUsd(cost.pricedSubtotalUsd) }
         return "—"
     }
 

@@ -9,8 +9,11 @@ import SwiftUI
 /// will reuse).
 final class StatusItemController: NSObject, NSPopoverDelegate {
     /// Background cadence for the status text when the popover is
-    /// closed. Sidecar/core throttles still gate actual vendor calls.
-    private static let refreshIntervalSeconds: TimeInterval = 900
+    /// closed (Settings → Refresh; default 15 min). Sidecar/core
+    /// throttles still gate actual vendor calls.
+    private static var refreshIntervalSeconds: TimeInterval {
+        TimeInterval(AppConfig.cadenceMinutes * 60)
+    }
 
     private let statusItem: NSStatusItem
     /// Recreated per open: reusing one NSPopover across transient
@@ -28,6 +31,16 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// nil = no successful reading yet; an empty map is a real zero.
     private var lastTodayRows: [String: Int]?
     private var openObserver: NSObjectProtocol?
+    private var configObserver: NSObjectProtocol?
+
+    private func scheduleTimer() {
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.refreshIntervalSeconds, repeats: true
+        ) { [weak self] _ in
+            self?.refreshStatusText()
+        }
+    }
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -39,10 +52,12 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         statusItem.button?.action = #selector(togglePopover)
 
         refreshStatusText()
-        refreshTimer = Timer.scheduledTimer(
-            withTimeInterval: Self.refreshIntervalSeconds, repeats: true
+        scheduleTimer()
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyConfigChanged, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.refreshStatusText()
+            self?.scheduleTimer()
+            self?.renderFromCache()
         }
         descriptorObserver = NotificationCenter.default.addObserver(
             forName: .llmtallyDescriptorsChanged, object: nil, queue: .main

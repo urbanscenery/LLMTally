@@ -13,12 +13,54 @@ extension Notification.Name {
     /// Posted when a delivered notification is clicked — the status
     /// item opens its popover in response.
     static let llmtallyOpenPopover = Notification.Name("llmtallyOpenPopover")
+    /// Posted for config that the status item must re-apply itself
+    /// (refresh cadence).
+    static let llmtallyConfigChanged = Notification.Name("llmtallyConfigChanged")
 }
 
 /// Single source for the privacy switch (03_design_spec §11).
 enum PrivacySetting {
     static let key = "privacyMode"
     static var enabled: Bool { UserDefaults.standard.bool(forKey: key) }
+}
+
+/// UserDefaults-backed app configuration applied at launch and on
+/// change (thresholds feed LLMTallyKit's shared values).
+enum AppConfig {
+    static let warningKey = "thresholdWarning"
+    static let criticalKey = "thresholdCritical"
+    static let cadenceKey = "refreshCadenceMinutes"
+    static let costModeKey = "costMode"
+
+    static func applyThresholds() {
+        let defaults = UserDefaults.standard
+        let warning = defaults.object(forKey: warningKey) as? Double ?? 70
+        let critical = defaults.object(forKey: criticalKey) as? Double ?? 90
+        QuotaThresholds.warning = warning
+        QuotaThresholds.critical = max(critical, warning + 1)
+    }
+
+    static var cadenceMinutes: Int {
+        let value = UserDefaults.standard.integer(forKey: cadenceKey)
+        return value > 0 ? value : 15
+    }
+
+    static var nominalMode: Bool {
+        UserDefaults.standard.string(forKey: costModeKey) == "nominal"
+    }
+}
+
+/// Overview row visibility (Settings → Providers). Never mutates the
+/// Builder's descriptors.
+enum HiddenAgents {
+    static let key = "hiddenAgents"
+    static func all() -> Set<String> {
+        Set((UserDefaults.standard.string(forKey: key) ?? "")
+            .split(separator: ",").map(String.init))
+    }
+    static func set(_ agents: Set<String>) {
+        UserDefaults.standard.set(agents.sorted().joined(separator: ","), forKey: key)
+    }
 }
 
 /// Settings lives in its own window (03_design_spec §1) — never inside
@@ -47,7 +89,13 @@ struct SettingsView: View {
     enum Pane: String, CaseIterable {
         case general = "General"
         case menubar = "Menu bar"
+        case providers = "Providers"
+        case accounts = "Accounts"
+        case thresholds = "Thresholds"
+        case refresh = "Refresh"
+        case cost = "Cost"
         case privacy = "Privacy"
+        case appearance = "Appearance"
     }
 
     @State private var pane: Pane = .menubar
@@ -86,7 +134,13 @@ struct SettingsView: View {
                     switch pane {
                     case .general: GeneralPane()
                     case .menubar: MenuBarPane(onConfigure: { showBuilder = true })
+                    case .providers: ProvidersPane()
+                    case .accounts: AccountsPane()
+                    case .thresholds: ThresholdsPane()
+                    case .refresh: RefreshPane()
+                    case .cost: CostPane()
                     case .privacy: PrivacyPane()
+                    case .appearance: AppearancePane()
                     }
                 }
             }
@@ -169,6 +223,235 @@ private struct MenuBarPane: View {
     private var summary: String {
         let items = store.load()
         return "\(items.count) item\(items.count == 1 ? "" : "s")"
+    }
+}
+
+private struct ThresholdsPane: View {
+    @AppStorage(AppConfig.warningKey) private var warning = 70.0
+    @AppStorage(AppConfig.criticalKey) private var critical = 90.0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Thresholds & notifications").font(.title2.weight(.semibold))
+            Text("A crossing notifies once and re-arms below the line. Ranking, rails, and notifications share these values.")
+                .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            HStack {
+                Text("Warning at")
+                Slider(value: $warning, in: 50...85, step: 5).frame(maxWidth: 220)
+                Text("\(Int(warning))% used").monospacedDigit().frame(width: 76, alignment: .trailing)
+            }
+            HStack {
+                Text("Critical at")
+                Slider(value: $critical, in: 70...99, step: 1).frame(maxWidth: 220)
+                Text("\(Int(critical))% used").monospacedDigit().frame(width: 76, alignment: .trailing)
+            }
+            if critical <= warning {
+                Text("Critical is clamped above warning.").font(.caption2).foregroundStyle(.orange)
+            }
+        }
+        .padding(20)
+        .onChange(of: warning) { _ in apply() }
+        .onChange(of: critical) { _ in apply() }
+    }
+
+    private func apply() {
+        AppConfig.applyThresholds()
+        NotificationCenter.default.post(name: .llmtallyDescriptorsChanged, object: nil)
+    }
+}
+
+private struct RefreshPane: View {
+    @AppStorage(AppConfig.cadenceKey) private var cadence = 15
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Refresh").font(.title2.weight(.semibold))
+            Text("One process-wide timer; per-source backoff stays with core. A 429 keeps last-good and locks the button.")
+                .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            HStack {
+                Text("Cadence")
+                Spacer()
+                Picker("", selection: $cadence) {
+                    Text("5 min").tag(5)
+                    Text("15 min").tag(15)
+                    Text("30 min").tag(30)
+                }
+                .pickerStyle(.segmented).frame(width: 220)
+            }
+            Text("Manual refresh (popover) respects the vendor throttle.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .onChange(of: cadence) { _ in
+            NotificationCenter.default.post(name: .llmtallyConfigChanged, object: nil)
+        }
+    }
+}
+
+private struct CostPane: View {
+    @AppStorage(AppConfig.costModeKey) private var costMode = "actual"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Cost").font(.title2.weight(.semibold))
+            Text("Actual and Nominal are never shown side by side. NULL is not zero.")
+                .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            HStack {
+                Text("Mode")
+                Spacer()
+                Picker("", selection: $costMode) {
+                    Text("Actual").tag("actual")
+                    Text("Nominal").tag("nominal")
+                }
+                .pickerStyle(.segmented).frame(width: 220)
+            }
+            Text("Nominal = API list price equivalent. Subscription usage is not billed at this amount.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(20)
+    }
+}
+
+private struct ProvidersPane: View {
+    @State private var hidden = HiddenAgents.all()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Providers").font(.title2.weight(.semibold))
+            Text("Overview row visibility only. The status item's descriptors are the Builder's, untouched.")
+                .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            ForEach(Array(AGENT_DISPLAY_NAMES.keys.sorted()), id: \.self) { agent in
+                HStack {
+                    Text(agentDisplayName(agent))
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { !hidden.contains(agent) },
+                        set: { visible in
+                            if visible { hidden.remove(agent) } else { hidden.insert(agent) }
+                            HiddenAgents.set(hidden)
+                        }))
+                }
+            }
+        }
+        .padding(20)
+    }
+}
+
+private struct AccountsPane: View {
+    @State private var quota: [QuotaSnapshotDTO] = []
+    @State private var active: [String: String?] = [:]
+    @State private var confirmDetach = false
+    @State private var detachResult: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Accounts").font(.title2.weight(.semibold))
+            Text("Switching lives in the popover. This page is guidance and the one destructive action.")
+                .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(quota.enumerated()), id: \.offset) { _, snapshot in
+                        HStack {
+                            Text("\(agentDisplayName(snapshot.agent)) · \(snapshot.account ?? snapshot.accountId ?? "?")")
+                                .font(.caption).lineLimit(1)
+                            Spacer()
+                            if snapshot.accountId != nil,
+                               snapshot.accountId == (active[snapshot.agent] ?? nil) {
+                                Text("active").font(.caption2).foregroundStyle(.green)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+            .frame(maxHeight: 180)
+            Divider()
+            HStack {
+                Text("Codex detach")
+                Spacer()
+                Button("Detach…") { confirmDetach = true }
+            }
+            Text("Deletes ~/.codex/auth.json only after the vault copy matches live bytes; a mismatch aborts.")
+                .font(.caption2).foregroundStyle(.secondary)
+            if let detachResult {
+                Text(detachResult).font(.caption2).foregroundStyle(.orange)
+            }
+            Divider()
+            HStack {
+                Text("Add login")
+                Spacer()
+                Button("Open TUI to add a login") { OpenTUI.launch() }
+            }
+        }
+        .padding(20)
+        .onAppear(perform: load)
+        .alert("Detach the Codex login?", isPresented: $confirmDetach) {
+            Button("Detach", role: .destructive) { detach() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Leaving the file in place would revoke the first account the moment a second one logs in.")
+        }
+    }
+
+    private func load() {
+        SidecarClient.shared.requestDecodable("quota", params: ["refresh": false], as: [QuotaSnapshotDTO].self) { result in
+            DispatchQueue.main.async { if case .success(let value) = result { quota = value } }
+        }
+        SidecarClient.shared.requestDecodable("activeAccounts", as: [String: String?].self) { result in
+            DispatchQueue.main.async { if case .success(let value) = result { active = value } }
+        }
+    }
+
+    private func detach() {
+        SidecarClient.shared.request("detachCodex") { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success: detachResult = "Detached. The vault kept a verified capture."
+                case .failure(let error): detachResult = error.localizedDescription
+                }
+            }
+        }
+    }
+}
+
+private struct AppearancePane: View {
+    @AppStorage(Theme.storageKey) private var themeId = "system"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Appearance").font(.title2.weight(.semibold))
+            Text("The six most-used editor palettes (design tokens v1.1.0). Meaning channels never depend on color alone.")
+                .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            ForEach(Theme.presets, id: \.id) { theme in
+                Button {
+                    themeId = theme.id
+                    NotificationCenter.default.post(name: .llmtallyDescriptorsChanged, object: nil)
+                } label: {
+                    HStack {
+                        Image(systemName: themeId == theme.id ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(themeId == theme.id ? theme.accent : .secondary)
+                        Text(theme.name)
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Circle().fill(theme.live).frame(width: 10, height: 10)
+                            Circle().fill(theme.warn).frame(width: 10, height: 10)
+                            Circle().fill(theme.crit).frame(width: 10, height: 10)
+                            Circle().fill(theme.accent).frame(width: 10, height: 10)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 3)
+            }
+        }
+        .padding(20)
     }
 }
 

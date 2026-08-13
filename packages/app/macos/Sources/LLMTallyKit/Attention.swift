@@ -22,8 +22,17 @@ public enum AttentionRank: Int, Comparable {
 /// × 2" until per-source cadence is part of the payload.
 public let STALE_AFTER_SECONDS: Double = 1800
 public let RESET_SOON_SECONDS: Double = 1800
-public let CRITICAL_USED_PERCENT: Double = 90
-public let WARNING_USED_PERCENT: Double = 70
+
+/// User-configurable quota thresholds (Settings → Thresholds). The
+/// defaults are the spec's 70/90; ranking, rails, and the notification
+/// planner all read the same values.
+public enum QuotaThresholds {
+    public static var warning: Double = 70
+    public static var critical: Double = 90
+}
+
+public var CRITICAL_USED_PERCENT: Double { QuotaThresholds.critical }
+public var WARNING_USED_PERCENT: Double { QuotaThresholds.warning }
 
 public struct AgentAttention {
     public let snapshot: QuotaSnapshotDTO

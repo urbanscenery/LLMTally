@@ -111,7 +111,8 @@ enum StatusComposer {
             }
         case .spark(let values, let money):
             let maximum = max(values.max() ?? 1, 0.000_001)
-            let color = money ? NSColor.systemOrange : NSColor.controlAccentColor
+            let theme = Theme.current()
+            let color = money ? theme.nsActual : theme.nsAccent
             var cursor = x
             for value in values {
                 let height = max(1.5, (barHeight - 4) * value / maximum)
@@ -138,9 +139,10 @@ enum StatusComposer {
     }
 
     private static func stateColor(_ usedPercent: Double) -> NSColor {
-        if usedPercent >= CRITICAL_USED_PERCENT { return .systemRed }
-        if usedPercent >= WARNING_USED_PERCENT { return .systemOrange }
-        return .systemGreen
+        let theme = Theme.current()
+        if usedPercent >= CRITICAL_USED_PERCENT { return theme.nsCrit }
+        if usedPercent >= WARNING_USED_PERCENT { return theme.nsWarn }
+        return theme.nsLive
     }
 
     /// The tally mark, drawn in labelColor so it matches the text.

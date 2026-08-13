@@ -130,8 +130,9 @@ final class OverviewModel: ObservableObject {
     /// Snapshots grouped per agent, ordered by attention.
     func agentGroups(now: Date = Date()) -> [(agent: String, items: [AgentAttention])] {
         guard let overview else { return [] }
+        let hidden = HiddenAgents.all()
         var byAgent: [String: [AgentAttention]] = [:]
-        for snapshot in overview.quota {
+        for snapshot in overview.quota where !hidden.contains(snapshot.agent) {
             byAgent[snapshot.agent, default: []].append(attention(for: snapshot, now: now))
         }
         return byAgent

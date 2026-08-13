@@ -7,7 +7,7 @@
  * `databasePath` and lets core services open and close it.
  */
 import { resolveActiveClaudeContext } from '@llmtally/core/accounts/active-claude.ts';
-import { switchCodexAccount } from '@llmtally/core/accounts/codex.ts';
+import { detachCodexLogin, switchCodexAccount } from '@llmtally/core/accounts/codex.ts';
 import { createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
 import { switchOpencodeAccount } from '@llmtally/core/accounts/opencode.ts';
@@ -126,6 +126,13 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
       return switchOpencodeAccount(selector, { vault: getVault() });
     }
     return switchClaudeAccount(selector, { vault: getVault(), activeStore: getActiveStore() });
+  });
+
+  server.register('detachCodex', () => {
+    // Destructive (deletes ~/.codex/auth.json after a verified vault
+    // capture — core aborts on any byte mismatch). The shell gates
+    // this behind an explicit confirmation dialog in Settings.
+    return detachCodexLogin({ vault: getVault() });
   });
 
   server.register('todayByAgent', async () => {
