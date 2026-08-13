@@ -148,4 +148,105 @@ describe('overlay message wrapping', () => {
     expect(flattened).toContain('deleted permanently');
     expect(lines).not.toContain('…');
   });
+
+  test('a long input prompt wraps instead of truncating', async () => {
+    // Arrange — narrow terminal: the prompt exceeds the card width
+    const { renderInputOverlay } = await import('@llmtally/tui/components/overlay-view.ts');
+    const { frameText } = await import('@llmtally/tui/rich-text.ts');
+
+    // Act
+    const lines = frameText(
+      renderInputOverlay(
+        {
+          kind: 'input',
+          title: 'Search prompts',
+          prompt: 'Matches the words as one exact phrase in stored prompt text.',
+          value: '',
+        },
+        44,
+        24,
+      ),
+    ).join('\n');
+    const flattened = lines.replace(/[│╭╮╰╯─]/g, ' ').replace(/\s+/g, ' ');
+
+    // Assert
+    expect(flattened).toContain('stored prompt text.');
+    expect(lines).not.toContain('…');
+  });
+
+  test('a picker option longer than the default card widens the card instead of eliding', async () => {
+    // Arrange — labels are data (account addresses) and must stay whole
+    const { renderPickerOverlay } = await import('@llmtally/tui/components/overlay-view.ts');
+    const { frameText } = await import('@llmtally/tui/rich-text.ts');
+    const label = 'claude — very.long.account.address@example-organization-name.com';
+
+    // Act
+    const lines = frameText(
+      renderPickerOverlay(
+        {
+          kind: 'picker',
+          topic: 'account-action',
+          title: 'Account',
+          options: [{ id: 'a', label, hint: 'active' }],
+          index: 0,
+        },
+        100,
+        24,
+      ),
+    ).join('\n');
+
+    // Assert
+    expect(lines).toContain('example-organization-name.com');
+    expect(lines).not.toContain('…');
+  });
+});
+
+describe('overlay height fitting', () => {
+  const LONG_MESSAGE =
+    'Stores the logins Claude Code, Codex, and OpenCode are using right now.\n' +
+    '\n' +
+    'To add a different account, sign in with it first:\n' +
+    '  · claude-code: run "claude" and use /login\n' +
+    '  · codex: press d here FIRST, then run "codex login"\n' +
+    '  · opencode: run "opencode auth login"\n' +
+    'then come back here and press n.\n' +
+    '\n' +
+    'Codex is the odd one out: "codex login" revokes whatever login auth.json still holds, which kills the account you just stored. Pressing d first stores it and moves the file out of the way, so there is nothing left to revoke.\n' +
+    '\n' +
+    'Store the current logins?';
+
+  async function renderConfirm(width: number, height: number) {
+    const { renderConfirmOverlay } = await import('@llmtally/tui/components/overlay-view.ts');
+    const { frameText } = await import('@llmtally/tui/rich-text.ts');
+    const lines = frameText(
+      renderConfirmOverlay(
+        { kind: 'confirm', topic: 'account-add', title: 'Add account', message: LONG_MESSAGE, payload: '' },
+        width,
+        height,
+      ),
+    );
+    const flattened = lines.join('\n').replace(/[│╭╮╰╯─]/g, ' ').replace(/\s+/g, ' ');
+    return { lines, flattened };
+  }
+
+  test('a tall confirm widens to fit the body height instead of losing its tail', async () => {
+    // Act — 18 rows: too short at the preferred width, fits when wider
+    const { lines, flattened } = await renderConfirm(80, 18);
+
+    // Assert — everything is on screen, including the key hint
+    expect(lines.length).toBeLessThanOrEqual(18);
+    expect(flattened).toContain('Store the current logins?');
+    expect(flattened).toContain('confirm');
+    expect(lines.join('\n')).not.toContain('…');
+  });
+
+  test('when no width can fit the height, the frame is dropped before the message', async () => {
+    // Act — 8 rows can never hold this message
+    const { lines, flattened } = await renderConfirm(80, 8);
+
+    // Assert — the border gave way; the message did not
+    expect(lines.join('\n')).not.toContain('╭');
+    expect(flattened).toContain('Store the current logins?');
+    expect(lines.join('\n')).not.toContain('…');
+  });
 });

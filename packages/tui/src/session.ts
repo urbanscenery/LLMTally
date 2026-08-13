@@ -271,6 +271,10 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         kind: 'confirm',
         topic: 'account-add',
         title: 'Add account',
+        // paragraphs use single logical lines: the overlay wraps to the
+        // card width it actually gets, so a mid-sentence hard newline
+        // would double-wrap on narrow terminals and pin the height on
+        // short ones
         message:
           'Stores the logins Claude Code, Codex, and OpenCode are using right now.\n' +
           '\n' +
@@ -280,10 +284,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
           '  · opencode: run "opencode auth login"\n' +
           'then come back here and press n.\n' +
           '\n' +
-          'Codex is the odd one out: "codex login" revokes whatever login\n' +
-          'auth.json still holds, which kills the account you just stored.\n' +
-          'Pressing d first stores it and moves the file out of the way, so\n' +
-          'there is nothing left to revoke.\n' +
+          'Codex is the odd one out: "codex login" revokes whatever login auth.json still holds, which kills the account you just stored. Pressing d first stores it and moves the file out of the way, so there is nothing left to revoke.\n' +
           '\n' +
           'Store the current logins?',
         payload: '',
@@ -302,12 +303,9 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         topic: 'account-detach',
         title: 'Detach codex login',
         message:
-          'Stores the codex login that is active now, then signs codex out\n' +
-          'locally. Nothing is revoked — the login stays usable and you can\n' +
-          'bring it back here with s.\n' +
+          'Stores the codex login that is active now, then signs codex out locally. Nothing is revoked — the login stays usable and you can bring it back here with s.\n' +
           '\n' +
-          'Do this before "codex login" when adding a second codex account:\n' +
-          'that command revokes whatever auth.json still holds.\n' +
+          'Do this before "codex login" when adding a second codex account: that command revokes whatever auth.json still holds.\n' +
           '\n' +
           'Detach the current codex login?',
         payload: '',
@@ -387,9 +385,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         topic: 'ledger-compact',
         title: 'Compact ledger',
         message:
-          'Rewrites the ledger to return the space freed by retention\n' +
-          'and deletes. Blocks collection while it runs (seconds for a\n' +
-          'few hundred MB) and needs about the current file size free.\n' +
+          'Rewrites the ledger to return the space freed by retention and deletes. Blocks collection while it runs (seconds for a few hundred MB) and needs about the current file size free.\n' +
           '\n' +
           'Compact the ledger now?',
         payload: '',

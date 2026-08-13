@@ -1,7 +1,7 @@
 import { joinLine, span } from '../rich-text.ts';
 import type { RichLine, ThemeRole } from '../rich-text.ts';
 import type { TuiState } from '../state.ts';
-import { fitLine, padEndWidth, truncateToWidth } from '../text.ts';
+import { fitLine, padEndWidth, truncateToWidth, wrapToWidth } from '../text.ts';
 import type { DoctorCheckViewModel } from '../view-model/doctor.ts';
 import type { TabView, TabViewLine } from './shell.ts';
 
@@ -14,17 +14,29 @@ const STATUS_ROLE: Record<DoctorCheckViewModel['status'], ThemeRole> = {
   skip: 'dim',
 };
 
-function checkLine(check: DoctorCheckViewModel, width: number): RichLine {
+/**
+ * Diagnostic messages are what the user came here to read — wrap them
+ * under the status column instead of eliding the tail.
+ */
+function checkLines(check: DoctorCheckViewModel, width: number): RichLine[] {
   const label = padEndWidth(truncateToWidth(check.id, ID_WIDTH), ID_WIDTH);
   const room = Math.max(10, width - ID_WIDTH - 12);
-  return joinLine(
-    ' ',
-    span(padEndWidth(check.status.toUpperCase(), 5), STATUS_ROLE[check.status]),
-    ' ',
-    span(label, 'tableHeader'),
-    ' ',
-    span(truncateToWidth(check.message, room), 'default'),
-  );
+  const [first = '', ...rest] = wrapToWidth(check.message, room);
+  const lines: RichLine[] = [
+    joinLine(
+      ' ',
+      span(padEndWidth(check.status.toUpperCase(), 5), STATUS_ROLE[check.status]),
+      ' ',
+      span(label, 'tableHeader'),
+      ' ',
+      span(first, 'default'),
+    ),
+  ];
+  const indent = ' '.repeat(8 + ID_WIDTH);
+  for (const wrapped of rest) {
+    lines.push(joinLine(indent, span(wrapped, 'default')));
+  }
+  return lines;
 }
 
 export const doctorTabView: TabView = (
@@ -58,9 +70,15 @@ export const doctorTabView: TabView = (
     '',
   ];
   for (const check of model.checks) {
-    lines.push(checkLine(check, width));
+    lines.push(...checkLines(check, width));
     if (check.remediation !== null && check.status !== 'pass') {
-      lines.push(joinLine('       ', span(`→ ${truncateToWidth(check.remediation, width - 10)}`, 'muted')));
+      // remediation is recovery guidance — never elide it (same rule as
+      // the accounts view)
+      const [first = '', ...rest] = wrapToWidth(check.remediation, Math.max(10, width - 10));
+      lines.push(joinLine('       ', span(`→ ${first}`, 'muted')));
+      for (const wrapped of rest) {
+        lines.push(joinLine('         ', span(wrapped, 'muted')));
+      }
     }
   }
   return lines;

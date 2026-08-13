@@ -134,10 +134,11 @@ struct OverviewView: View {
                 Text("LLMTally").font(.headline)
             }
             Spacer()
-            if let error = model.loadError {
-                // raw errors can carry account ids/paths (audit C1-11)
-                Text(privacy ? "error (details hidden)" : error)
-                    .font(.caption2).foregroundStyle(.red).lineLimit(1)
+            if model.loadError != nil {
+                // the header stays one line; the full error wraps in the
+                // banner below — a truncated error is exactly the part
+                // the user needed
+                Text("load error").font(.caption2).foregroundStyle(.red)
             } else if let quota = model.overview?.quota {
                 FreshnessSummary(quota: quota)
             }
@@ -175,6 +176,8 @@ struct OverviewView: View {
                 if model.loading {
                     ProgressView()
                     Text("Reading local ledger…").font(.caption).foregroundStyle(.secondary)
+                } else if let error = model.loadError {
+                    errorBanner(error)
                 } else {
                     Text("No data yet").font(.callout)
                     Text("Run an agent once — the menu bar collects automatically.")
@@ -187,9 +190,27 @@ struct OverviewView: View {
         }
     }
 
+    /// Full-width, fully wrapped error text — never a one-line ellipsis:
+    /// the tail of a load error is the part that says what to fix.
+    private func errorBanner(_ error: String) -> some View {
+        // raw errors can carry account ids/paths (audit C1-11)
+        Text(privacy ? "error (details hidden)" : error)
+            .font(.caption2).foregroundStyle(.red)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(Color.red.opacity(0.08))
+    }
+
     private var overviewList: some View {
         ScrollView {
             VStack(spacing: 0) {
+                // inside the measured stack so the panel grows to fit the
+                // wrapped error instead of squeezing it into one line
+                if let error = model.loadError {
+                    errorBanner(error)
+                    Divider()
+                }
                 if let headline = model.headline() {
                     // quiet = nothing needs attention — a plain one-liner,
                     // not a card that singles out one account
