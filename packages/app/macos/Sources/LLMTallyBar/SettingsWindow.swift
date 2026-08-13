@@ -114,7 +114,6 @@ struct SettingsView: View {
     }
 
     @State private var pane: Pane = .menubar
-    @State private var showBuilder = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -122,7 +121,6 @@ struct SettingsView: View {
                 ForEach(Pane.allCases, id: \.self) { candidate in
                     Button {
                         pane = candidate
-                        showBuilder = false
                     } label: {
                         Text(candidate.rawValue)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -131,6 +129,9 @@ struct SettingsView: View {
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
                                     .fill(pane == candidate ? Color.accentColor.opacity(0.18) : .clear))
+                            // the whole row hits, not just the glyphs —
+                            // a clear background is not hit-testable
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -143,20 +144,17 @@ struct SettingsView: View {
             Divider()
 
             Group {
-                if showBuilder {
-                    BuilderView(onBack: { showBuilder = false })
-                } else {
-                    switch pane {
-                    case .general: GeneralPane()
-                    case .menubar: MenuBarPane(onConfigure: { showBuilder = true })
-                    case .providers: ProvidersPane()
-                    case .accounts: AccountsPane()
-                    case .thresholds: ThresholdsPane()
-                    case .refresh: RefreshPane()
-                    case .cost: CostPane()
-                    case .privacy: PrivacyPane()
-                    case .appearance: AppearancePane()
-                    }
+                switch pane {
+                case .general: GeneralPane()
+                // the Builder IS the pane — no summary detour
+                case .menubar: BuilderView()
+                case .providers: ProvidersPane()
+                case .accounts: AccountsPane()
+                case .thresholds: ThresholdsPane()
+                case .refresh: RefreshPane()
+                case .cost: CostPane()
+                case .privacy: PrivacyPane()
+                case .appearance: AppearancePane()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -208,36 +206,6 @@ private struct GeneralPane: View {
         .onAppear {
             if isBundled { launchAtLogin = SMAppService.mainApp.status == .enabled }
         }
-    }
-}
-
-private struct MenuBarPane: View {
-    let onConfigure: () -> Void
-    private let store = DescriptorStore()
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Menu bar").font(.title2.weight(.semibold))
-            Text("The ordered descriptor array in the Builder is the only canon for the status item. This page is a summary and an entrance — no second preview, no display-mode ghost control.")
-                .font(.caption).foregroundStyle(.secondary)
-            Divider()
-            HStack {
-                Text("Current items")
-                Spacer()
-                Text(summary).font(.caption).foregroundStyle(.secondary)
-            }
-            HStack {
-                Text("Configure items")
-                Spacer()
-                Button("Open Builder") { onConfigure() }
-            }
-        }
-        .padding(20)
-    }
-
-    private var summary: String {
-        let items = store.load()
-        return "\(items.count) item\(items.count == 1 ? "" : "s")"
     }
 }
 

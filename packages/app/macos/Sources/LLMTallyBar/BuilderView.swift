@@ -7,7 +7,8 @@ import SwiftUI
 /// status item. The preview and the real status item share
 /// `renderStatusItems`; this view never draws its own approximation.
 struct BuilderView: View {
-    let onBack: () -> Void
+    /// nil when the Builder IS the Settings pane (no back navigation).
+    let onBack: (() -> Void)?
 
     @State private var items: [MenuItemDescriptor]
     @State private var selectedId: String?
@@ -18,7 +19,7 @@ struct BuilderView: View {
     @State private var budget: Double = Double(StatusComposer.defaultBudget)
     private let store = DescriptorStore()
 
-    init(onBack: @escaping () -> Void) {
+    init(onBack: (() -> Void)? = nil) {
         self.onBack = onBack
         let loaded = DescriptorStore().load()
         _items = State(initialValue: loaded)
@@ -47,12 +48,16 @@ struct BuilderView: View {
 
     private var header: some View {
         HStack {
-            Button {
-                onBack()
-            } label: {
-                Label("Menu bar", systemImage: "chevron.left")
+            if let onBack {
+                Button {
+                    onBack()
+                } label: {
+                    Label("Menu bar", systemImage: "chevron.left")
+                }
+                .buttonStyle(.plain)
+            } else {
+                Text("Menu bar").font(.headline)
             }
-            .buttonStyle(.plain)
             Spacer()
             Text("BUILDER · KEY SPEC").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
         }
