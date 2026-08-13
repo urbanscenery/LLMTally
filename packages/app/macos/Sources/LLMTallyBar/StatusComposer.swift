@@ -9,6 +9,8 @@ import LLMTallyKit
 enum StatusComposer {
     static let barHeight: CGFloat = 16
     static let defaultBudget: CGFloat = 336
+    /// History spark track width (user-tuned).
+    static let sparkTrack: CGFloat = 80
     private static let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
     private static let gap: CGFloat = 6
 
@@ -76,7 +78,7 @@ enum StatusComposer {
             return identityWidth + CGFloat(bars.count) * 5 + CGFloat(max(0, bars.count - 1)) * 2
         case .spark:
             // fixed track: the range changes density, not width
-            return 100
+            return sparkTrack
         case .placeholder:
             return attributed("—").size().width.rounded(.up)
         }
@@ -114,7 +116,7 @@ enum StatusComposer {
             let maximum = max(values.max() ?? 1, 0.000_001)
             let theme = Theme.current()
             let color = money ? theme.nsActual : theme.nsAccent
-            let track: CGFloat = 100
+            let track = sparkTrack
             if line {
                 let path = NSBezierPath()
                 path.lineWidth = 1.2
