@@ -70,7 +70,7 @@ describe('themes', () => {
     expect(themeNames()).toContain('catppuccin');
     expect(themeNames()).toContain('onedark');
     expect(themeNames()).toContain('github');
-    expect(themeNames()).toHaveLength(17);
+    expect(themeNames()).toHaveLength(19);
     for (const definition of THEMES) {
       const theme = resolveTheme(definition);
       for (const role of roles) {
@@ -82,18 +82,18 @@ describe('themes', () => {
     }
   });
 
-  test('App tokyo-night and dracula use the App key colors', () => {
-    // Act
+  test('App tokyo-night and dracula use the catalog key colors', () => {
+    // Act — hexes carry the catalog's state-color saturation boost
     const tokyo = findTheme('tokyo-night');
     const dracula = findTheme('dracula');
 
     // Assert
-    expect(tokyo?.palette.accent).toBe('#9d7cd8');
-    expect(tokyo?.palette.ok).toBe('#9ece6a');
+    expect(tokyo?.palette.accent).toBe('#9b75df');
+    expect(tokyo?.palette.ok).toBe('#9ed662');
     expect(tokyo?.palette.actualCost).toBe('#ff9e64');
     expect(dracula?.palette.accent).toBe('#ff79c6');
-    expect(dracula?.palette.ok).toBe('#50fa7b');
-    expect(dracula?.palette.actualCost).toBe('#bd93f9');
+    expect(dracula?.palette.ok).toBe('#4bff79');
+    expect(dracula?.palette.actualCost).toBe('#bc8dff');
   });
 
   test('light themes require a painted surface; dark themes do not', () => {
@@ -134,8 +134,9 @@ describe('themes', () => {
     const high = theme.resolve('ramp:quota:100');
 
     // Assert
-    expect(low.color).toBe('#a6e3a1');
-    expect(high.color).toBe('#f38ba8');
+    // catalog state colors carry the saturation boost
+    expect(low.color).toBe('#a2e89c');
+    expect(high.color).toBe('#fb83a5');
   });
 
   test('mono theme keeps structure attributes but no colors', () => {

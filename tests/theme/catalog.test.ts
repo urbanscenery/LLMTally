@@ -47,6 +47,29 @@ describe('shared theme catalog', () => {
     expect(committed).toBe(renderThemePresetsSwift());
   });
 
+  test('state colors carry the saturation boost; neutrals do not', async () => {
+    // Arrange
+    const { saturate } = await import('@llmtally/core/theme/color.ts');
+
+    // Act & Assert — grayscale passes through, saturated colors clamp
+    expect(saturate('#808080', 1.15)).toBe('#808080');
+    expect(saturate('#ff2600', 1.15)).toBe('#ff2600');
+    expect(saturate('#9d7cd8', 1.15)).toBe('#9b75df');
+    // the assembled catalog boosts state colors only
+    const tokyo = THEME_PRESETS.find((preset) => preset.id === 'tokyo-night')!;
+    expect(tokyo.colors.accent).toBe(saturate('#9d7cd8', 1.15));
+    expect(tokyo.colors.text).toBe('#c0caf5');
+    expect(tokyo.colors.background).toBe('#1a1b26');
+  });
+
+  test('night owl and cobalt2 ship dark and light variants', () => {
+    // Act & Assert
+    for (const id of ['night-owl', 'cobalt2']) {
+      expect(THEME_PRESETS.find((preset) => preset.id === id)?.appearance).toBe('dark');
+      expect(THEME_PRESETS.find((preset) => preset.id === `${id}-light`)?.appearance).toBe('light');
+    }
+  });
+
   test('legacy ids resolve to catalog themes', () => {
     // Act & Assert — every alias target exists
     for (const target of Object.values(APP_LEGACY_THEME_IDS)) {

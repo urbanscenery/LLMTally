@@ -4,6 +4,8 @@
  * generated Swift copy (packages/app/scripts/gen-theme-presets.ts) that
  * a test keeps in lockstep. Palette edits happen here and only here.
  */
+import { saturate } from './color.ts';
+
 export type ThemeAppearance = 'dark' | 'light';
 
 export interface ThemePresetColors {
@@ -43,7 +45,36 @@ function light(id: string, label: string, colors: ThemePresetColors): ThemePrese
   return { id, label, appearance: 'light', colors };
 }
 
-export const THEME_PRESETS: readonly ThemePreset[] = [
+/**
+ * Editor palettes read fine in an editor but wash out at the small
+ * sizes both surfaces draw (menu-bar wells, TUI gauges) — lift the
+ * state colors a touch. Applied at assembly so the App codegen and the
+ * TUI see identical values.
+ */
+const STATE_SATURATION_BOOST = 1.15;
+
+function boostStateColors(preset: ThemePreset): ThemePreset {
+  const colors = preset.colors;
+  return {
+    ...preset,
+    colors: {
+      ...colors,
+      accent: saturate(colors.accent, STATE_SATURATION_BOOST),
+      live: saturate(colors.live, STATE_SATURATION_BOOST),
+      warn: saturate(colors.warn, STATE_SATURATION_BOOST),
+      crit: saturate(colors.crit, STATE_SATURATION_BOOST),
+      actual: saturate(colors.actual, STATE_SATURATION_BOOST),
+      ...(colors.nominal === undefined
+        ? {}
+        : { nominal: saturate(colors.nominal, STATE_SATURATION_BOOST) }),
+      ...(colors.activeBorder === undefined
+        ? {}
+        : { activeBorder: saturate(colors.activeBorder, STATE_SATURATION_BOOST) }),
+    },
+  };
+}
+
+const RAW_PRESETS: readonly ThemePreset[] = [
   dark('catppuccin', 'Catppuccin Mocha', {
     accent: '#cba6f7',
     live: '#a6e3a1',
@@ -238,6 +269,30 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
     dim: '#90a4ae',
     border: '#eceff1',
   }),
+  light('night-owl-light', 'Night Owl Light', {
+    accent: '#4876d6',
+    live: '#08916a',
+    warn: '#daaa01',
+    crit: '#de3d3b',
+    actual: '#c96765',
+    background: '#fbfbfb',
+    text: '#403f53',
+    secondary: '#697098',
+    dim: '#90a7b2',
+    border: '#d9d9d9',
+  }),
+  light('cobalt2-light', 'Cobalt2 Light', {
+    accent: '#0088ff',
+    live: '#1f9d55',
+    warn: '#c78100',
+    crit: '#d92600',
+    actual: '#d6437f',
+    background: '#eaf2fa',
+    text: '#193549',
+    secondary: '#3f6d94',
+    dim: '#7d9cb5',
+    border: '#c7dbeb',
+  }),
   light('mono-light', 'Mono Light', {
     accent: '#111111',
     live: '#333333',
@@ -251,6 +306,8 @@ export const THEME_PRESETS: readonly ThemePreset[] = [
     border: '#dddddd',
   }),
 ];
+
+export const THEME_PRESETS: readonly ThemePreset[] = RAW_PRESETS.map(boostStateColors);
 
 /**
  * Ids either surface stored before the catalog was shared, resolved on
