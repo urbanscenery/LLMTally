@@ -14,6 +14,15 @@ enum StatusComposer {
     private static let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
     private static let gap: CGFloat = 6
 
+    /// System theme carries no surface of its own — consult the actual
+    /// appearance so a dark menu bar gets dark wells like any dark theme.
+    private static var systemBarIsDark: Bool {
+        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    /// Neutral dark well for System-on-dark rails and spark backdrops.
+    private static let systemDarkWell = NSColor(hex: 0x1E1E1E)
+
     /// Width of the `+N` fold indicator — exposed so the Builder's
     /// fold note computes with the same number.
     static var indicatorWidth: Double {
@@ -106,9 +115,12 @@ enum StatusComposer {
                     roundedRect: NSRect(x: cursor, y: 0.5, width: 5, height: barHeight - 1),
                     xRadius: 2, yRadius: 2)
                 // the rail track wears the theme surface — dark themes
-                // get a dark well, light themes a light one
+                // get a dark well, light themes a light one; System has
+                // no surface, so follow the actual menu-bar appearance
                 (Theme.current().nsBackground
-                    ?? NSColor.secondaryLabelColor.withAlphaComponent(0.25)).setFill()
+                    ?? (systemBarIsDark ? systemDarkWell
+                                        : NSColor.secondaryLabelColor.withAlphaComponent(0.25)))
+                    .setFill()
                 track.fill()
                 // remaining inverts the height; severity color always
                 // tracks usage so a nearly-empty rail still warns
@@ -130,8 +142,9 @@ enum StatusComposer {
             let color = money ? theme.nsActual : theme.nsAccent
             let track = sparkTrack
             // the chart sits on its own themed rectangle — previously
-            // bare, which washed out on a mismatched menu bar
-            if let surface = theme.nsBackground {
+            // bare, which washed out on a mismatched menu bar. System
+            // brings no surface; a dark menu bar still gets a dark one
+            if let surface = theme.nsBackground ?? (systemBarIsDark ? systemDarkWell : nil) {
                 surface.setFill()
                 NSBezierPath(
                     roundedRect: NSRect(x: x - 2, y: 0, width: track + 4, height: barHeight),
