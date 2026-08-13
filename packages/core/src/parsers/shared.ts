@@ -33,12 +33,19 @@ export function asTokenCount(value: unknown): number | null {
   return value;
 }
 
+/**
+ * Hard per-event cap: no real prompt reaches a trillion tokens, and a
+ * cap this far below 2^53 keeps SQL SUMs inside exact float range even
+ * across millions of rows (audit codex C1-12).
+ */
+export const MAX_TOKENS_PER_EVENT = 1_000_000_000_000;
+
 export function isNonNegativeInteger(value: unknown): value is number {
   return (
     typeof value === 'number' &&
     Number.isInteger(value) &&
     value >= 0 &&
-    value <= Number.MAX_SAFE_INTEGER
+    value <= MAX_TOKENS_PER_EVENT
   );
 }
 

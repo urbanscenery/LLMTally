@@ -418,7 +418,9 @@ private struct AccountsPane: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(quota.enumerated()), id: \.offset) { _, snapshot in
                         HStack {
-                            Text("\(agentDisplayName(snapshot.agent)) · \(snapshot.account ?? snapshot.accountId ?? "?")")
+                            Text(PrivacySetting.enabled
+                                 ? "\(agentDisplayName(snapshot.agent)) · Account hidden"
+                                 : "\(agentDisplayName(snapshot.agent)) · \(snapshot.account ?? snapshot.accountId ?? "?")")
                                 .font(.caption).lineLimit(1)
                             Spacer()
                             if snapshot.accountId != nil,
@@ -440,7 +442,8 @@ private struct AccountsPane: View {
             Text("Deletes ~/.codex/auth.json only after the vault copy matches live bytes; a mismatch aborts.")
                 .font(.caption2).foregroundStyle(.secondary)
             if let detachResult {
-                Text(detachResult).font(.caption2).foregroundStyle(.orange)
+                Text(PrivacySetting.enabled ? "Done — details hidden (Privacy mode)" : detachResult)
+                    .font(.caption2).foregroundStyle(.orange)
             }
             Divider()
             HStack {
@@ -588,7 +591,11 @@ enum OpenTUI {
         do {
             try process.run()
         } catch {
-            NSLog("Open TUI failed: %@", String(describing: error))
+            let alert = NSAlert()
+            alert.messageText = "Could not open the TUI"
+            alert.informativeText = "Launching Terminal failed: \(error.localizedDescription)"
+            alert.alertStyle = .warning
+            alert.runModal()
         }
     }
 }

@@ -102,7 +102,9 @@ struct OverviewView: View {
             }
             Spacer()
             if let error = model.loadError {
-                Text(error).font(.caption2).foregroundStyle(.red).lineLimit(1)
+                // raw errors can carry account ids/paths (audit C1-11)
+                Text(privacy ? "error (details hidden)" : error)
+                    .font(.caption2).foregroundStyle(.red).lineLimit(1)
             } else if let quota = model.overview?.quota {
                 FreshnessSummary(quota: quota)
             }
@@ -142,7 +144,7 @@ struct OverviewView: View {
                     Text("Reading local ledger…").font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text("No data yet").font(.callout)
-                    Text("Run an agent once, or open the TUI to scan.")
+                    Text("Run an agent once — the menu bar collects automatically.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -760,7 +762,9 @@ struct ProviderDetailView: View {
             WeeklyChart(buckets: detail.dayBuckets, privacy: privacy,
                         hourBuckets: detail.hourBuckets)
             HStack {
-                Button("Open TUI · \(agentDisplayName(agent))") { OpenTUI.launch() }
+                // plain label: the TUI has no deep link, so naming the
+                // provider promised a context the button cannot pass
+                Button("Open TUI") { OpenTUI.launch() }
                     .buttonStyle(HoverActionButtonStyle())
                     .font(.caption)
                 Spacer()
@@ -879,7 +883,9 @@ struct SwitchSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Switch \(agentDisplayName(intent.agent)) to \(intent.label)?")
+            Text(PrivacySetting.enabled
+                 ? "Switch to \(intent.label)?"
+                 : "Switch \(agentDisplayName(intent.agent)) to \(intent.label)?")
                 .font(.headline)
 
             switch phase {

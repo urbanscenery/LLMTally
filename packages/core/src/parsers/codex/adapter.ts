@@ -107,7 +107,9 @@ export class CodexAdapter implements SourceAdapter {
       while (!step.done) {
         const line = step.value;
         if (line.invalidUtf8 || line.text === null) {
-          warnings.push(lineWarning(this.agent, target.path, line.startOffset, 'invalid_utf8', 'line is not valid UTF-8'));
+          warnings.push(line.oversized
+            ? lineWarning(this.agent, target.path, line.startOffset, 'oversized_line', 'line exceeds the 32MiB cap; skipped')
+            : lineWarning(this.agent, target.path, line.startOffset, 'invalid_utf8', 'line is not valid UTF-8'));
         } else if (line.text.length > 0 && isCodexCandidateLine(line.text)) {
           this.#handleLine(line.text, line.startOffset, target, meta, tracker, entries, warnings);
         }

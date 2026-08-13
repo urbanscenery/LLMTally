@@ -23,7 +23,11 @@ final class OverviewModel: ObservableObject {
     nonisolated static func hourReportParams(agent: String? = nil) -> [String: Any] {
         var params: [String: Any] = [
             "groupBy": "hour",
-            "fromDate": localDayKey(Date(timeIntervalSinceNow: -6 * 86_400)),
+            // calendar days, not fixed 86,400s spans — a DST switch
+            // otherwise shifts the window by an hour and drops or adds
+            // a day at the boundary (audit C1-15)
+            "fromDate": localDayKey(
+                Calendar.current.date(byAdding: .day, value: -6, to: Date()) ?? Date()),
             "toDate": localDayKey(),
             "noRefresh": true,
         ]

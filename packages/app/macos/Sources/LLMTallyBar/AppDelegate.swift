@@ -9,12 +9,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // two status items, two sidecars, and racing switch/detach
         // flows. The older instance wins; this one bows out.
         let bundleId = Bundle.main.bundleIdentifier
-        if let bundleId,
-           NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
-               .contains(where: { $0 != NSRunningApplication.current }) {
-            NSLog("llmtally is already running; exiting the duplicate instance")
-            NSApp.terminate(nil)
-            return
+        if let bundleId {
+            // deterministic winner: only the YOUNGER instance exits, so
+            // two simultaneous launches cannot terminate each other
+            // (audit C1-08)
+            let me = NSRunningApplication.current
+            let older = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
+                .contains { $0 != me && $0.processIdentifier < me.processIdentifier }
+            if older {
+                NSLog("llmtally is already running; exiting the duplicate instance")
+                NSApp.terminate(nil)
+                return
+            }
         }
         AppConfig.applyThresholds()
         do {

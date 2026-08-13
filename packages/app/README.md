@@ -58,10 +58,12 @@ The status item renders the user's ordered `MenuItemDescriptor[]`
 live quota every 15 minutes; the popover and the status text share the
 same attention ranking and the same sidecar.
 
-The shell resolves the sidecar at `packages/app/src/sidecar-main.ts`
-relative to its own sources (override with `LLMTALLY_SIDECAR`), and
-launches it via `/usr/bin/env bun` — dev-only; a bundled app ships its
-own resolution.
+The shell resolves the sidecar in this order: `LLMTALLY_SIDECAR`
+override → the self-contained binary bundled at `Contents/Helpers/`
+(no Bun install needed) → the dev checkout's
+`packages/app/src/sidecar-main.ts` via a probed Bun
+(`~/.bun/bin`, `/opt/homebrew/bin`, `/usr/local/bin`; `LLMTALLY_BUN`
+override).
 
 The sidecar can be exercised alone:
 

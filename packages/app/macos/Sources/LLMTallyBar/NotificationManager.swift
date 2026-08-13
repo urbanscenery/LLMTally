@@ -50,23 +50,44 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     func process(quota: [QuotaSnapshotDTO], privacy: Bool) {
         let result = planNotifications(state: loadState(), quota: quota, privacy: privacy)
-        saveState(result.state)
 
-        guard !result.notifications.isEmpty else { return }
+        guard !result.notifications.isEmpty else {
+            // no crossings: the re-arm bookkeeping is still real state
+            saveState(result.state)
+            return
+        }
         guard canDeliver else {
+            saveState(result.state)
             for notification in result.notifications {
                 FileHandle.standardError.write(
                     Data("notification (unbundled, skipped): \(notification.title)\n".utf8))
             }
             return
         }
-        for notification in result.notifications {
-            let content = UNMutableNotificationContent()
-            content.title = notification.title
-            content.body = notification.body
-            content.userInfo = ["agent": notification.agent]
-            UNUserNotificationCenter.current().add(
-                UNNotificationRequest(identifier: notification.key, content: content, trigger: nil))
+        // deliver first, persist "already notified" only when delivery
+        // was actually possible: recording the episode while the user
+        // had notifications denied would mute it forever, even after
+        // they enable notifications (audit C1-02)
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized ||
+                  settings.authorizationStatus == .provisional else {
+                NSLog("llmtally: notifications not authorized; keeping episodes armed")
+                return
+            }
+            self.saveState(result.state)
+            for notification in result.notifications {
+                let content = UNMutableNotificationContent()
+                content.title = notification.title
+                content.body = notification.body
+                content.userInfo = ["agent": notification.agent]
+                UNUserNotificationCenter.current().add(
+                    UNNotificationRequest(identifier: notification.key, content: content, trigger: nil)
+                ) { error in
+                    if let error {
+                        NSLog("llmtally notification add failed: %@", String(describing: error))
+                    }
+                }
+            }
         }
     }
 

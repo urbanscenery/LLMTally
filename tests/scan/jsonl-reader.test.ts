@@ -38,8 +38,8 @@ describe('readJsonlLines', () => {
 
     // Assert
     expect(lines).toEqual([
-      { text: 'a', invalidUtf8: false, startOffset: 0, endOffset: 2 },
-      { text: 'bb', invalidUtf8: false, startOffset: 2, endOffset: 5 },
+      { text: 'a', invalidUtf8: false, oversized: false, startOffset: 0, endOffset: 2 },
+      { text: 'bb', invalidUtf8: false, oversized: false, startOffset: 2, endOffset: 5 },
     ]);
     expect(tail).toEqual({ tailPending: false, tailStartOffset: null, nextOffset: 5 });
   });
@@ -52,8 +52,8 @@ describe('readJsonlLines', () => {
     const { lines } = drain(path, 0, 5);
 
     // Assert
-    expect(lines[0]).toEqual({ text: 'x', invalidUtf8: false, startOffset: 0, endOffset: 3 });
-    expect(lines[1]).toEqual({ text: 'y', invalidUtf8: false, startOffset: 3, endOffset: 5 });
+    expect(lines[0]).toEqual({ text: 'x', invalidUtf8: false, oversized: false, startOffset: 0, endOffset: 3 });
+    expect(lines[1]).toEqual({ text: 'y', invalidUtf8: false, oversized: false, startOffset: 3, endOffset: 5 });
   });
 
   test('flags invalid utf8 complete lines and still advances past them', () => {
@@ -64,7 +64,7 @@ describe('readJsonlLines', () => {
     const { lines, tail } = drain(path, 0, 6);
 
     // Assert
-    expect(lines[0]).toEqual({ text: null, invalidUtf8: true, startOffset: 0, endOffset: 3 });
+    expect(lines[0]).toEqual({ text: null, invalidUtf8: true, oversized: false, startOffset: 0, endOffset: 3 });
     expect(lines[1]?.text).toBe('ok');
     expect(tail.nextOffset).toBe(6);
   });

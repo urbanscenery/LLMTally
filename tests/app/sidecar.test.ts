@@ -137,6 +137,9 @@ describe('sidecar server', () => {
       vaultDir: join(dir, 'vault'),
       claudeConfigPath: join(dir, 'no-such-claude.json'),
       codexAuthPath: join(dir, 'no-such-auth.json'),
+      opencodeAuthPath: join(dir, 'no-such-opencode.json'),
+      grokAuthPath: join(dir, 'no-such-grok.json'),
+      antigravityStoreDir: join(dir, 'no-such-antigravity'),
     });
 
     // Act
@@ -148,6 +151,36 @@ describe('sidecar server', () => {
       ['antigravity', 'claude-code', 'cline', 'codex', 'grok', 'opencode'],
     );
     expect(Object.values(reply.result).every((value) => value === null)).toBe(true);
+  });
+
+  test('activeAccounts derives grok and opencode from their live stores', async () => {
+    // Arrange — no vault markers, but both agents are logged in live
+    const dir = makeTempDir();
+    const grokPath = join(dir, 'grok-auth.json');
+    writeFileSync(grokPath, JSON.stringify({
+      'issuer::client': { user_id: 'grok-user-1', email: 'g@test.dev' },
+    }));
+    const opencodePath = join(dir, 'opencode-auth.json');
+    writeFileSync(opencodePath, JSON.stringify({
+      'opencode-go': { type: 'api', key: 'sk-live' },
+    }));
+    const server = createSidecarServer({
+      databasePath: makeLedger(),
+      vaultDir: join(dir, 'vault'),
+      claudeConfigPath: join(dir, 'no-such-claude.json'),
+      codexAuthPath: join(dir, 'no-such-auth.json'),
+      opencodeAuthPath: opencodePath,
+      grokAuthPath: grokPath,
+      antigravityStoreDir: join(dir, 'no-such-antigravity'),
+    });
+
+    // Act
+    const reply = await call(server, 'activeAccounts');
+
+    // Assert
+    expect(reply.error).toBeUndefined();
+    expect(reply.result.grok).toBe('grok-user-1');
+    expect(typeof reply.result.opencode).toBe('string');
   });
 
   test('activeAccounts derives codex from its live auth.json', async () => {

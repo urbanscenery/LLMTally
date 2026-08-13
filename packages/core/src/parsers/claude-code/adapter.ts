@@ -92,7 +92,11 @@ export class ClaudeCodeAdapter implements SourceAdapter {
       while (!step.done) {
         const line = step.value;
       if (line.invalidUtf8 || line.text === null) {
-        warnings.push(lineWarning(this.agent, target.path, line.startOffset, 'invalid_utf8', 'line is not valid UTF-8'));
+        // an oversized line is a size refusal, not an encoding fault —
+        // misfiling it hides why a valid record vanished (audit C1-05)
+        warnings.push(line.oversized
+          ? lineWarning(this.agent, target.path, line.startOffset, 'oversized_line', 'line exceeds the 32MiB cap; skipped')
+          : lineWarning(this.agent, target.path, line.startOffset, 'invalid_utf8', 'line is not valid UTF-8'));
       } else if (line.text.length > 0 && isCandidateLine(line.text)) {
         const classified = classifyClaudeLine(line.text);
         if (classified.kind === 'user') {

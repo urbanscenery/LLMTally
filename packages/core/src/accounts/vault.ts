@@ -238,6 +238,10 @@ export class AccountVault {
     assertSafeAgent(entry.agent);
     assertSafeAccountId(entry.accountId);
     this.#ensureDir();
+    // read (and thereby validate) the registry BEFORE the secret moves:
+    // a corrupt registry must abort the whole put while the Keychain
+    // and credential file are still untouched (audit codex C1-01)
+    const registry = this.#readRegistry();
     const encoded = Buffer.from(credentialsText, 'utf8').toString('base64');
     let backend: VaultEntry['backend'] = 'file';
     if (this.#keychain.available) {
@@ -271,7 +275,6 @@ export class AccountVault {
       // a stale plaintext copy must not outlive a successful Keychain write
       rmSync(this.#credentialPath(entry.agent, entry.accountId), { force: true });
     }
-    const registry = this.#readRegistry();
     this.#retireLegacyFile(registry, entry.agent, entry.accountId);
     const key = keyFor(entry.agent, entry.accountId);
     const refreshDeadAtUtc =
@@ -665,11 +668,22 @@ export class AccountVault {
     }
     const isV2 = parsed.version === REGISTRY_VERSION;
     const accounts: Record<string, VaultEntry> = {};
+    // fail closed on shape damage too: an `accounts` that exists but is
+    // not an object, or an entry that is not an object, means the file
+    // was corrupted — normalizing it away and persisting on the next
+    // mutation would erase real account metadata (audit codex C1-02)
+    if (parsed.accounts !== undefined && asObject(parsed.accounts) === null) {
+      throw new VaultError(
+        `account registry "accounts" is not an object (${this.#registryPath()}) — fix or move the file`,
+      );
+    }
     const raw = asObject(parsed.accounts) ?? {};
     for (const [rawKey, value] of Object.entries(raw)) {
       const entry = asObject(value);
       if (entry === null) {
-        continue;
+        throw new VaultError(
+          `account registry entry "${rawKey}" is not an object (${this.#registryPath()}) — fix or move the file`,
+        );
       }
       const agent = asString(entry.agent) ?? 'claude-code';
       // v2 stores the id in the entry; a v1 key IS the id

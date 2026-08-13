@@ -6,6 +6,9 @@
  * Swift shell. The sidecar never opens the ledger itself: it carries
  * `databasePath` and lets core services open and close it.
  */
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+
 import { resolveActiveClaudeContext } from '@llmtally/core/accounts/active-claude.ts';
 import { detachCodexLogin, switchCodexAccount } from '@llmtally/core/accounts/codex.ts';
 import { createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
@@ -13,6 +16,9 @@ import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
 import { switchOpencodeAccount } from '@llmtally/core/accounts/opencode.ts';
 import { switchAccount as switchClaudeAccount } from '@llmtally/core/accounts/switch.ts';
 import { AccountVault } from '@llmtally/core/accounts/vault.ts';
+import { defaultGrokAuthPath, readGrokIdentities } from '@llmtally/core/accounts/grok.ts';
+import { defaultOpencodeAuthPath, opencodeAccountId, readOpencodeProviders } from '@llmtally/core/accounts/opencode.ts';
+import { defaultAntigravityStoreDir, resolveActiveAccount } from '@llmtally/core/quota/antigravity.ts';
 import { readCodexAuth } from '@llmtally/core/quota/codex-live.ts';
 import { dedupeByAccount, loadAllQuota } from '@llmtally/core/quota/service.ts';
 import { softResetQuotaThrottle } from '@llmtally/core/quota/throttle.ts';
@@ -38,6 +44,9 @@ export interface SidecarOptions {
   readonly vaultDir?: string;
   readonly claudeConfigPath?: string;
   readonly codexAuthPath?: string;
+  readonly opencodeAuthPath?: string;
+  readonly grokAuthPath?: string;
+  readonly antigravityStoreDir?: string;
 }
 
 /** Every ledger agent, whether or not it has a switch transaction. */
@@ -118,6 +127,28 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
     if (liveCodex !== null) {
       active['codex'] = liveCodex;
     }
+    // the same rule for every agent with a live store: the file the
+    // agent itself maintains beats a vault marker that only exists
+    // after an llmtally switch (audit C1-03)
+    const liveOpencode = readLiveOpencodeId(options.opencodeAuthPath ?? defaultOpencodeAuthPath());
+    if (liveOpencode !== null) {
+      active['opencode'] = liveOpencode;
+    }
+    try {
+      const antigravity = resolveActiveAccount(
+        options.antigravityStoreDir ?? defaultAntigravityStoreDir(),
+      );
+      if (antigravity !== null) {
+        active['antigravity'] = antigravity.email;
+      }
+    } catch {
+      // no antigravity store is the common case, not an error
+    }
+    const grokIdentities = readGrokIdentities(options.grokAuthPath ?? defaultGrokAuthPath(homedir()));
+    if (grokIdentities.length === 1) {
+      // two simultaneous logins are ambiguous — show none rather than guess
+      active['grok'] = grokIdentities[0]?.accountId ?? null;
+    }
     return active;
   });
 
@@ -169,8 +200,16 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
   });
 }
 
+const REPORT_GROUP_BYS: readonly ReportGroupBy[] = ['day', 'hour', 'model', 'agent'];
+
 async function reportFor(params: unknown, databasePath: string): Promise<ReportSummary> {
-  const groupBy = (readString(params, 'groupBy') ?? 'day') as ReportGroupBy;
+  const raw = readString(params, 'groupBy') ?? 'day';
+  // validate at the boundary: an unknown groupBy must be an input
+  // error, not an internal SQL failure (audit codex C1-09)
+  const groupBy = REPORT_GROUP_BYS.find((candidate) => candidate === raw);
+  if (groupBy === undefined) {
+    throw new Error(`unknown groupBy: ${raw} (expected ${REPORT_GROUP_BYS.join(', ')})`);
+  }
   const range = buildReportRange(readString(params, 'fromDate'), readString(params, 'toDate'));
   if ('error' in range) {
     throw new Error(range.error);
@@ -215,4 +254,15 @@ function requireString(params: unknown, key: string): string {
     throw new Error(`${key} is required`);
   }
   return value;
+}
+
+/** Derived id of the live opencode credential set; null when none. */
+function readLiveOpencodeId(authPath: string): string | null {
+  let text: string;
+  try {
+    text = readFileSync(authPath, 'utf8');
+  } catch {
+    return null;
+  }
+  return readOpencodeProviders(text).length > 0 ? opencodeAccountId(text) : null;
 }

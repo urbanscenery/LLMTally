@@ -48,6 +48,9 @@ final class SidecarClient {
     private var running = false
     private var stopped = false
     private var lastLaunchAt: Date?
+    /// Consecutive request timeouts — a wedged helper answers nothing,
+    /// so three strikes terminate it and let the restart path recover.
+    private var timeoutStrikes = 0
     /// Last stderr line — surfaced with failures for diagnosis.
     private(set) var lastStderrLine: String?
 
@@ -216,6 +219,15 @@ final class SidecarClient {
             self.queue.asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
                 guard let self, let waiting = self.pending.removeValue(forKey: id) else { return }
                 waiting(.failure(SidecarError.timeout))
+                // a helper that keeps timing out is wedged, and the
+                // serial pipe means everything behind it dies too —
+                // kill it so the backoff restart can recover (C1-04)
+                self.timeoutStrikes += 1
+                if self.timeoutStrikes >= 3, self.running, let launch = self.launch {
+                    NSLog("llmtally sidecar unresponsive (3 timeouts); terminating for restart")
+                    self.timeoutStrikes = 0
+                    launch.process.terminate()
+                }
             }
         }
     }
@@ -255,6 +267,7 @@ final class SidecarClient {
             let completion = pending.removeValue(forKey: id)
         else { return }
 
+        timeoutStrikes = 0
         if let error = reply["error"] as? [String: Any] {
             let message = error["message"] as? String ?? "sidecar error"
             completion(.failure(SidecarError.remote(message)))

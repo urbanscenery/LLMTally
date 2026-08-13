@@ -601,8 +601,12 @@ struct BuilderView: View {
     /// items re-pin to the first provider's first window once the
     /// window catalog is actually known.
     private func migrateLegacyBindings() {
+        let hasEmptyPin = items.contains { item in
+            if case .pin(_, let windowId) = item.binding { return windowId.isEmpty }
+            return false
+        }
         guard !quota.isEmpty,
-              items.contains(where: { isQuotaMetric($0.metric) && !isPin($0.binding) })
+              hasEmptyPin || items.contains(where: { isQuotaMetric($0.metric) && !isPin($0.binding) })
         else { return }
         mutate { current in
             for index in current.indices
@@ -611,6 +615,17 @@ struct BuilderView: View {
                 current[index].binding = .pin(
                     provider: provider, nativeWindowId: firstWindowId(of: provider))
                 current[index].scope = .provider(provider)
+            }
+            // items added before any quota arrived carry an empty
+            // window id — fill it now that the catalog is real
+            for index in current.indices {
+                if case .pin(let provider, let windowId) = current[index].binding,
+                   windowId.isEmpty {
+                    let fresh = firstWindowId(of: provider)
+                    if !fresh.isEmpty {
+                        current[index].binding = .pin(provider: provider, nativeWindowId: fresh)
+                    }
+                }
             }
         }
     }

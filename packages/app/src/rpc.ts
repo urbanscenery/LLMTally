@@ -60,21 +60,21 @@ export class RpcServer {
       return respond(null, undefined, { code: INVALID_REQUEST, message: 'id must be a number, string, or null' });
     }
     const id = rawId;
+    // an INVALID request is answered even without an id (id null per
+    // spec): treating `{}` as a silent notification left the caller
+    // waiting out its full deadline (audit codex C1-08). Only a request
+    // that is otherwise valid and merely lacks an id is a notification.
     if (request.jsonrpc !== '2.0') {
-      return isNotification
-        ? null
-        : respond(id, undefined, { code: INVALID_REQUEST, message: 'jsonrpc must be "2.0"' });
+      return respond(id, undefined, { code: INVALID_REQUEST, message: 'jsonrpc must be "2.0"' });
     }
     if (typeof request.method !== 'string' || request.method === '') {
-      return isNotification ? null : respond(id, undefined, { code: INVALID_REQUEST, message: 'method must be a string' });
+      return respond(id, undefined, { code: INVALID_REQUEST, message: 'method must be a string' });
     }
     if (
       request.params !== undefined &&
       (request.params === null || typeof request.params !== 'object')
     ) {
-      return isNotification
-        ? null
-        : respond(id, undefined, { code: INVALID_REQUEST, message: 'params must be an object or array' });
+      return respond(id, undefined, { code: INVALID_REQUEST, message: 'params must be an object or array' });
     }
 
     const handler = this.#handlers.get(request.method);

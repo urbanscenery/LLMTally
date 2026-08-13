@@ -16,6 +16,8 @@ export interface JsonlLine {
   /** Decoded line without the terminator; null when the bytes are not valid UTF-8 (or the line exceeded the size cap). */
   readonly text: string | null;
   readonly invalidUtf8: boolean;
+  /** True when the line was dropped for exceeding the size cap. */
+  readonly oversized: boolean;
   /** Byte offset of the first byte of the line. */
   readonly startOffset: number;
   /** Byte offset just past the newline terminator. */
@@ -71,7 +73,8 @@ export function* readJsonlLines(
         }
         yield {
           text: null,
-          invalidUtf8: true,
+          invalidUtf8: false,
+          oversized: true,
           startOffset: oversizedStart,
           endOffset: chunkFileStart + newline + 1,
         };
@@ -125,9 +128,9 @@ function decodeLine(bytes: Uint8Array, startOffset: number, endOffset: number): 
       ? bytes.subarray(0, bytes.length - 1)
       : bytes;
   try {
-    return { text: decoder.decode(content), invalidUtf8: false, startOffset, endOffset };
+    return { text: decoder.decode(content), invalidUtf8: false, oversized: false, startOffset, endOffset };
   } catch {
-    return { text: null, invalidUtf8: true, startOffset, endOffset };
+    return { text: null, invalidUtf8: true, oversized: false, startOffset, endOffset };
   }
 }
 

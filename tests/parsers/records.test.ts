@@ -4,7 +4,7 @@ import {
   classifyClaudeLine,
   isCandidateLine,
 } from '@llmtally/core/parsers/claude-code/records.ts';
-import { asTokenCount } from '@llmtally/core/parsers/shared.ts';
+import { MAX_TOKENS_PER_EVENT, asTokenCount } from '@llmtally/core/parsers/shared.ts';
 
 function usageLine(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
@@ -193,9 +193,10 @@ describe('classifyClaudeLine', () => {
 });
 
 describe('asTokenCount bounds', () => {
-  test('rejects values past MAX_SAFE_INTEGER instead of poisoning sums', () => {
-    expect(asTokenCount(Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER);
-    expect(asTokenCount(Number.MAX_SAFE_INTEGER + 2)).toBeNull();
+  test('rejects values past the per-event cap instead of poisoning sums', () => {
+    expect(asTokenCount(MAX_TOKENS_PER_EVENT)).toBe(MAX_TOKENS_PER_EVENT);
+    expect(asTokenCount(MAX_TOKENS_PER_EVENT + 1)).toBeNull();
+    expect(asTokenCount(Number.MAX_SAFE_INTEGER)).toBeNull();
     expect(asTokenCount(1e300)).toBeNull();
   });
 });

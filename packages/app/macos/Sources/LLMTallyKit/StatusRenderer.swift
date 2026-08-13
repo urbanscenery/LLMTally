@@ -405,7 +405,8 @@ public func renderStatusSegments(
                     return bucket.tokens.inputTokens + bucket.tokens.outputTokens
                 }
                 // the spark follows the same cost mode as the Today
-                // cards — Nominal never silently reverts to Actual
+                // cards; buckets predating nominal support fall back to
+                // actual rather than plotting a false zero
                 let cost = nominalCost ? (bucket.nominal ?? bucket.actual) : bucket.actual
                 return cost.usd ?? cost.pricedSubtotalUsd
             }
@@ -418,7 +419,7 @@ public func renderStatusSegments(
             append(.spark(values: values, money: money,
                           line: descriptor.presentation == "line"), descriptor.metric)
             tooltip.append(money
-                ? "Actual cost, last \(rangeLabel) (\(values.count) buckets)"
+                ? "\(nominalCost ? "Nominal" : "Actual") cost, last \(rangeLabel) (\(values.count) buckets)"
                 : "Consumed tokens, last \(rangeLabel) (\(values.count) buckets)")
         case .agentActive:
             // ledger activity, not quota. nil = no reading yet

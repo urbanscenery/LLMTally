@@ -234,17 +234,6 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         var active: [String: String?]?
         let group = DispatchGroup()
 
-        // hybrid collection is the product premise: the menu bar alone
-        // must keep the ledger moving, not just the vendor gauges — an
-        // incremental scan rides every cadence tick (audit GK-41). The
-        // ledger reads below run in the same batch; they pick up this
-        // scan's rows on the next tick, which is fine for a status line.
-        SidecarClient.shared.request("scan") { result in
-            if case .failure(let error) = result {
-                NSLog("llmtally scan tick failed: %@", error.localizedDescription)
-            }
-        }
-
         group.enter()
         SidecarClient.shared.requestDecodable("overview", params: ["refresh": true], as: OverviewDTO.self) { result in
             if case .success(let value) = result { overview = value }
@@ -266,6 +255,17 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         SidecarClient.shared.requestDecodable("report", params: OverviewModel.hourReportParams(), as: ReportSummaryDTO.self) { result in
             if case .success(let summary) = result { hourBuckets = summary.buckets }
             group.leave()
+        }
+
+        // hybrid collection is the product premise: the menu bar alone
+        // must keep the ledger moving (audit GK-41). The sidecar answers
+        // serially, so the scan is queued AFTER the four reads above —
+        // sending it first parked every read behind a multi-second scan
+        // until the 20s deadline killed them (audit C1-01).
+        SidecarClient.shared.request("scan") { result in
+            if case .failure(let error) = result {
+                NSLog("llmtally scan tick failed: %@", error.localizedDescription)
+            }
         }
 
         group.notify(queue: .main) { [weak self] in

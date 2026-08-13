@@ -34,6 +34,7 @@ export type ScanWarningCode =
   | 'source_missing'
   | 'permission_denied'
   | 'invalid_utf8'
+  | 'oversized_line'
   | 'malformed_json'
   | 'invalid_record'
   | 'prompt_unresolved'
