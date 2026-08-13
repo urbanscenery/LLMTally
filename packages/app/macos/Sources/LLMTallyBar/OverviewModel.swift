@@ -150,7 +150,8 @@ final class OverviewModel: ObservableObject {
         }
     }
 
-    /// Snapshots grouped per agent, ordered by attention.
+    /// Snapshots grouped per agent — a manual order (Settings →
+    /// Overview) wins; otherwise rows rank by attention.
     func agentGroups(now: Date = Date()) -> [(agent: String, items: [AgentAttention])] {
         guard let overview else { return [] }
         let hidden = HiddenAgents.all()
@@ -158,14 +159,19 @@ final class OverviewModel: ObservableObject {
         for snapshot in overview.quota where !hidden.contains(snapshot.agent) {
             byAgent[snapshot.agent, default: []].append(attention(for: snapshot, now: now))
         }
-        return byAgent
-            .map { (agent: $0.key, items: $0.value.sorted { $0.rank < $1.rank }) }
-            .sorted { lhs, rhs in
-                let l = lhs.items.first?.rank ?? .quiet
-                let r = rhs.items.first?.rank ?? .quiet
-                if l != r { return l < r }
-                return lhs.agent < rhs.agent
+        let groups = byAgent.map { (agent: $0.key, items: $0.value.sorted { $0.rank < $1.rank }) }
+        if let order = ProviderOrder.saved() {
+            return groups.sorted { lhs, rhs in
+                (order.firstIndex(of: lhs.agent) ?? Int.max, lhs.agent)
+                    < (order.firstIndex(of: rhs.agent) ?? Int.max, rhs.agent)
             }
+        }
+        return groups.sorted { lhs, rhs in
+            let l = lhs.items.first?.rank ?? .quiet
+            let r = rhs.items.first?.rank ?? .quiet
+            if l != r { return l < r }
+            return lhs.agent < rhs.agent
+        }
     }
 
     /// The row shown on Overview: the agent's active account when known,

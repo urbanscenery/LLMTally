@@ -163,6 +163,7 @@ struct OverviewView: View {
                         HeadlineView(item: headline, privacy: privacy,
                                      alias: aliases[headline.snapshot.agent] ?? "P?")
                             .contentShape(Rectangle())
+                            .hoverHighlight()
                             .onTapGesture { selectedAgent = headline.snapshot.agent }
                     }
                     Divider()
@@ -173,6 +174,7 @@ struct OverviewView: View {
                                  alias: aliases[row.snapshot.agent] ?? "P?")
                             .background(focusedRow == index ? Color.primary.opacity(0.06) : .clear)
                             .contentShape(Rectangle())
+                            .hoverHighlight()
                             .onTapGesture { selectedAgent = group.agent }
                         Divider().padding(.leading, 44)
                     }
@@ -214,6 +216,27 @@ struct OverviewView: View {
         .padding(.horizontal, 12)
         .frame(height: 34)
     }
+}
+
+/// Theme-accent border on hover — the popover's "this is clickable"
+/// affordance for row-shaped targets (buttons keep their own styles).
+private struct HoverHighlight: ViewModifier {
+    @State private var hovering = false
+    @AppStorage(Theme.storageKey) private var themeId = "system"
+
+    func body(content: Content) -> some View {
+        let theme = Theme.presets.first { $0.id == themeId } ?? Theme.system
+        content
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(hovering ? theme.accent : .clear, lineWidth: 1.5)
+                    .padding(1))
+            .onHover { hovering = $0 }
+    }
+}
+
+extension View {
+    func hoverHighlight() -> some View { modifier(HoverHighlight()) }
 }
 
 struct SwitchIntent: Identifiable {

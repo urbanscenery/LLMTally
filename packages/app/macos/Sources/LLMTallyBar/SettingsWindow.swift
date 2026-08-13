@@ -65,7 +65,7 @@ enum PendingNavigation {
     }
 }
 
-/// Overview row visibility (Settings → Providers). Never mutates the
+/// Overview row visibility (Settings → Overview). Never mutates the
 /// Builder's descriptors.
 enum HiddenAgents {
     static let key = "hiddenAgents"
@@ -75,6 +75,23 @@ enum HiddenAgents {
     }
     static func set(_ agents: Set<String>) {
         UserDefaults.standard.set(agents.sorted().joined(separator: ","), forKey: key)
+    }
+}
+
+/// Manual Overview row order (Settings → Overview). nil = the default
+/// attention-first ordering.
+enum ProviderOrder {
+    static let key = "providerOrder"
+    static func saved() -> [String]? {
+        guard let raw = UserDefaults.standard.string(forKey: key), !raw.isEmpty else { return nil }
+        return raw.split(separator: ",").map(String.init)
+    }
+    static func set(_ agents: [String]?) {
+        if let agents, !agents.isEmpty {
+            UserDefaults.standard.set(agents.joined(separator: ","), forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
     }
 }
 
@@ -104,7 +121,7 @@ struct SettingsView: View {
     enum Pane: String, CaseIterable {
         case general = "General"
         case menubar = "Menu bar"
-        case providers = "Providers"
+        case overviewRows = "Overview"
         case accounts = "Accounts"
         case thresholds = "Thresholds"
         case refresh = "Refresh"
@@ -148,7 +165,7 @@ struct SettingsView: View {
                 case .general: GeneralPane()
                 // the Builder IS the pane — no summary detour
                 case .menubar: BuilderView()
-                case .providers: ProvidersPane()
+                case .overviewRows: OverviewRowsPane()
                 case .accounts: AccountsPane()
                 case .thresholds: ThresholdsPane()
                 case .refresh: RefreshPane()
@@ -298,18 +315,34 @@ private struct CostPane: View {
     }
 }
 
-private struct ProvidersPane: View {
+/// Overview row order + visibility. Only the popover list is affected;
+/// the status item's descriptors are the Builder's, untouched.
+private struct OverviewRowsPane: View {
+    @State private var order: [String] = OverviewRowsPane.effectiveOrder()
     @State private var hidden = HiddenAgents.all()
+    @State private var manual = ProviderOrder.saved() != nil
+
+    private static func effectiveOrder() -> [String] {
+        var agents = ProviderOrder.saved() ?? AGENT_DISPLAY_NAMES.keys.sorted()
+        // catalog growth: agents unknown to a saved order append at the end
+        for agent in AGENT_DISPLAY_NAMES.keys.sorted() where !agents.contains(agent) {
+            agents.append(agent)
+        }
+        return agents.filter { AGENT_DISPLAY_NAMES.keys.contains($0) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Providers").font(.title2.weight(.semibold))
-            Text("Overview row visibility only. The status item's descriptors are the Builder's, untouched.")
+            Text("Overview").font(.title2.weight(.semibold))
+            Text("Row order and visibility for the popover's Overview list. Without a manual order, rows rank by attention.")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
-            ForEach(Array(AGENT_DISPLAY_NAMES.keys.sorted()), id: \.self) { agent in
-                HStack {
+            ForEach(Array(order.enumerated()), id: \.element) { index, agent in
+                HStack(spacing: 8) {
+                    Button("↑") { move(index, by: -1) }.disabled(index == 0)
+                    Button("↓") { move(index, by: 1) }.disabled(index == order.count - 1)
                     Text(agentDisplayName(agent))
+                        .foregroundStyle(hidden.contains(agent) ? .secondary : .primary)
                     Spacer()
                     Toggle("", isOn: Binding(
                         get: { !hidden.contains(agent) },
@@ -318,9 +351,30 @@ private struct ProvidersPane: View {
                             HiddenAgents.set(hidden)
                         }))
                 }
+                .buttonStyle(.plain)
+            }
+            Divider()
+            HStack {
+                Text(manual ? "Manual order active" : "Attention order (default)")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Use attention order") {
+                    ProviderOrder.set(nil)
+                    manual = false
+                    order = Self.effectiveOrder()
+                }
+                .disabled(!manual)
             }
         }
         .padding(20)
+    }
+
+    private func move(_ index: Int, by offset: Int) {
+        let target = index + offset
+        guard target >= 0 && target < order.count else { return }
+        order.swapAt(index, target)
+        ProviderOrder.set(order)
+        manual = true
     }
 }
 
