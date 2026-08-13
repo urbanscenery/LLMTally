@@ -144,7 +144,7 @@ describe('fetchCodexLiveQuota', () => {
       fetchFn: (url, init) => {
         expect(String(url)).toContain('chatgpt.com/backend-api/wham/usage');
         seenHeaders = init?.headers as Record<string, string>;
-        seenSignal = init?.signal;
+        seenSignal = init?.signal ?? undefined;
         return Promise.resolve(new Response(JSON.stringify(usageBody())));
       },
     });
