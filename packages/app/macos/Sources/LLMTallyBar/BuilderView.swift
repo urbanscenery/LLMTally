@@ -14,6 +14,7 @@ struct BuilderView: View {
     @State private var selectedId: String?
     @State private var quota: [QuotaSnapshotDTO] = []
     @State private var buckets: [ReportBucketDTO] = []
+    @State private var hourBuckets: [ReportBucketDTO] = []
     @State private var todayRows: [String: Int]?
     /// Squeeze simulation (§6.5): reproduces a crowded menu bar.
     @State private var budget: Double = Double(StatusComposer.defaultBudget)
@@ -71,7 +72,8 @@ struct BuilderView: View {
     private var preview: some View {
         let rendering = renderStatusSegments(
             descriptors: items, quota: quota, buckets: buckets,
-            activeAccounts: [:], todayAgentRows: todayRows,
+            activeAccounts: [:], hourBuckets: hourBuckets,
+            todayAgentRows: todayRows,
             privacy: PrivacySetting.enabled)
         // the note must agree with the composer: same content budget,
         // same +N indicator width
@@ -140,7 +142,8 @@ struct BuilderView: View {
             Image(nsImage: StatusComposer.compose(
                 segments: renderStatusSegments(
                     descriptors: [item], quota: quota, buckets: buckets,
-                    activeAccounts: [:], todayAgentRows: todayRows).segments,
+                    activeAccounts: [:], hourBuckets: hourBuckets,
+                    todayAgentRows: todayRows).segments,
                 leadingTally: false))
                 .frame(maxWidth: 64, alignment: .leading)
                 .clipped()
@@ -213,8 +216,7 @@ struct BuilderView: View {
                         labelSection(item, index: index)
                     }
                     if isHistoryMetric(item.metric) {
-                        Text("Ledger history, last 7 daily buckets. Fewer than 2 real buckets renders the missing behaviour — never an invented trend.")
-                            .font(.caption2).foregroundStyle(.secondary)
+                        historySection(item, index: index)
                     }
                     if item.metric != .spacer && !isHistoryMetric(item.metric) {
                         identitySection(item, index: index)
@@ -308,6 +310,34 @@ struct BuilderView: View {
                 Text("\(agentDisplayName(provider)) does not return a 5h+7d pair right now. Daily/weekly-only stays a single rail.")
                     .font(.caption2).foregroundStyle(.orange)
             }
+        }
+    }
+
+    private func historySection(_ item: MenuItemDescriptor, index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            section("Range") {
+                Picker("", selection: Binding(
+                    get: { item.timeRange ?? "last_7d" },
+                    set: { value in mutate { $0[index].timeRange = value } })) {
+                    Text("5h").tag("last_5h")
+                    Text("1 day").tag("last_24h")
+                    Text("7 days").tag("last_7d")
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                Text("5h and 1 day ride hour buckets; 7 days rides daily buckets.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            section("Chart") {
+                Picker("", selection: Binding(
+                    get: { item.presentation == "line" ? "line" : "bar" },
+                    set: { value in mutate { $0[index].presentation = value } })) {
+                    Text("Bars").tag("bar")
+                    Text("Line").tag("line")
+                }
+                .pickerStyle(.segmented).labelsHidden()
+            }
+            Text("Fewer than 2 real buckets renders the missing behaviour — never an invented trend.")
+                .font(.caption2).foregroundStyle(.secondary)
         }
     }
 
@@ -451,6 +481,11 @@ struct BuilderView: View {
         SidecarClient.shared.requestDecodable("todayByAgent", as: [String: Int].self) { result in
             DispatchQueue.main.async {
                 if case .success(let value) = result { todayRows = value }
+            }
+        }
+        SidecarClient.shared.requestDecodable("report", params: OverviewModel.hourReportParams(), as: ReportSummaryDTO.self) { result in
+            DispatchQueue.main.async {
+                if case .success(let summary) = result { hourBuckets = summary.buckets }
             }
         }
     }

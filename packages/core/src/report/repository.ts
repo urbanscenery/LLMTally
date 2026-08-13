@@ -9,6 +9,7 @@ import type { ReportGroupBy, ReportQuery, ReportRow, ReportUsageRow } from './ty
  */
 const GROUP_EXPRESSIONS: Readonly<Record<ReportGroupBy, string>> = {
   day: "date(ts_utc, 'unixepoch', 'localtime')",
+  hour: "strftime('%Y-%m-%d %H:00', ts_utc, 'unixepoch', 'localtime')",
   model: 'model',
   agent: 'agent',
 };

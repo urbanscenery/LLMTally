@@ -209,8 +209,9 @@ public enum StatusSegment: Equatable {
     /// Vertical bottom-anchored rails — identity code + one bar per
     /// actual native window (pair = 5h+7d).
     case rails(identity: String, bars: [RailValue])
-    /// Ledger history sparkline; `money` obeys privacy.
-    case spark(values: [Double], money: Bool)
+    /// Ledger history sparkline; `money` obeys privacy, `line` draws a
+    /// polyline instead of bars (descriptor presentation).
+    case spark(values: [Double], money: Bool, line: Bool)
     case placeholder
 }
 
@@ -274,6 +275,7 @@ public func renderStatusSegments(
     quota: [QuotaSnapshotDTO],
     buckets: [ReportBucketDTO],
     activeAccounts: [String: String?],
+    hourBuckets: [ReportBucketDTO] = [],
     todayAgentRows: [String: Int]? = nil,
     privacy: Bool = false,
     now: Date = Date()
@@ -346,7 +348,19 @@ public func renderStatusSegments(
                 tooltip.append("cost history: Private metric hidden")
                 continue
             }
-            let values = recentBuckets.map { bucket in
+            // the range picks its bucket grain: 5h/24h ride hour
+            // buckets, 7d rides day buckets — never resampled guesses
+            let source: [ReportBucketDTO]
+            let rangeLabel: String
+            switch descriptor.timeRange {
+            case "last_5h":
+                source = Array(hourBuckets.suffix(5)); rangeLabel = "5h"
+            case "last_24h":
+                source = Array(hourBuckets.suffix(24)); rangeLabel = "24h"
+            default:
+                source = recentBuckets; rangeLabel = "7d"
+            }
+            let values = source.map { bucket in
                 money
                     ? (bucket.actual.usd ?? bucket.actual.pricedSubtotalUsd)
                     : bucket.tokens.inputTokens + bucket.tokens.outputTokens
@@ -354,13 +368,14 @@ public func renderStatusSegments(
             if values.count < 2 {
                 // one sample is a snapshot, never a trend
                 if descriptor.unavailableBehavior == "placeholder" { append(.placeholder, descriptor.metric) }
-                tooltip.append("history: not enough daily buckets")
+                tooltip.append("history: not enough \(rangeLabel) buckets")
                 continue
             }
-            append(.spark(values: values, money: money), descriptor.metric)
+            append(.spark(values: values, money: money,
+                          line: descriptor.presentation == "line"), descriptor.metric)
             tooltip.append(money
-                ? "Actual cost, last \(values.count) days"
-                : "Consumed tokens, last \(values.count) days")
+                ? "Actual cost, last \(rangeLabel) (\(values.count) buckets)"
+                : "Consumed tokens, last \(rangeLabel) (\(values.count) buckets)")
         case .agentActive:
             // ledger activity, not quota. nil = no reading yet
             // (placeholder); an empty map is a real "0 act".

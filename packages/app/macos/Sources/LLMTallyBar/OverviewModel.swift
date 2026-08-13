@@ -10,12 +10,27 @@ final class OverviewModel: ObservableObject {
     struct ProviderDetailData {
         let modelBuckets: [ReportBucketDTO]
         let dayBuckets: [ReportBucketDTO]
+        let hourBuckets: [ReportBucketDTO]
     }
 
     @Published var overview: OverviewDTO?
     @Published var activeAccounts: [String: String?] = [:]
     @Published var lastPrompt: PromptRowDTO?
+    @Published var hourBuckets: [ReportBucketDTO] = []
     @Published var providerDetails: [String: ProviderDetailData] = [:]
+
+    /// Last 7 local days — hour-grain report params shared by the
+    /// weekly lines (resolution) and the 5h/24h status sparks.
+    nonisolated static func hourReportParams(agent: String? = nil) -> [String: Any] {
+        var params: [String: Any] = [
+            "groupBy": "hour",
+            "fromDate": localDayKey(Date(timeIntervalSinceNow: -6 * 86_400)),
+            "toDate": localDayKey(),
+            "noRefresh": true,
+        ]
+        if let agent { params["agent"] = agent }
+        return params
+    }
     @Published var loading = false
     @Published var loadError: String?
     @Published var lastLoadedAt: Date?
@@ -45,6 +60,12 @@ final class OverviewModel: ObservableObject {
             if case .success(let list) = result { promptResult = list.rows.first }
             group.leave()
         }
+        var hourResult: [ReportBucketDTO]?
+        group.enter()
+        SidecarClient.shared.requestDecodable("report", params: Self.hourReportParams(), as: ReportSummaryDTO.self) { result in
+            if case .success(let summary) = result { hourResult = summary.buckets }
+            group.leave()
+        }
 
         group.notify(queue: .main) { [weak self] in
             guard let self else { return }
@@ -64,6 +85,9 @@ final class OverviewModel: ObservableObject {
             }
             if let promptResult {
                 self.lastPrompt = promptResult
+            }
+            if let hourResult {
+                self.hourBuckets = hourResult
             }
         }
     }
@@ -102,11 +126,20 @@ final class OverviewModel: ObservableObject {
             if case .success(let summary) = result { days = summary.buckets }
             group.leave()
         }
+        var hours: [ReportBucketDTO]?
+        group.enter()
+        SidecarClient.shared.requestDecodable(
+            "report", params: Self.hourReportParams(agent: agent), as: ReportSummaryDTO.self
+        ) { result in
+            if case .success(let summary) = result { hours = summary.buckets }
+            group.leave()
+        }
         group.notify(queue: .main) { [weak self] in
             guard let self else { return }
             self.providerDetails[agent] = ProviderDetailData(
                 modelBuckets: models ?? [],
-                dayBuckets: days ?? [])
+                dayBuckets: days ?? [],
+                hourBuckets: hours ?? [])
         }
     }
 

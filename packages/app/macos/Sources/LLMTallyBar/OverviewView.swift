@@ -164,7 +164,9 @@ struct OverviewView: View {
                 if let prompt = model.lastPrompt {
                     RecentLine(prompt: prompt, privacy: privacy)
                 }
-                WeeklyChart(buckets: model.overview?.report.buckets ?? [], privacy: privacy)
+                WeeklyChart(buckets: model.overview?.report.buckets ?? [],
+                            privacy: privacy,
+                            hourBuckets: model.hourBuckets)
             }
         }
     }
@@ -523,11 +525,17 @@ struct RecentLine: View {
 struct WeeklyChart: View {
     let buckets: [ReportBucketDTO]
     var privacy = false
+    /// Hour-grain buckets raise the line resolution (~168 points per
+    /// week instead of 7); the day axis labels stay.
+    var hourBuckets: [ReportBucketDTO] = []
     @AppStorage(AppConfig.costModeKey) private var costMode = "actual"
     @AppStorage(Theme.storageKey) private var themeId = "system"
 
     private var nominal: Bool { costMode == "nominal" }
     private var recent: [ReportBucketDTO] { Array(buckets.suffix(7)) }
+    private var series: [ReportBucketDTO] {
+        hourBuckets.count >= 8 ? Array(hourBuckets.suffix(168)) : recent
+    }
 
     private func costOf(_ bucket: ReportBucketDTO) -> Double {
         let cost = nominal ? bucket.nominal : bucket.actual
@@ -552,8 +560,8 @@ struct WeeklyChart: View {
             } else {
                 GeometryReader { geometry in
                     let theme = Theme.current()
-                    let tokens = recent.map { $0.tokens.inputTokens + $0.tokens.outputTokens }
-                    let prices = recent.map { costOf($0) }
+                    let tokens = series.map { $0.tokens.inputTokens + $0.tokens.outputTokens }
+                    let prices = series.map { costOf($0) }
                     ZStack {
                         linePath(values: tokens, in: geometry.size)
                             .stroke(theme.accent, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
@@ -673,7 +681,8 @@ struct ProviderDetailView: View {
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
             }
-            WeeklyChart(buckets: detail.dayBuckets, privacy: privacy)
+            WeeklyChart(buckets: detail.dayBuckets, privacy: privacy,
+                        hourBuckets: detail.hourBuckets)
             HStack {
                 Button("Open TUI · \(agentDisplayName(agent))") { OpenTUI.launch() }
                     .font(.caption)

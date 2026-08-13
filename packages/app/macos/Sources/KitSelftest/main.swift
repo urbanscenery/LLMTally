@@ -341,12 +341,40 @@ do {
                                    providerIdentityPresentation: nil)
     let visible = renderStatusSegments(descriptors: [money], quota: quota,
                                        buckets: buckets, activeAccounts: [:])
-    if case .spark(let values, let isMoney)? = visible.segments.first {
+    if case .spark(let values, let isMoney, let isLine)? = visible.segments.first {
         expectEqual(values.count, 2, "cost spark renders the buckets")
         expect(isMoney, "cost spark is marked as money")
+        expect(!isLine, "bar presentation stays bars")
     } else {
         failures += 1
         print("FAIL - cost history did not render a spark")
+    }
+
+    // 5h/24h ranges ride hour buckets; line presentation carries through
+    let hourly = (0..<24).map { bucket("2026-08-13 \(String(format: "%02d", $0)):00", tokens: Double($0 + 1), usd: nil) }
+    let dayRange = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .consumedTokenHistory,
+                                         presentation: "line", timeRange: "last_24h",
+                                         providerIdentityPresentation: nil)],
+        quota: quota, buckets: buckets, activeAccounts: [:], hourBuckets: hourly)
+    if case .spark(let values, _, let isLine)? = dayRange.segments.first {
+        expectEqual(values.count, 24, "last_24h consumes 24 hour buckets")
+        expect(isLine, "line presentation renders a line")
+    } else {
+        failures += 1
+        print("FAIL - 24h history did not render a spark")
+    }
+    let fiveHour = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .consumedTokenHistory,
+                                         presentation: "bar", timeRange: "last_5h",
+                                         providerIdentityPresentation: nil)],
+        quota: quota, buckets: buckets, activeAccounts: [:], hourBuckets: hourly)
+    if case .spark(let values, _, _)? = fiveHour.segments.first {
+        expectEqual(values.count, 5, "last_5h consumes the last 5 hour buckets")
+        expectEqual(values.last, 24, "and they are the most recent hours")
+    } else {
+        failures += 1
+        print("FAIL - 5h history did not render a spark")
     }
     let hidden = renderStatusSegments(descriptors: [money], quota: quota,
                                       buckets: buckets, activeAccounts: [:], privacy: true)

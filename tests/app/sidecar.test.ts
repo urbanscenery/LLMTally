@@ -147,6 +147,19 @@ describe('sidecar server', () => {
     expect(Object.values(reply.result).every((value) => value === null)).toBe(true);
   });
 
+  test('hour bucketing is a valid report grouping', async () => {
+    // Arrange — the status sparklines need sub-day resolution
+    const server = createSidecarServer({ databasePath: makeLedger() });
+
+    // Act
+    const reply = await call(server, 'report', { groupBy: 'hour', noRefresh: true });
+
+    // Assert — empty ledger aggregates cleanly at hour grain
+    expect(reply.error).toBeUndefined();
+    expect(reply.result.groupBy).toBe('hour');
+    expect(reply.result.buckets).toEqual([]);
+  });
+
   test('todayByAgent maps agents to row counts, empty ledger to empty map', async () => {
     // Arrange
     const server = createSidecarServer({ databasePath: makeLedger() });

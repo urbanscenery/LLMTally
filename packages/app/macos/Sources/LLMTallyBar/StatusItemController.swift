@@ -30,6 +30,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     // last-good inputs so a Builder edit re-renders without a new fetch
     private var lastQuota: [QuotaSnapshotDTO] = []
     private var lastBuckets: [ReportBucketDTO] = []
+    private var lastHourBuckets: [ReportBucketDTO] = []
     private var lastActive: [String: String?] = [:]
     /// nil = no successful reading yet; an empty map is a real zero.
     private var lastTodayRows: [String: Int]?
@@ -241,11 +242,18 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             if case .success(let value) = result { todayRows = value }
             group.leave()
         }
+        var hourBuckets: [ReportBucketDTO]?
+        group.enter()
+        SidecarClient.shared.requestDecodable("report", params: OverviewModel.hourReportParams(), as: ReportSummaryDTO.self) { result in
+            if case .success(let summary) = result { hourBuckets = summary.buckets }
+            group.leave()
+        }
 
         group.notify(queue: .main) { [weak self] in
             guard let self, let overview else { return }
             self.lastQuota = overview.quota
             self.lastBuckets = overview.report.buckets
+            self.lastHourBuckets = hourBuckets ?? self.lastHourBuckets
             self.lastActive = active ?? self.lastActive
             self.lastTodayRows = todayRows ?? self.lastTodayRows
             self.renderFromCache()
@@ -260,6 +268,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             quota: lastQuota,
             buckets: lastBuckets,
             activeAccounts: lastActive,
+            hourBuckets: lastHourBuckets,
             todayAgentRows: lastTodayRows,
             privacy: PrivacySetting.enabled)
         // no leading brand mark (user decision 2026-08-13); the tally

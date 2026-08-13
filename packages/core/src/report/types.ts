@@ -5,7 +5,7 @@ import type {
   TokenTotals,
 } from '../pricing/types.ts';
 
-export type ReportGroupBy = 'day' | 'model' | 'agent';
+export type ReportGroupBy = 'day' | 'hour' | 'model' | 'agent';
 
 /**
  * Calendar dates in the machine's local timezone. Conversion to UTC
