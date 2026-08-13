@@ -94,7 +94,7 @@ struct OverviewView: View {
                 } label: {
                     Label(agentDisplayName(agent), systemImage: "chevron.left")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(HoverActionButtonStyle())
                 .font(.headline)
             } else {
                 Text("LLMTally").font(.headline)
@@ -110,7 +110,7 @@ struct OverviewView: View {
             } label: {
                 Image(systemName: "gearshape")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(HoverActionButtonStyle())
             .help("Settings (Builder lives there)")
         }
         .padding(.horizontal, 12)
@@ -199,16 +199,19 @@ struct OverviewView: View {
             }
             Spacer()
             Button("Open TUI") { OpenTUI.launch() }
+                .buttonStyle(HoverActionButtonStyle())
                 .font(.caption)
             if let retry = model.retryAfterSeconds, retry > 0 {
                 // 429: last-good stays, refresh locks behind the retry
                 Button("Retry in \(shortDuration(retry))") {}
+                    .buttonStyle(HoverActionButtonStyle())
                     .disabled(true)
                     .font(.caption)
             } else {
                 Button(model.loading ? "Refreshing…" : "Refresh") {
                     model.load(refresh: true)
                 }
+                .buttonStyle(HoverActionButtonStyle())
                 .disabled(model.loading)
                 .font(.caption)
             }
@@ -237,6 +240,39 @@ private struct HoverHighlight: ViewModifier {
 
 extension View {
     func hoverHighlight() -> some View { modifier(HoverHighlight()) }
+}
+
+/// Every popover button wears this: a quiet chip at rest so it reads
+/// as clickable, and the theme accent (tint + border) on hover.
+struct HoverActionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        StyleBody(configuration: configuration)
+    }
+
+    // ButtonStyle itself cannot hold @State — the hover flag lives in
+    // a nested view
+    private struct StyleBody: View {
+        let configuration: Configuration
+        @State private var hovering = false
+        @Environment(\.isEnabled) private var isEnabled
+        @AppStorage(Theme.storageKey) private var themeId = "system"
+
+        var body: some View {
+            let theme = Theme.presets.first { $0.id == themeId } ?? Theme.system
+            let active = hovering && isEnabled
+            configuration.label
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .foregroundStyle(active ? theme.accent : Color.primary)
+                .background(RoundedRectangle(cornerRadius: 5)
+                    .fill(active ? theme.accent.opacity(0.16) : Color.primary.opacity(0.06)))
+                .overlay(RoundedRectangle(cornerRadius: 5)
+                    .stroke(active ? theme.accent : Color.clear, lineWidth: 1))
+                .opacity(isEnabled ? (configuration.isPressed ? 0.6 : 1) : 0.4)
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+        }
+    }
 }
 
 struct SwitchIntent: Identifiable {
@@ -721,6 +757,7 @@ struct ProviderDetailView: View {
                         hourBuckets: detail.hourBuckets)
             HStack {
                 Button("Open TUI · \(agentDisplayName(agent))") { OpenTUI.launch() }
+                    .buttonStyle(HoverActionButtonStyle())
                     .font(.caption)
                 Spacer()
             }
@@ -766,6 +803,7 @@ struct ProviderDetailView: View {
                 } else if SWITCHABLE_AGENTS.contains(agent) && snapshot.accountId != nil {
                     StatusChip(item: item)
                     Button("Switch") { onSwitch(snapshot) }
+                        .buttonStyle(HoverActionButtonStyle())
                         .font(.caption)
                 } else {
                     StatusChip(item: item)
