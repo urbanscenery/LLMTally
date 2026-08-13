@@ -202,6 +202,22 @@ export async function fetchClaudeUsage(request: ClaudeUsageRequest): Promise<Quo
         warnings: ['claude usage endpoint returned 429 (rate limited)'],
       });
     }
+    if (response.status === 401 || response.status === 403) {
+      // a refused credential is an auth failure, not transport — the
+      // distinction matters: transport keeps serving stored last-good
+      // for up to a day, auth_invalid demands a reconnect and stops a
+      // stale gauge from vouching for a login that no longer works
+      return makeQuotaSnapshot({
+        agent: 'claude-code',
+        source: 'vendor_api',
+        observedAtUtc: nowUtc,
+        windows: [],
+        accountId,
+        account,
+        failure: { kind: 'auth_invalid', failedAtUtc: nowUtc, retryAtUtc: null },
+        warnings: [`claude usage endpoint refused the credential (http ${response.status})`],
+      });
+    }
     if (!response.ok) {
       throw new Error(`http ${response.status}`);
     }

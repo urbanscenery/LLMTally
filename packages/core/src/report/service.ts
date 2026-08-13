@@ -58,6 +58,13 @@ export async function generateReport(
     db.exec('BEGIN');
     let entries;
     try {
+      // re-check the cap inside the snapshot: rows inserted while
+      // pricing was on the network could push past it, and the early
+      // check above saw an older database state (audit CX-2)
+      const finalCount = repository.countGroups(request);
+      if (finalCount > MAX_REPORT_GROUPS) {
+        throw new ReportCardinalityError(finalCount);
+      }
       const rows = repository.aggregate(request);
       entries = rows.map((row) => ({
         row,

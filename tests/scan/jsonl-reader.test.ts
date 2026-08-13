@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { writeFileSync } from 'node:fs';
+import { statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { JsonlLine, JsonlTail } from '@llmtally/core/scan/jsonl-reader.ts';
@@ -128,5 +128,52 @@ describe('readJsonlLines', () => {
     // Assert
     expect(lines[0]?.text).toBe('한글 프롬프트');
     expect(lines[1]?.text).toBe('ok');
+  });
+});
+
+describe('oversized line cap', () => {
+  test('a line past the cap is one malformed line, not unbounded memory', () => {
+    // Arrange — cap forced tiny (64 bytes) so the fixture stays small:
+    // one giant line, then a normal one
+    const path = join(makeTempDir(), 'giant.jsonl');
+    const giant = 'x'.repeat(1024);
+    writeFileSync(path, `${giant}\n{"ok":1}\n`);
+
+    // Act — chunk size 32 so the giant line spans many chunks
+    const iterator = readJsonlLines(path, 0, statSync(path).size, 32, 64);
+    const lines = [...iterator];
+
+    // Assert — the giant line surfaces exactly once as malformed and
+    // the following line still parses at the right offsets
+    expect(lines).toHaveLength(2);
+    expect(lines[0]?.text).toBeNull();
+    expect(lines[0]?.startOffset).toBe(0);
+    expect(lines[0]?.endOffset).toBe(giant.length + 1);
+    expect(lines[1]?.text).toBe('{"ok":1}');
+  });
+
+  test('an unterminated oversized tail resumes from its start', () => {
+    // Arrange — no trailing newline: the cap discards the bytes but the
+    // cursor must still point at the line start for the next cycle
+    const path = join(makeTempDir(), 'tail.jsonl');
+    writeFileSync(path, `{"a":1}\n${'y'.repeat(500)}`);
+
+    // Act
+    const iterator = readJsonlLines(path, 0, statSync(path).size, 32, 64);
+    let tail: ReturnType<typeof iterator.next>;
+    const lines = [];
+    for (;;) {
+      tail = iterator.next();
+      if (tail.done) break;
+      lines.push(tail.value);
+    }
+
+    // Assert
+    expect(lines).toHaveLength(1);
+    expect(tail.value).toEqual({
+      tailPending: true,
+      tailStartOffset: 8,
+      nextOffset: 8,
+    });
   });
 });

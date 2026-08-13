@@ -340,6 +340,40 @@ describe('aggregation cardinality cap (D-05)', () => {
     );
   });
 
+  test('rows landing during the pricing fetch cannot slip past the cap', async () => {
+    // Arrange — exactly at the cap before pricing; a concurrent scan
+    // then inserts two more groups while pricing is on the network
+    const path = seedLedger(
+      Array.from({ length: 5000 }, (_, index) => ({
+        tsUtc: AUG9_LATE,
+        agent: 'claude-code',
+        provider: null,
+        model: `bogus-model-${index}`,
+        input: 1,
+        output: 1,
+      })),
+    );
+    const fetchFn = (url: string): Promise<Response> => {
+      const db = openDatabase(path);
+      const insert = db.prepare(
+        `INSERT INTO usage_ledger
+          (ts_utc, agent, provider, model, natural_id, parser_version,
+           input_tokens, output_tokens, cache_write, cache_read, reasoning_tokens, cost_usd)
+         VALUES (?, 'claude-code', NULL, ?, ?, 1, 1, 1, 0, 0, 0, NULL)`,
+      );
+      insert.run(AUG9_LATE, 'late-model-a', 'late-a');
+      insert.run(AUG9_LATE, 'late-model-b', 'late-b');
+      db.close();
+      return litellmFetch()(url);
+    };
+
+    // Act & Assert — the in-snapshot recheck refuses instead of
+    // returning more groups than the cap promises (audit CX-2)
+    expect(
+      generateReport(request(path, { groupBy: 'model' }), deps({ fetchFn })),
+    ).rejects.toThrow(/more than 5000 groups/);
+  });
+
   test('an ordinary ledger is nowhere near the cap and reports normally', async () => {
     // Arrange
     const path = seedLedger([

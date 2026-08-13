@@ -152,7 +152,6 @@ function spliceOauthAccount(path: string, entry: VaultEntry): string {
 function classifyOutgoing(
   live: string | null,
   vault: AccountVault,
-  home: string,
 ): { readonly kind: OutgoingKind; readonly owner: VaultEntry | null } {
   if (live === null) {
     return { kind: 'absent', owner: null };
@@ -179,14 +178,13 @@ function classifyOutgoing(
   if (byFingerprint !== undefined) {
     return { kind: 'own', owner: byFingerprint };
   }
-  // the lineage is unknown; fall back to whoever the config says is
-  // selected, which is right whenever the token merely rotated
-  const identity = readClaudeActiveIdentity(globalConfigPath(home));
-  const selected =
-    identity?.accountUuid === undefined ? null : vault.get('claude-code', identity.accountUuid ?? '');
-  if (selected !== null) {
-    return { kind: 'own', owner: selected };
-  }
+  // The lineage is unknown. The config's selected account is only a
+  // HINT here — promoting it to owner would overwrite that account's
+  // good vault backup with bytes nobody verified, and a stale config
+  // (login changed outside llmtally) makes that a cross-account
+  // credential destruction. Rule: an owner we cannot prove gets the
+  // copy preserved as unclaimed, never written over a claimed slot.
+  // The cost when the token merely rotated is one recoverable stash.
   return { kind: 'unclaimed', owner: null };
 }
 
@@ -223,7 +221,7 @@ export async function switchAccount(selector: string, ports: SwitchPorts): Promi
   const undo: (() => void)[] = [];
   try {
     const live = activeStore.read();
-    const outgoing = classifyOutgoing(live, vault, home);
+    const outgoing = classifyOutgoing(live, vault);
 
     let stashId: string | null = null;
     if (outgoing.kind === 'own' && outgoing.owner !== null && live !== null) {

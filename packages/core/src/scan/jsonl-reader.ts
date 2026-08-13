@@ -1,11 +1,19 @@
 import { closeSync, openSync, readSync } from 'node:fs';
 
 const DEFAULT_CHUNK_BYTES = 1 << 20;
+/**
+ * Longest line the reader will buffer. A real agent log line is a few
+ * KiB; a line that reaches 32 MiB is a corrupt or adversarial file, and
+ * buffering it further would grow RSS with the file size (audit CX-6).
+ * Past the cap the line's bytes are discarded and it is reported as one
+ * malformed line (`text: null`) once its terminator is found.
+ */
+const MAX_LINE_BYTES = 32 << 20;
 const LINE_FEED = 0x0a;
 const CARRIAGE_RETURN = 0x0d;
 
 export interface JsonlLine {
-  /** Decoded line without the terminator; null when the bytes are not valid UTF-8. */
+  /** Decoded line without the terminator; null when the bytes are not valid UTF-8 (or the line exceeded the size cap). */
   readonly text: string | null;
   readonly invalidUtf8: boolean;
   /** Byte offset of the first byte of the line. */
@@ -34,12 +42,15 @@ export function* readJsonlLines(
   startOffset: number,
   ceilingBytes: number,
   chunkBytes: number = DEFAULT_CHUNK_BYTES,
+  maxLineBytes: number = MAX_LINE_BYTES,
 ): Generator<JsonlLine, JsonlTail> {
   const fd = openSync(path, 'r');
   try {
     let carry: Uint8Array = new Uint8Array(0);
     let carryStart = startOffset;
     let position = startOffset;
+    /** Non-null while skipping over a line that outgrew the cap. */
+    let oversizedStart: number | null = null;
 
     while (position < ceilingBytes) {
       const want = Math.min(chunkBytes, ceilingBytes - position);
@@ -48,9 +59,32 @@ export function* readJsonlLines(
       if (bytesRead === 0) {
         break;
       }
+      const chunkFileStart = position;
       position += bytesRead;
+      let chunk: Uint8Array = buffer.subarray(0, bytesRead);
 
-      const data = concatBytes(carry, buffer.subarray(0, bytesRead));
+      if (oversizedStart !== null) {
+        // inside an oversized line: scan for its end without buffering
+        const newline = chunk.indexOf(LINE_FEED);
+        if (newline === -1) {
+          continue;
+        }
+        yield {
+          text: null,
+          invalidUtf8: true,
+          startOffset: oversizedStart,
+          endOffset: chunkFileStart + newline + 1,
+        };
+        oversizedStart = null;
+        chunk = chunk.subarray(newline + 1);
+        carry = new Uint8Array(0);
+        carryStart = chunkFileStart + newline + 1;
+        if (chunk.length === 0) {
+          continue;
+        }
+      }
+
+      const data = concatBytes(carry, chunk);
       const dataStart = carryStart;
       let lineStart = 0;
       let newlineIndex = data.indexOf(LINE_FEED, lineStart);
@@ -65,8 +99,17 @@ export function* readJsonlLines(
       }
       carry = data.subarray(lineStart);
       carryStart = dataStart + lineStart;
+      if (carry.length > maxLineBytes) {
+        oversizedStart = carryStart;
+        carry = new Uint8Array(0);
+      }
     }
 
+    if (oversizedStart !== null) {
+      // an unterminated oversized line: resume from its start next
+      // cycle (memory stayed bounded; the writer may yet terminate it)
+      return { tailPending: true, tailStartOffset: oversizedStart, nextOffset: oversizedStart };
+    }
     if (carry.length > 0) {
       return { tailPending: true, tailStartOffset: carryStart, nextOffset: carryStart };
     }

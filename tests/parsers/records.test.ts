@@ -4,6 +4,7 @@ import {
   classifyClaudeLine,
   isCandidateLine,
 } from '@llmtally/core/parsers/claude-code/records.ts';
+import { asTokenCount } from '@llmtally/core/parsers/shared.ts';
 
 function usageLine(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
@@ -188,5 +189,13 @@ describe('classifyClaudeLine', () => {
 
     // Assert
     expect(record).toMatchObject({ kind: 'usage', tsUtc: 1_785_578_405 });
+  });
+});
+
+describe('asTokenCount bounds', () => {
+  test('rejects values past MAX_SAFE_INTEGER instead of poisoning sums', () => {
+    expect(asTokenCount(Number.MAX_SAFE_INTEGER)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(asTokenCount(Number.MAX_SAFE_INTEGER + 2)).toBeNull();
+    expect(asTokenCount(1e300)).toBeNull();
   });
 });

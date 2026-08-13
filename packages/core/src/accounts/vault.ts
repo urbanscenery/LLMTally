@@ -623,14 +623,38 @@ export class AccountVault {
    * the first mutation persists the converted form.
    */
   #readRegistry(): RegistryFile {
-    let parsed: Record<string, unknown> | null = null;
+    // Fail closed on a corrupt registry: an unreadable-but-present file
+    // must never look like an empty vault, because the next mutation
+    // would atomically replace it and destroy every account's metadata
+    // (aliases, active markers, keychain pointers). Only a missing file
+    // is an empty vault.
+    let text: string;
     try {
-      parsed = asObject(JSON.parse(readFileSync(this.#registryPath(), 'utf8')));
-    } catch {
-      parsed = null;
+      text = readFileSync(this.#registryPath(), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { version: REGISTRY_VERSION, active: {}, accounts: {} };
+      }
+      throw new VaultError(
+        `account registry is unreadable (${this.#registryPath()}): ${
+          error instanceof Error ? error.message : String(error)
+        } — fix or move the file; refusing to treat it as empty`,
+      );
+    }
+    let parsed: Record<string, unknown> | null;
+    try {
+      parsed = asObject(JSON.parse(text));
+    } catch (error) {
+      throw new VaultError(
+        `account registry is corrupt (${this.#registryPath()}): ${
+          error instanceof Error ? error.message : String(error)
+        } — fix or move the file; refusing to treat it as empty`,
+      );
     }
     if (parsed === null) {
-      return { version: REGISTRY_VERSION, active: {}, accounts: {} };
+      throw new VaultError(
+        `account registry is not an object (${this.#registryPath()}) — fix or move the file; refusing to treat it as empty`,
+      );
     }
     const isV2 = parsed.version === REGISTRY_VERSION;
     const accounts: Record<string, VaultEntry> = {};

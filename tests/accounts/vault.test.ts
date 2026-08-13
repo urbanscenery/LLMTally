@@ -12,7 +12,7 @@ import {
 } from '@llmtally/core/accounts/credentials.ts';
 import { KeychainError, createMemoryKeychain, parseAccountAttribute } from '@llmtally/core/accounts/keychain.ts';
 import type { KeychainPort } from '@llmtally/core/accounts/keychain.ts';
-import { AccountVault, normalizeAlias } from '@llmtally/core/accounts/vault.ts';
+import { AccountVault, VaultError, normalizeAlias } from '@llmtally/core/accounts/vault.ts';
 import { makeTempDir } from '../helpers.ts';
 
 /** A keychain that exists but cannot answer (locked login keychain, timeout). */
@@ -673,5 +673,51 @@ describe('multi-agent registry (v2)', () => {
     expect(vault.loadCredentials('codex', 'uuid-1')).toBeNull();
     expect(() => readFileSync(join(dir, 'codex--uuid-1.cred'))).toThrow();
     expect(vault.loadCredentials('claude-code', 'uuid-1')).toBe(credentials('refresh-claude'));
+  });
+});
+
+describe('registry corruption', () => {
+  test('a corrupt registry fails closed instead of posing as empty', () => {
+    // Arrange — a vault with one account, then the registry rots
+    const dir = makeTempDir();
+    const vault = new AccountVault({ dir, keychain: createMemoryKeychain() });
+    vault.put(
+      {
+        agent: 'claude-code',
+        accountId: 'acct-1',
+        email: 'a@test.dev',
+        organizationUuid: null,
+        organizationName: null,
+        alias: 'main',
+        addedAtUtc: 1,
+        refreshDeadAtUtc: null,
+      },
+      '{"tok":1}',
+    );
+    writeFileSync(join(dir, 'registry.json'), '{ this is not json');
+
+    // Act & Assert — reads throw a VaultError; nothing pretends the
+    // vault is empty, so no later put can atomically erase the metadata
+    expect(() => vault.list()).toThrow(VaultError);
+    expect(() =>
+      vault.put(
+        {
+          agent: 'codex',
+          accountId: 'acct-2',
+          email: null,
+          organizationUuid: null,
+          organizationName: null,
+          alias: null,
+          addedAtUtc: 2,
+          refreshDeadAtUtc: null,
+        },
+        '{"tok":2}',
+      ),
+    ).toThrow(VaultError);
+  });
+
+  test('a missing registry is still an empty vault', () => {
+    const vault = new AccountVault({ dir: join(makeTempDir(), 'fresh'), keychain: createMemoryKeychain() });
+    expect(vault.list()).toEqual([]);
   });
 });

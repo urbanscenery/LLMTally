@@ -216,7 +216,26 @@ export function detachCodexLogin(ports: {
       'refusing to detach: the vault copy does not match the live login — auth.json was left alone',
     );
   }
-  rmSync(authPath, { force: true });
+  // CAS via atomic rename: move the file aside first, then verify the
+  // moved bytes. A rotation landing between the compare above and the
+  // rename shows up as a mismatch on the staged copy — restore it and
+  // abort instead of deleting a login the vault never captured.
+  const staged = `${authPath}.llmtally-detach-${process.pid}`;
+  renameSync(authPath, staged);
+  if (readAuthFile(staged) !== stored) {
+    if (readAuthFile(authPath) === null) {
+      // nothing recreated the live path — put the login back
+      renameSync(staged, authPath);
+      throw new CodexAccountError(
+        'refusing to detach: auth.json rotated during the detach — the login was restored, try again',
+      );
+    }
+    // a recreated auth.json is newer truth; keep both, touch neither
+    throw new CodexAccountError(
+      `refusing to detach: auth.json rotated during the detach — the previous bytes are kept at ${staged}`,
+    );
+  }
+  rmSync(staged, { force: true });
   return {
     entry,
     warnings: [

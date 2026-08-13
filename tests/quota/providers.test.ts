@@ -158,6 +158,25 @@ describe('fetchClaudeQuota', () => {
     expect(offline.rateLimited).toBe(false);
   });
 
+  test('a refused credential is auth_invalid, never transport', async () => {
+    // Arrange & Act — 401 and 403 must not hide behind the generic
+    // transport catch: transport keeps serving stored last-good, but a
+    // refused login demands a reconnect
+    for (const status of [401, 403]) {
+      const snapshot = await fetchClaudeQuota({
+        tokenReader: () => 't',
+        identityReader: () => TEST_IDENTITY,
+        nowUtc: NOW,
+        fetchFn: () => Promise.resolve(new Response('denied', { status })),
+      });
+
+      // Assert
+      expect(snapshot.failure?.kind).toBe('auth_invalid');
+      expect(snapshot.windows).toEqual([]);
+      expect(snapshot.warnings[0]).toContain(`http ${status}`);
+    }
+  });
+
   test('a 429 is a structured rate_limited failure with the retry hint', async () => {
     // Act
     const snapshot = await fetchClaudeQuota({

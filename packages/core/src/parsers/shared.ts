@@ -16,19 +16,30 @@ export function parseUtcTimestamp(value: unknown): number | null {
   return Math.floor(milliseconds / MILLISECONDS_PER_SECOND);
 }
 
-/** Missing token fields count as zero; anything non-integer is invalid. */
+/**
+ * Missing token fields count as zero; anything non-integer is invalid.
+ * Values past MAX_SAFE_INTEGER are invalid too — Number.isInteger
+ * accepts 2^53+1, but ledger arithmetic on such a value silently loses
+ * precision and one corrupt line would poison every aggregate that
+ * includes it (audit CX-17).
+ */
 export function asTokenCount(value: unknown): number | null {
   if (value === undefined || value === null) {
     return 0;
   }
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+  if (!isNonNegativeInteger(value)) {
     return null;
   }
   return value;
 }
 
 export function isNonNegativeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= Number.MAX_SAFE_INTEGER
+  );
 }
 
 export function asString(value: unknown): string | null {
