@@ -37,6 +37,15 @@ struct OverviewView: View {
         .onReceive(NotificationCenter.default.publisher(for: .llmtallyKeyCommand)) { notification in
             handleKey(notification.object as? String ?? "")
         }
+        // usage only moves with data: re-read the stored state (no
+        // refresh budget) so the background cadence's fetches land in
+        // the open panel and its provider detail
+        .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { _ in
+            model.load(refresh: false)
+            if let agent = selectedAgent {
+                model.loadProviderDetail(agent: agent)
+            }
+        }
         .sheet(item: $switchIntent) { intent in
             SwitchSheet(intent: intent, model: model) { switchIntent = nil }
         }
@@ -761,15 +770,20 @@ struct ProviderDetailView: View {
                                 .font(.caption).monospacedDigit()
                                 .frame(minWidth: 34, alignment: .trailing)
                         }
-                        Text("\(window.id) · \(resetTextDetailed(window.resetsAtUtc))")
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
-                            .padding(.leading, 48)
+                        // the countdown ticks live while the panel is open
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text("\(window.id) · \(resetTextDetailed(window.resetsAtUtc, now: context.date))")
+                        }
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .padding(.leading, 48)
                     }
                     .padding(.vertical, 1)
                 }
             }
-            Text("observed \(shortAge(sinceEpoch: snapshot.observedAtUtc)) ago · \(snapshot.source)")
-                .font(.system(size: 10)).foregroundStyle(.secondary)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text("observed \(shortAge(sinceEpoch: snapshot.observedAtUtc, now: context.date)) ago · \(snapshot.source)")
+            }
+            .font(.system(size: 10)).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
