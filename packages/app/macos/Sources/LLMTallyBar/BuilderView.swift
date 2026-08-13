@@ -225,21 +225,14 @@ struct BuilderView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     Text(metricName(item.metric)).font(.headline)
-                    Text("Active account is read-only. Pin a native window or follow the attention ranking.")
+                    Text("Active account is read-only. Each quota item pins one provider's native window.")
                         .font(.caption2).foregroundStyle(.secondary)
 
                     if isQuotaMetric(item.metric) {
-                        bindingSection(item, index: index)
-                        if case .pin = item.binding ?? .followAttention {
-                            providerSection(item, index: index)
-                            windowSection(item, index: index)
-                            if item.metric == .quotaMiniBar {
-                                secondWindowSection(item, index: index)
-                            }
-                        } else if item.metric == .quotaMiniBar {
-                            // follow-attention rails have no fixed window
-                            // list — the 5h+7d pair is the only 2-rail set
-                            pairSection(item, index: index)
+                        providerSection(item, index: index)
+                        windowSection(item, index: index)
+                        if item.metric == .quotaMiniBar {
+                            secondWindowSection(item, index: index)
                         }
                         directionSection(item, index: index)
                         if item.metric != .quotaReset {
@@ -260,30 +253,6 @@ struct BuilderView: View {
             }
         } else {
             Text("Select an item").font(.caption).foregroundStyle(.secondary).padding(20)
-        }
-    }
-
-    private func bindingSection(_ item: MenuItemDescriptor, index: Int) -> some View {
-        section("Binding") {
-            Picker("", selection: Binding(
-                get: { isPin(item.binding) ? "pin" : "follow" },
-                set: { choice in
-                    mutate { current in
-                        if choice == "follow" {
-                            current[index].binding = .followAttention
-                        } else {
-                            let provider = firstProvider()
-                            current[index].binding = .pin(
-                                provider: provider,
-                                nativeWindowId: firstWindowId(of: provider))
-                        }
-                    }
-                })) {
-                Text("Follow attention").tag("follow")
-                Text("Pin window").tag("pin")
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
         }
     }
 
@@ -367,22 +336,6 @@ struct BuilderView: View {
                 }
             }
             .labelsHidden()
-        }
-    }
-
-    private func pairSection(_ item: MenuItemDescriptor, index: Int) -> some View {
-        let provider = pinProvider(item.binding) ?? firstProvider()
-        let pairSupported = supportsPairWindows(agent: provider, quota: quota)
-        return section("Window set") {
-            Toggle("5h + 7d pair", isOn: Binding(
-                get: { item.windowSet == "pair" },
-                set: { value in mutate { $0[index].windowSet = value ? "pair" : "single" } }))
-                .disabled(!pairSupported)
-            if !pairSupported {
-                // the pair never gets synthesized from a missing window
-                Text("\(agentDisplayName(provider)) does not return a 5h+7d pair right now. Daily/weekly-only stays a single rail.")
-                    .font(.caption2).foregroundStyle(.orange)
-            }
         }
     }
 
@@ -549,6 +502,7 @@ struct BuilderView: View {
                 if case .success(let value) = result {
                     quota = value.quota
                     buckets = value.report.buckets
+                    migrateLegacyBindings()
                 }
             }
         }
@@ -560,6 +514,24 @@ struct BuilderView: View {
         SidecarClient.shared.requestDecodable("report", params: OverviewModel.hourReportParams(), as: ReportSummaryDTO.self) { result in
             DispatchQueue.main.async {
                 if case .success(let summary) = result { hourBuckets = summary.buckets }
+            }
+        }
+    }
+
+    /// Follow-attention was removed from the Builder — legacy quota
+    /// items re-pin to the first provider's first window once the
+    /// window catalog is actually known.
+    private func migrateLegacyBindings() {
+        guard !quota.isEmpty,
+              items.contains(where: { isQuotaMetric($0.metric) && !isPin($0.binding) })
+        else { return }
+        mutate { current in
+            for index in current.indices
+            where isQuotaMetric(current[index].metric) && !isPin(current[index].binding) {
+                let provider = firstProvider()
+                current[index].binding = .pin(
+                    provider: provider, nativeWindowId: firstWindowId(of: provider))
+                current[index].scope = .provider(provider)
             }
         }
     }
@@ -627,7 +599,7 @@ struct BuilderView: View {
 
     private func itemSubtitle(_ item: MenuItemDescriptor) -> String {
         switch item.binding {
-        case .followAttention: return "follows attention"
+        case .followAttention: return "unpinned"
         case .pin(let provider, let windowId):
             if let second = item.secondNativeWindowId {
                 return "\(provider) · \(windowId) + \(second)"

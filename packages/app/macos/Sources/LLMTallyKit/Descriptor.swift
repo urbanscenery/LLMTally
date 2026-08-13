@@ -140,14 +140,16 @@ public struct MenuBarBuilderPreferences: Codable, Equatable {
 }
 
 /// Factory Auto — seeded exactly once on first run; afterwards the
-/// array is plain user data (no persistent preset control).
+/// array is plain user data (no persistent preset control). Every
+/// quota item pins a window (follow-attention is retired; the enum
+/// case survives only to decode legacy saves).
 public func autoFactoryItems() -> [MenuItemDescriptor] {
     [
         MenuItemDescriptor(
-            scope: .aggregate,
+            scope: .provider("claude-code"),
             metric: .quotaUsagePercentage,
             direction: "used",
-            binding: .followAttention),
+            binding: .pin(provider: "claude-code", nativeWindowId: "five_hour")),
         MenuItemDescriptor(
             scope: .aggregate,
             metric: .sourceFreshness,
