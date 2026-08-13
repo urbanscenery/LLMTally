@@ -164,9 +164,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // clicking anywhere else (another app, Settings, the desktop)
         // takes key away — the menu-like dismissal the platform expects
-        if (notification.object as? NSPanel) === panel {
-            closePanel()
-        }
+        guard (notification.object as? NSPanel) === panel else { return }
+        // a sheet (Switch confirmation) taking key is not "outside";
+        // closing here would kill the flow the user just started
+        if panel?.attachedSheet != nil { return }
+        closePanel()
     }
 
     // MARK: - event monitors
@@ -178,7 +180,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
-            self?.closePanel()
+            // never close over an open sheet — an in-flight switch
+            // holds the lock protocol and must finish or roll back
+            guard let self, self.panel?.attachedSheet == nil else { return }
+            self.closePanel()
         }
         // §9 keyboard while the panel is key: ⌘, / ⌘R / ⌘O handled
         // here, navigation keys routed to the view.
