@@ -13,6 +13,7 @@ import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
 import { switchOpencodeAccount } from '@llmtally/core/accounts/opencode.ts';
 import { switchAccount as switchClaudeAccount } from '@llmtally/core/accounts/switch.ts';
 import { AccountVault } from '@llmtally/core/accounts/vault.ts';
+import { readCodexAuth } from '@llmtally/core/quota/codex-live.ts';
 import { dedupeByAccount, loadAllQuota } from '@llmtally/core/quota/service.ts';
 import { softResetQuotaThrottle } from '@llmtally/core/quota/throttle.ts';
 import { PROMPTS_DEFAULT_LIMIT, listPrompts } from '@llmtally/core/report/prompts.ts';
@@ -36,6 +37,7 @@ export interface SidecarOptions {
   readonly quotaLoader?: (options: { readonly allowRefresh: boolean }) => Promise<QuotaSnapshot[]>;
   readonly vaultDir?: string;
   readonly claudeConfigPath?: string;
+  readonly codexAuthPath?: string;
 }
 
 /** Every ledger agent, whether or not it has a switch transaction. */
@@ -98,8 +100,10 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
 
   server.register('activeAccounts', () => {
     // Which account each agent is logged into right now. Claude's truth
-    // is the runtime config (not a vault marker); the rest come from
-    // the vault's per-agent active map.
+    // is the runtime config (not a vault marker); codex's is its live
+    // auth.json — the vault marker only exists after a switch through
+    // llmtally and can go stale when codex logs in on its own. The
+    // rest come from the vault's per-agent active map.
     const context = resolveActiveClaudeContext({
       vault: getVault(),
       ...(options.claudeConfigPath === undefined ? {} : { configPath: options.claudeConfigPath }),
@@ -109,6 +113,10 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
       active[agent] = agent === 'claude-code'
         ? context.activeAccountId
         : getVault().activeAccountId(agent);
+    }
+    const liveCodex = readCodexAuth(options.codexAuthPath)?.accountId ?? null;
+    if (liveCodex !== null) {
+      active['codex'] = liveCodex;
     }
     return active;
   });

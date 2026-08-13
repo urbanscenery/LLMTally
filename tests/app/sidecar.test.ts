@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { openDatabase } from '@llmtally/core/db/connection.ts';
@@ -127,13 +128,15 @@ describe('sidecar server', () => {
   });
 
   test('activeAccounts reports every agent, null when nothing is active', async () => {
-    // Arrange — empty vault dir + unreadable claude config: no agent is
-    // logged in, and the reply must still enumerate all six agents
+    // Arrange — empty vault dir + unreadable claude config + missing
+    // codex auth: no agent is logged in, and the reply must still
+    // enumerate all six agents
     const dir = makeTempDir();
     const server = createSidecarServer({
       databasePath: makeLedger(),
       vaultDir: join(dir, 'vault'),
       claudeConfigPath: join(dir, 'no-such-claude.json'),
+      codexAuthPath: join(dir, 'no-such-auth.json'),
     });
 
     // Act
@@ -145,6 +148,29 @@ describe('sidecar server', () => {
       ['antigravity', 'claude-code', 'cline', 'codex', 'grok', 'opencode'],
     );
     expect(Object.values(reply.result).every((value) => value === null)).toBe(true);
+  });
+
+  test('activeAccounts derives codex from its live auth.json', async () => {
+    // Arrange — no vault marker (never switched through llmtally), but
+    // codex itself is logged in: the live file is the truth
+    const dir = makeTempDir();
+    const authPath = join(dir, 'auth.json');
+    writeFileSync(authPath, JSON.stringify({
+      tokens: { access_token: 'live-token', account_id: 'acct-live' },
+    }));
+    const server = createSidecarServer({
+      databasePath: makeLedger(),
+      vaultDir: join(dir, 'vault'),
+      claudeConfigPath: join(dir, 'no-such-claude.json'),
+      codexAuthPath: authPath,
+    });
+
+    // Act
+    const reply = await call(server, 'activeAccounts');
+
+    // Assert
+    expect(reply.error).toBeUndefined();
+    expect(reply.result.codex).toBe('acct-live');
   });
 
   test('hour bucketing is a valid report grouping', async () => {
