@@ -50,7 +50,7 @@ struct Theme {
         make("monokai", "Monokai", accent: 0xF92672, live: 0xA6E22E, warn: 0xFD971F, crit: 0xC4265E, actual: 0xE6DB74, background: 0x272822, dark: true),
         make("vue", "Vue Dark", accent: 0x42B883, live: 0x42D392, warn: 0xFFC517, crit: 0xED3C50, actual: 0xFF7043, background: 0x273849, dark: true),
         make("material", "Material Dark", accent: 0x80CBC4, live: 0xC3E88D, warn: 0xFFCB6B, crit: 0xF07178, actual: 0xF78C6C, background: 0x263238, dark: true),
-        make("mono", "Mono Dark", accent: 0xEEEEEE, live: 0xCFCFCF, warn: 0x8A8A8A, crit: 0xFFFFFF, actual: 0xB0B0B0, background: 0x111213, dark: true),
+        make("mono", "Mono Dark", accent: 0xEEEEEE, live: 0xCFCFCF, warn: 0x8A8A8A, crit: 0xFFFFFF, actual: 0xB0B0B0, background: 0x000000, dark: true),
     ]
 
     static func current() -> Theme {
