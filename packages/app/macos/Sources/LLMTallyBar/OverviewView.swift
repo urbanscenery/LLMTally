@@ -515,13 +515,26 @@ struct StatusChip: View {
     }
 }
 
+/// Rail label: compact like the menu bar's, but model-scoped windows
+/// keep their model — Claude's `7d Fable` must not collapse into `7d`.
+func railWindowLabel(_ id: String) -> String {
+    if id == "seven_day_opus" { return "7d Opus" }
+    if id.hasPrefix("7d "), id.count > 3 { return id }
+    return shortWindowLabel(id)
+}
+
+/// Fixed label column so every rail starts at the same x regardless of
+/// label length; anything longer than the column ellipsizes.
+let railLabelWidth: CGFloat = 48
+
 struct WindowRail: View {
     let window: QuotaWindowDTO
 
     var body: some View {
         HStack(spacing: 5) {
-            Text(shortWindowLabel(window.id)).font(.caption2).foregroundStyle(.secondary)
-                .frame(minWidth: 20, alignment: .leading)
+            Text(railWindowLabel(window.id)).font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.tail)
+                .frame(width: railLabelWidth, alignment: .leading)
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.1))
@@ -886,8 +899,11 @@ struct ProviderDetailView: View {
                 ForEach(snapshot.windows) { window in
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text(shortWindowLabel(window.id))
-                                .font(.caption).frame(width: 42, alignment: .leading)
+                            // same fixed column as the overview rails —
+                            // bars start at one x on both screens
+                            Text(railWindowLabel(window.id))
+                                .font(.caption).lineLimit(1).truncationMode(.tail)
+                                .frame(width: 56, alignment: .leading)
                             GeometryReader { geometry in
                                 ZStack(alignment: .leading) {
                                     Capsule().fill(Color.primary.opacity(0.1))
@@ -912,7 +928,8 @@ struct ProviderDetailView: View {
                             }
                         }
                         .font(.system(size: 10)).foregroundStyle(.secondary)
-                        .padding(.leading, 48)
+                        // label column (56) + bar gap (6)
+                        .padding(.leading, 62)
                     }
                     .padding(.vertical, 1)
                 }
