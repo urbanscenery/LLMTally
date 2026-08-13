@@ -224,6 +224,13 @@ enum StatusComposer {
         NSColor.labelColor.setStroke()
         NSColor.labelColor.setFill()
 
+        // vendors with a real logomark render the traced brand path
+        // (shared with ProviderGlyph); the rest keep drawn shapes
+        if let commands = brandGlyphCommands(agent: agent) {
+            brandGlyphBezier(commands, originX: originX, scale: barHeight / 24).fill()
+            return
+        }
+
         func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
             // flip y: source coordinates are top-down like the SwiftUI Canvas
             NSPoint(x: originX + x * scale, y: (16 - y) * scale)
@@ -243,11 +250,6 @@ enum StatusComposer {
         }
 
         switch agent {
-        case "claude-code":
-            line(8, 1.6, 8, 4.5); line(8, 11.5, 8, 14.4)
-            line(1.6, 8, 4.5, 8); line(11.5, 8, 14.4, 8)
-            line(3.5, 3.5, 5.5, 5.5); line(10.5, 10.5, 12.5, 12.5)
-            line(12.5, 3.5, 10.5, 5.5); line(5.5, 10.5, 3.5, 12.5)
         case "codex":
             let center = NSPoint(x: originX + 8 * scale, y: 8 * scale)
             for step in 0..<3 {
@@ -262,18 +264,6 @@ enum StatusComposer {
                 stadium.lineWidth = 1.2
                 path.append(stadium)
             }
-        case "antigravity":
-            circle(4.9, 2.7, 6.2, 6.2, into: path)
-            path.move(to: point(2.6, 12.3))
-            path.curve(to: point(13.4, 12.3),
-                       controlPoint1: point(6, 14.5), controlPoint2: point(10, 14.5))
-        case "opencode":
-            path.append(NSBezierPath(
-                roundedRect: NSRect(x: originX + 1.8 * scale, y: (16 - 13.4) * scale,
-                                    width: 12.4 * scale, height: 10.8 * scale),
-                xRadius: 2 * scale, yRadius: 2 * scale))
-            line(4.6, 6.3, 7.0, 8.2); line(7.0, 8.2, 4.6, 10.1)
-            line(8.6, 10.5, 11.4, 10.5)
         case "cline":
             path.append(NSBezierPath(
                 roundedRect: NSRect(x: originX + 2.6 * scale, y: (16 - 13.4) * scale,
