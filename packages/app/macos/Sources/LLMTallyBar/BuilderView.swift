@@ -240,9 +240,9 @@ struct BuilderView: View {
                     Text("Active account is read-only. Each quota item pins one provider's native window.")
                         .font(.caption2).foregroundStyle(.secondary)
 
-                    if item.metric == .agentActive {
-                        section("What counts as active") {
-                            Text("The number of agents with at least one prompt in today's local ledger (calendar day, local midnight reset). Quota is not involved — this is pure usage. \"2 act\" means two agents logged prompts today; VoiceOver reads which ones.")
+                    if let about = metricDescription(item.metric) {
+                        section("About") {
+                            Text(about)
                                 .font(.caption2).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -259,13 +259,20 @@ struct BuilderView: View {
                             labelSection(item, index: index)
                         }
                     }
+                    if item.metric == .providerLabel {
+                        providerSection(item, index: index)
+                    }
                     if isHistoryMetric(item.metric) {
                         historySection(item, index: index)
                     }
-                    if item.metric != .spacer && !isHistoryMetric(item.metric) {
-                        identitySection(item, index: index)
+                    // dead controls stay out: identity only where the
+                    // renderer reads it, if-missing only where a missing
+                    // reading actually renders a placeholder
+                    if identityApplies(item.metric) {
+                        identitySection(item, index: index,
+                                        allowNone: item.metric != .providerLabel)
                     }
-                    if item.metric != .spacer {
+                    if missingApplies(item.metric) {
                         missingSection(item, index: index)
                     }
                 }
@@ -279,7 +286,7 @@ struct BuilderView: View {
     private func providerSection(_ item: MenuItemDescriptor, index: Int) -> some View {
         section("Provider") {
             Picker("", selection: Binding(
-                get: { pinProvider(item.binding) ?? firstProvider() },
+                get: { pinProvider(item.binding) ?? scopeProvider(item.scope) ?? firstProvider() },
                 set: { provider in
                     mutate { current in
                         current[index].binding = .pin(
@@ -413,17 +420,49 @@ struct BuilderView: View {
         }
     }
 
-    private func identitySection(_ item: MenuItemDescriptor, index: Int) -> some View {
+    private func identitySection(_ item: MenuItemDescriptor, index: Int,
+                                 allowNone: Bool = true) -> some View {
         section("Identity") {
             Picker("", selection: Binding(
                 get: { item.providerIdentityPresentation ?? "icon" },
                 set: { value in mutate { $0[index].providerIdentityPresentation = value } })) {
                 Text("Icon").tag("icon")
                 Text("Code").tag("vertical_text")
-                Text("None · VO keeps name").tag("none")
+                // a provider label IS its identity — "none" would
+                // render nothing, so the option only exists elsewhere
+                if allowNone {
+                    Text("None · VO keeps name").tag("none")
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+        }
+    }
+
+    /// The renderer reads identity only for quota metrics and the
+    /// provider label; freshness, agent-active, history, and spacer
+    /// ignore it entirely.
+    private func identityApplies(_ metric: MenuItemMetric) -> Bool {
+        isQuotaMetric(metric) || metric == .providerLabel
+    }
+
+    /// Metrics where a missing reading actually renders the chosen
+    /// behaviour. Freshness and the provider label simply hide when
+    /// there is nothing to show; spacer has no data at all.
+    private func missingApplies(_ metric: MenuItemMetric) -> Bool {
+        isQuotaMetric(metric) || isHistoryMetric(metric) || metric == .agentActive
+    }
+
+    private func metricDescription(_ metric: MenuItemMetric) -> String? {
+        switch metric {
+        case .agentActive:
+            return "The number of agents with at least one prompt in today's local ledger (calendar day, local midnight reset). Quota is not involved — this is pure usage. \"2 act\" means two agents logged prompts today; VoiceOver reads which ones."
+        case .providerLabel:
+            return "A static identity stamp — the provider's glyph or short code — for labeling the items next to it. It never changes with usage; privacy mode swaps in a neutral alias."
+        case .sourceFreshness:
+            return "One-glance trust summary across all providers: ● fresh · ◷ stale or rate-limited · ! auth invalid, plus the age of the oldest reading. It never folds when the bar squeezes."
+        default:
+            return nil
         }
     }
 
@@ -595,6 +634,11 @@ struct BuilderView: View {
 
     private func pinProvider(_ binding: ItemBinding?) -> String? {
         if case .pin(let provider, _) = binding { return provider }
+        return nil
+    }
+
+    private func scopeProvider(_ scope: MenuItemScope) -> String? {
+        if case .provider(let provider) = scope { return provider }
         return nil
     }
 
