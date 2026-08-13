@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  CODEX_USAGE_TIMEOUT_MS,
   codexQuotaSubject,
   fetchCodexLiveQuota,
   parseCodexUsageBody,
@@ -11,6 +12,7 @@ import {
 import { makeQuotaSnapshot } from '@llmtally/core/quota/providers.ts';
 import type { QuotaSnapshot } from '@llmtally/core/quota/providers.ts';
 import { resetQuotaThrottle, throttledQuota } from '@llmtally/core/quota/throttle.ts';
+import { LLMTALLY_USER_AGENT } from '@llmtally/core/version.ts';
 import { makeTempDir } from '../helpers.ts';
 
 const NOW = 1_786_400_000;
@@ -135,12 +137,14 @@ describe('fetchCodexLiveQuota', () => {
     let seenHeaders: Record<string, string> = {};
 
     // Act
+    let seenSignal: AbortSignal | undefined;
     const snapshot = await fetchCodexLiveQuota({
       authPath,
       nowUtc: NOW,
       fetchFn: (url, init) => {
         expect(String(url)).toContain('chatgpt.com/backend-api/wham/usage');
         seenHeaders = init?.headers as Record<string, string>;
+        seenSignal = init?.signal;
         return Promise.resolve(new Response(JSON.stringify(usageBody())));
       },
     });
@@ -148,6 +152,9 @@ describe('fetchCodexLiveQuota', () => {
     // Assert
     expect(seenHeaders.Authorization).toBe('Bearer test-access-token');
     expect(seenHeaders['ChatGPT-Account-Id']).toBe('acct-1');
+    expect(seenHeaders['User-Agent']).toBe(LLMTALLY_USER_AGENT);
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
+    expect(CODEX_USAGE_TIMEOUT_MS).toBe(15_000);
     expect(snapshot?.source).toBe('vendor_api');
     expect(snapshot?.plan).toBe('pro');
     expect(snapshot?.account).toBe('me@test.dev');

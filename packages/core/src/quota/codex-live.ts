@@ -27,7 +27,13 @@ import { makeQuotaSnapshot } from './providers.ts';
 import type { FetchLike, QuotaSnapshot, QuotaWindow } from './providers.ts';
 
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
-const FETCH_TIMEOUT_MS = 5000;
+/**
+ * Codex CLI's own GET of this path has no short client timeout. Five
+ * seconds is shorter than Cloudflare plus a failed IPv6 attempt on the
+ * same host, which is why the TUI reported `The operation timed out`
+ * while `codex` itself still worked. Token refresh already budgets 10s.
+ */
+export const CODEX_USAGE_TIMEOUT_MS = 15_000;
 
 export function defaultCodexAuthPath(home: string = homedir()): string {
   return join(home, '.codex', 'auth.json');
@@ -176,6 +182,7 @@ export async function fetchCodexUsage(request: CodexUsageRequest): Promise<Quota
   const headers: Record<string, string> = {
     Authorization: `Bearer ${request.accessToken}`,
     Accept: 'application/json',
+    'User-Agent': LLMTALLY_USER_AGENT,
   };
   if (request.accountId !== null) {
     headers['ChatGPT-Account-Id'] = request.accountId;
@@ -184,7 +191,7 @@ export async function fetchCodexUsage(request: CodexUsageRequest): Promise<Quota
     const fetchFn = request.fetchFn ?? fetch;
     const response = await fetchFn(request.url ?? CODEX_USAGE_URL, {
       headers,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(CODEX_USAGE_TIMEOUT_MS),
     });
     if (response.status === 429) {
       const header = Number(response.headers.get('retry-after'));
