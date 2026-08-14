@@ -93,7 +93,7 @@ describe('themes', () => {
     expect(tokyo?.palette.spendCost).toBe('#ff9e64');
     expect(dracula?.palette.accent).toBe('#ff79c6');
     expect(dracula?.palette.ok).toBe('#4bff79');
-    expect(dracula?.palette.spendCost).toBe('#bc8dff');
+    expect(dracula?.palette.spendCost).toBe('#ffb86c');
   });
 
   test('light themes require a painted surface; dark themes do not', () => {

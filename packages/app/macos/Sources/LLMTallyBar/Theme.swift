@@ -36,7 +36,11 @@ struct Theme {
     static let system = Theme(
         id: "system", name: "System",
         accent: .accentColor, live: .green, warn: .orange, crit: .red, spend: .orange,
-        quota: .blue,
+        // teal, not blue: the weekly chart draws tokens in `accent` and
+        // quota cost in this color, and the default macOS accent IS
+        // blue — the two lines were identical. No macOS accent option
+        // is teal, so this cannot collide with any user accent choice.
+        quota: .teal,
         nsLive: .systemGreen, nsWarn: .systemOrange, nsCrit: .systemRed,
         nsSpend: .systemOrange, nsAccent: .controlAccentColor,
         background: nil, colorScheme: nil, nsBackground: nil)
