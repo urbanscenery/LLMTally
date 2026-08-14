@@ -13,11 +13,13 @@ struct Theme {
     let live: Color
     let warn: Color
     let crit: Color
-    let actual: Color
+    let spend: Color
+    /// Quota-cost highlight — third chart hue next to accent/spend.
+    let quota: Color
     let nsLive: NSColor
     let nsWarn: NSColor
     let nsCrit: NSColor
-    let nsActual: NSColor
+    let nsSpend: NSColor
     let nsAccent: NSColor
     /// Surface background — a light theme is light everywhere, a dark
     /// theme dark everywhere, regardless of the system appearance.
@@ -33,9 +35,10 @@ struct Theme {
 
     static let system = Theme(
         id: "system", name: "System",
-        accent: .accentColor, live: .green, warn: .orange, crit: .red, actual: .orange,
+        accent: .accentColor, live: .green, warn: .orange, crit: .red, spend: .orange,
+        quota: .blue,
         nsLive: .systemGreen, nsWarn: .systemOrange, nsCrit: .systemRed,
-        nsActual: .systemOrange, nsAccent: .controlAccentColor,
+        nsSpend: .systemOrange, nsAccent: .controlAccentColor,
         background: nil, colorScheme: nil, nsBackground: nil)
 
     /// System first, then the shared catalog (ThemePresets.generated.swift).
@@ -56,13 +59,14 @@ struct Theme {
     /// Called by the generated catalog — keep the signature in lockstep
     /// with gen-theme-presets.ts.
     static func make(_ id: String, _ name: String,
-                     accent: Int, live: Int, warn: Int, crit: Int, actual: Int,
-                     background: Int, dark: Bool) -> Theme {
+                     accent: Int, live: Int, warn: Int, crit: Int, spend: Int,
+                     quota: Int, background: Int, dark: Bool) -> Theme {
         Theme(id: id, name: name,
               accent: Color(hex: accent), live: Color(hex: live), warn: Color(hex: warn),
-              crit: Color(hex: crit), actual: Color(hex: actual),
+              crit: Color(hex: crit), spend: Color(hex: spend),
+              quota: Color(hex: quota),
               nsLive: NSColor(hex: live), nsWarn: NSColor(hex: warn), nsCrit: NSColor(hex: crit),
-              nsActual: NSColor(hex: actual), nsAccent: NSColor(hex: accent),
+              nsSpend: NSColor(hex: spend), nsAccent: NSColor(hex: accent),
               background: Color(hex: background), colorScheme: dark ? .dark : .light,
               nsBackground: NSColor(hex: background))
     }

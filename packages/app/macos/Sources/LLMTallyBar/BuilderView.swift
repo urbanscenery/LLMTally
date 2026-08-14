@@ -76,7 +76,7 @@ struct BuilderView: View {
             activeAccounts: [:], hourBuckets: hourBuckets,
             todayAgentRows: todayRows,
             privacy: PrivacySetting.enabled,
-            nominalCost: AppConfig.nominalMode)
+            spendCost: AppConfig.spendMode)
         // the note must agree with the composer: same content budget,
         // same +N indicator width
         let widths = rendering.segments.map { Double(StatusComposer.width(of: $0)) }
@@ -188,7 +188,7 @@ struct BuilderView: View {
                     activeAccounts: [:], hourBuckets: hourBuckets,
                     todayAgentRows: todayRows,
                     privacy: PrivacySetting.enabled,
-                    nominalCost: AppConfig.nominalMode).segments,
+                    spendCost: AppConfig.spendMode).segments,
                 leadingTally: false))
                 .frame(maxWidth: 64, alignment: .leading)
                 .clipped()
@@ -223,7 +223,7 @@ struct BuilderView: View {
             }
             Section("History") {
                 Button("Token spark") { add(.consumedTokenHistory) }
-                Button("Actual cost spark") { add(.actualCostHistory) }
+                Button("Quota cost spark") { add(.quotaCostHistory) }
             }
             Section("Context") {
                 Button("Freshness") { add(.sourceFreshness) }
@@ -562,7 +562,7 @@ struct BuilderView: View {
                     direction: "used",
                     binding: .pin(provider: provider, nativeWindowId: firstWindowId(of: provider)),
                     windowSet: metric == .quotaMiniBar ? "single" : nil)
-            case .consumedTokenHistory, .actualCostHistory:
+            case .consumedTokenHistory, .quotaCostHistory:
                 descriptor = MenuItemDescriptor(
                     scope: .aggregate, metric: metric, presentation: "bar",
                     timeRange: "last_7d", providerIdentityPresentation: nil)
@@ -678,7 +678,7 @@ struct BuilderView: View {
     }
 
     private func isHistoryMetric(_ metric: MenuItemMetric) -> Bool {
-        metric == .consumedTokenHistory || metric == .actualCostHistory
+        metric == .consumedTokenHistory || metric == .quotaCostHistory
     }
 
     private func isPin(_ binding: ItemBinding?) -> Bool {
@@ -709,7 +709,7 @@ struct BuilderView: View {
         case .sourceFreshness: return "Freshness"
         case .providerLabel: return "Provider label"
         case .consumedTokenHistory: return "Token history"
-        case .actualCostHistory: return "Actual cost"
+        case .quotaCostHistory: return "Quota cost"
         case .agentActive: return "Agent active"
         case .spacer: return "Spacer"
         }

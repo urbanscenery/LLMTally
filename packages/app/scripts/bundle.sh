@@ -12,6 +12,8 @@ bun scripts/gen-theme-presets.ts
 
 swift build -c release --package-path macos
 bun build --compile src/sidecar-main.ts --outfile build/llmtally-sidecar
+# bun 1.3.x leaks its ~60MB .{hash}.bun-build temp in cwd even on success
+rm -f ./.*.bun-build
 
 APP=build/LLMTally.app
 rm -rf "$APP"

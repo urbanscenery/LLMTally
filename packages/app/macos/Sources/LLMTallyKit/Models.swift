@@ -113,24 +113,59 @@ public struct ReportBucketDTO: Decodable {
     public let key: String
     public let rowCount: Int
     public let tokens: TokenTotalsDTO
-    public let actual: CostResultDTO
+    /// Spend cost — real money (card / prepaid credit). Never summed
+    /// with quota cost ("cost" unites the names, never the numbers).
+    public let spendCost: CostResultDTO
+    /// Quota cost — list-price valuation of subscription-quota consumption.
+    public let quotaCost: CostResultDTO
+    /// Rows whose billing nature is unclassified — in neither total.
+    public let unknownRows: Int
+    public let unknownUsd: Double
     public let unpricedRows: Int
 
     public init(key: String, rowCount: Int, tokens: TokenTotalsDTO,
-                actual: CostResultDTO, unpricedRows: Int = 0) {
+                spendCost: CostResultDTO, quotaCost: CostResultDTO,
+                unknownRows: Int = 0, unknownUsd: Double = 0, unpricedRows: Int = 0) {
         self.key = key
         self.rowCount = rowCount
         self.tokens = tokens
-        self.actual = actual
+        self.spendCost = spendCost
+        self.quotaCost = quotaCost
+        self.unknownRows = unknownRows
+        self.unknownUsd = unknownUsd
         self.unpricedRows = unpricedRows
-        self.nominal = nil
     }
 
     private enum CodingKeys: String, CodingKey {
-        case key, rowCount, tokens, actual, unpricedRows, nominal
+        case key, rowCount, tokens, unpricedRows, unknownRows, unknownUsd
+        case spendCost, quotaCost
+        // older sidecars: spend/usage (billing-nature round 1), and
+        // before that actual/nominal (provenance axes)
+        case spend, usage, actual, nominal
     }
-    /// Nominal is a separate mode, never mixed into Actual surfaces.
-    public let nominal: CostResultDTO?
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        rowCount = try container.decode(Int.self, forKey: .rowCount)
+        tokens = try container.decode(TokenTotalsDTO.self, forKey: .tokens)
+        unpricedRows = try container.decodeIfPresent(Int.self, forKey: .unpricedRows) ?? 0
+        unknownRows = try container.decodeIfPresent(Int.self, forKey: .unknownRows) ?? 0
+        unknownUsd = try container.decodeIfPresent(Double.self, forKey: .unknownUsd) ?? 0
+        let empty = CostResultDTO(usd: nil, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0)
+        // legacy fallback chain: a pre-rename sidecar's "usage" IS the
+        // quota cost, and the pre-billing-nature "actual" was
+        // quota-stamped money on this data — both degrade into the new
+        // fields rather than failing the whole decode
+        spendCost = try container.decodeIfPresent(CostResultDTO.self, forKey: .spendCost)
+            ?? container.decodeIfPresent(CostResultDTO.self, forKey: .spend)
+            ?? empty
+        quotaCost = try container.decodeIfPresent(CostResultDTO.self, forKey: .quotaCost)
+            ?? container.decodeIfPresent(CostResultDTO.self, forKey: .usage)
+            ?? container.decodeIfPresent(CostResultDTO.self, forKey: .nominal)
+            ?? container.decodeIfPresent(CostResultDTO.self, forKey: .actual)
+            ?? empty
+    }
 }
 
 public struct PromptRowDTO: Decodable {
@@ -153,6 +188,18 @@ public struct ReportSummaryDTO: Decodable {
 public struct OverviewDTO: Decodable {
     public let quota: [QuotaSnapshotDTO]
     public let report: ReportSummaryDTO
+}
+
+/// One selected calendar day: per-agent buckets plus each agent's
+/// per-model buckets — the nesting the day drill-down renders.
+public struct DayReportDTO: Decodable {
+    public let agents: ReportSummaryDTO
+    public let modelsByAgent: [String: ReportSummaryDTO]
+
+    public init(agents: ReportSummaryDTO, modelsByAgent: [String: ReportSummaryDTO]) {
+        self.agents = agents
+        self.modelsByAgent = modelsByAgent
+    }
 }
 
 public struct SwitchResultDTO: Decodable {
@@ -207,6 +254,34 @@ public func formatTokens(_ value: Double) -> String {
 
 public func formatUsd(_ value: Double) -> String {
     value >= 100 ? String(format: "$%.0f", value) : String(format: "$%.2f", value)
+}
+
+/// The one cost figure that means something for this bucket: spend cost
+/// when any real money was involved, quota cost otherwise. Data decides
+/// — never a setting — and the `~` prefix keeps the chosen basis
+/// visible. Totals must NOT use this: summing billed and quota-valued
+/// dollars is a category error (mirrors the TUI's primaryCostViewModel).
+public func primaryCost(_ bucket: ReportBucketDTO) -> (cost: CostResultDTO?, isQuota: Bool) {
+    if bucket.spendCost.pricedRows > 0 {
+        return (bucket.spendCost, false)
+    }
+    return (bucket.quotaCost, true)
+}
+
+/// `$1.23` (spend cost) / `~$1.23` (quota cost) / trailing `+` when
+/// partial / `—` when neither basis priced anything.
+public func formatPrimaryCost(_ bucket: ReportBucketDTO) -> String {
+    let (cost, isQuota) = primaryCost(bucket)
+    return formatCost(cost, quota: isQuota)
+}
+
+/// One basis, formatted the same way (`+` marks a partial subtotal).
+public func formatCost(_ cost: CostResultDTO?, quota: Bool) -> String {
+    guard let cost else { return "—" }
+    let prefix = quota ? "~" : ""
+    if let usd = cost.usd { return prefix + formatUsd(usd) }
+    if cost.pricedRows > 0 { return prefix + formatUsd(cost.pricedSubtotalUsd) + "+" }
+    return "—"
 }
 
 /// `42s` / `3m` / `8h 16m` / `5d 18h` since the given epoch.
@@ -267,4 +342,17 @@ public func localDayKey(_ date: Date = Date()) -> String {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyy-MM-dd"
     return formatter.string(from: date)
+}
+
+/// A calendar slot the ledger has no rows for: zero usage is a fact
+/// (nothing was spent), not missing data — charts fill gaps with this
+/// instead of skipping days and distorting the time axis.
+public func emptyDayBucket(key: String) -> ReportBucketDTO {
+    let empty = CostResultDTO(usd: nil, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0)
+    return ReportBucketDTO(
+        key: key,
+        rowCount: 0,
+        tokens: TokenTotalsDTO(inputTokens: 0, outputTokens: 0),
+        spendCost: empty,
+        quotaCost: empty)
 }

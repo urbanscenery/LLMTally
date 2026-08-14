@@ -155,6 +155,18 @@ do {
 }
 
 do {
+    // both legacy spark ids migrate into quota_cost_history instead of
+    // failing the whole preferences blob (terminology renames 08-14/15)
+    let legacy = #"{"version":1,"items":[{"id":"m1","scope":{"kind":"aggregate"},"metric":"actual_cost_history","presentation":"bar","unavailableBehavior":"placeholder"},{"id":"m2","scope":{"kind":"aggregate"},"metric":"usage_cost_history","presentation":"bar","unavailableBehavior":"placeholder"}]}"#
+    let decoded = try? JSONDecoder().decode(MenuBarBuilderPreferences.self, from: Data(legacy.utf8))
+    expectEqual(decoded?.items.count, 2, "legacy spark metric ids decode")
+    expectEqual(decoded?.items.first?.metric, MenuItemMetric.quotaCostHistory,
+                "actual_cost_history migrates to the quota-cost spark")
+    expectEqual(decoded?.items.last?.metric, MenuItemMetric.quotaCostHistory,
+                "usage_cost_history migrates to the quota-cost spark")
+}
+
+do {
     // seeds Auto once, then keeps the user's order
     if let defaults = UserDefaults(suiteName: "llmtally-selftest-\(UUID().uuidString)") {
         let store = DescriptorStore(defaults: defaults)
@@ -255,8 +267,10 @@ do {
     func bucket(_ key: String, tokens: Double, usd: Double?) -> ReportBucketDTO {
         ReportBucketDTO(key: key, rowCount: 1,
                         tokens: TokenTotalsDTO(inputTokens: tokens, outputTokens: 0),
-                        actual: CostResultDTO(usd: usd, pricedSubtotalUsd: usd ?? 0,
-                                              pricedRows: usd == nil ? 0 : 1, unpricedRows: 0))
+                        spendCost: CostResultDTO(usd: nil, pricedSubtotalUsd: 0,
+                                             pricedRows: 0, unpricedRows: 0),
+                        quotaCost: CostResultDTO(usd: usd, pricedSubtotalUsd: usd ?? 0,
+                                             pricedRows: usd == nil ? 0 : 1, unpricedRows: 0))
     }
     let buckets = [bucket("2026-08-12", tokens: 100, usd: 1.0),
                    bucket("2026-08-13", tokens: 200, usd: 2.0)]
@@ -445,7 +459,7 @@ do {
     expectEqual(thin.segments.first, StatusSegment.placeholder, "one bucket renders a placeholder, not a trend")
 
     // cost spark disappears under privacy
-    let money = MenuItemDescriptor(scope: .aggregate, metric: .actualCostHistory,
+    let money = MenuItemDescriptor(scope: .aggregate, metric: .quotaCostHistory,
                                    presentation: "bar", timeRange: "last_7d",
                                    providerIdentityPresentation: nil)
     let visible = renderStatusSegments(descriptors: [money], quota: quota,

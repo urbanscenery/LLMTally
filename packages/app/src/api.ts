@@ -125,8 +125,18 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
           tokens: {
             inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0, reasoningTokens: 0,
           },
-          actual: { usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0 },
-          nominal: null,
+          spendCost: {
+            basis: 'unpriced' as const,
+            usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [],
+          },
+          quotaCost: {
+            basis: 'unpriced' as const,
+            usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [],
+          },
+          unknownRows: 0,
+          unknownUsd: 0,
+          unpricedRows: 0,
+          unpricedModels: [],
         },
         pricing: {
           status: 'stale' as const,
@@ -249,6 +259,30 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
       noRefresh: true,
     });
     return Object.fromEntries(summary.buckets.map((bucket) => [bucket.key, bucket.rowCount]));
+  });
+
+  server.register('dayReport', async (params) => {
+    // one selected calendar day: the per-agent breakdown plus, for each
+    // agent seen that day, its per-model breakdown — same nesting the
+    // TUI's overview day drill-down shows
+    const date = requireString(params, 'date');
+    const range = buildReportRange(date, date);
+    if ('error' in range) {
+      throw new Error(range.error);
+    }
+    const base = { databasePath, range, noRefresh: true };
+    const agents = await generateReport({ ...base, agent: null, groupBy: 'agent' });
+    const modelsByAgent: Record<string, ReportSummary> = {};
+    await Promise.all(
+      agents.buckets.map(async (bucket) => {
+        modelsByAgent[bucket.key] = await generateReport({
+          ...base,
+          agent: bucket.key,
+          groupBy: 'model',
+        });
+      }),
+    );
+    return { agents, modelsByAgent };
   });
 
   server.register('invalidateQuotaCache', () => {

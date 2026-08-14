@@ -22,6 +22,16 @@ final class OverviewModel: ObservableObject {
     @Published var activeAccounts: [String: String?] = [:]
     @Published var hourBuckets: [ReportBucketDTO] = []
     @Published var providerDetails: [String: ProviderDetailData] = [:]
+    /// Weekly-chart day the Overview drilled into; nil shows no detail.
+    @Published var selectedDay: String?
+    /// Per-day drill-down payloads — last-good paints instantly on
+    /// re-selection while the fresh read lands behind it.
+    @Published var dayReports: [String: DayReportDTO] = [:]
+    /// Provider detail's own chart-day drill-down; independent of the
+    /// Overview's so going back never carries a stale selection along.
+    @Published var providerSelectedDay: String?
+    /// Model buckets per "\(agent)|\(day)" — same last-good policy.
+    @Published var providerDayModels: [String: [ReportBucketDTO]] = [:]
 
     /// Last 7 local days — hour-grain report params shared by the
     /// weekly lines (resolution) and the 5h/24h status sparks.
@@ -140,6 +150,51 @@ final class OverviewModel: ObservableObject {
             .filter { $0.failure?.kind == "rate_limited" }
             .compactMap(\.retryAfterSeconds)
             .max()
+    }
+
+    /// Weekly-chart day selection: clicking the selected day again (or
+    /// passing nil) closes the detail. The cache paints instantly and a
+    /// fresh read lands behind it — today's bucket is still moving.
+    func selectDay(_ key: String?) {
+        guard let key, key != selectedDay else {
+            selectedDay = nil
+            return
+        }
+        selectedDay = key
+        loadDayReport(date: key)
+    }
+
+    private func loadDayReport(date: String) {
+        SidecarClient.shared.requestDecodable(
+            "dayReport", params: ["date": date], as: DayReportDTO.self
+        ) { result in
+            DispatchQueue.main.async { [weak self] in
+                if case .success(let report) = result {
+                    self?.dayReports[date] = report
+                }
+            }
+        }
+    }
+
+    /// Provider chart-day selection — same toggle/cache/refresh policy
+    /// as the Overview's selectDay.
+    func selectProviderDay(agent: String, _ key: String?) {
+        guard let key, key != providerSelectedDay else {
+            providerSelectedDay = nil
+            return
+        }
+        providerSelectedDay = key
+        SidecarClient.shared.requestDecodable(
+            "report",
+            params: ["groupBy": "model", "agent": agent, "fromDate": key, "toDate": key, "noRefresh": true],
+            as: ReportSummaryDTO.self
+        ) { result in
+            DispatchQueue.main.async { [weak self] in
+                if case .success(let summary) = result {
+                    self?.providerDayModels["\(agent)|\(key)"] = summary.buckets
+                }
+            }
+        }
     }
 
     /// Provider detail's lower half: today by model + weekly days.

@@ -383,7 +383,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             hourBuckets: lastHourBuckets,
             todayAgentRows: lastTodayRows,
             privacy: PrivacySetting.enabled,
-            nominalCost: AppConfig.nominalMode)
+            spendCost: AppConfig.spendMode)
         // no leading brand mark (user decision 2026-08-13); the tally
         // glyph only appears while there is nothing else to draw
         button.image = StatusComposer.compose(

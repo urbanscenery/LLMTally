@@ -139,7 +139,7 @@ enum StatusComposer {
         case .spark(let values, let money, let line):
             let maximum = max(values.max() ?? 1, 0.000_001)
             let theme = Theme.current()
-            let color = money ? theme.nsActual : theme.nsAccent
+            let color = money ? theme.nsSpend : theme.nsAccent
             let track = sparkTrack
             // the chart sits on its own themed rectangle — previously
             // bare, which washed out on a mismatched menu bar. System

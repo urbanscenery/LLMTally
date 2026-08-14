@@ -238,4 +238,53 @@ describe('sidecar server', () => {
 
     expect(reply.error).toBeDefined();
   });
+
+  test('dayReport nests each agent day-slice with its per-model buckets', async () => {
+    // Arrange — two agents on one local day; a UTC noon epoch keeps the
+    // local calendar date stable across test-machine timezones
+    const databasePath = makeLedger();
+    const epoch = Date.UTC(2026, 7, 10, 12) / 1000;
+    const date = localDayKeyOf(epoch);
+    const db = openDatabase(databasePath);
+    const insert = db.prepare(
+      `INSERT INTO usage_ledger
+        (ts_utc, agent, provider, model, natural_id, parser_version,
+         input_tokens, output_tokens, cache_write, cache_read, reasoning_tokens, cost_usd)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?, 0, 0, 0, ?)`,
+    );
+    insert.run(epoch, 'claude-code', 'anthropic', 'claude-fable-5', 'd1', 100, 10, null);
+    insert.run(epoch, 'codex', 'openai', 'gpt-5.5', 'd2', 200, 20, null);
+    insert.run(epoch, 'codex', 'openai', 'gpt-5.5-mini', 'd3', 50, 5, null);
+    db.close();
+    const server = createSidecarServer({ databasePath });
+
+    // Act
+    const reply = await call(server, 'dayReport', { date });
+
+    // Assert — agents at the top, that agent's models (only) nested
+    expect(reply.error).toBeUndefined();
+    const agents = reply.result.agents.buckets.map((bucket: { key: string }) => bucket.key).sort();
+    expect(agents).toEqual(['claude-code', 'codex']);
+    const codexModels = reply.result.modelsByAgent['codex'].buckets
+      .map((bucket: { key: string }) => bucket.key)
+      .sort();
+    expect(codexModels).toEqual(['gpt-5.5', 'gpt-5.5-mini']);
+    expect(
+      reply.result.modelsByAgent['claude-code'].buckets.map((bucket: { key: string }) => bucket.key),
+    ).toEqual(['claude-fable-5']);
+  });
+
+  test('dayReport rejects a malformed date and requires one', async () => {
+    const server = createSidecarServer({ databasePath: makeLedger() });
+
+    expect((await call(server, 'dayReport', { date: '2026-13-40' })).error).toBeDefined();
+    expect((await call(server, 'dayReport', {})).error).toBeDefined();
+  });
 });
+
+/** Local calendar day of a UTC epoch — matches SQLite's localtime bucketing. */
+function localDayKeyOf(epochSeconds: number): string {
+  const value = new Date(epochSeconds * 1000);
+  const pad = (part: number): string => String(part).padStart(2, '0');
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+}

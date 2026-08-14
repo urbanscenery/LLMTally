@@ -29,7 +29,9 @@ export function renderThemePresetsSwift(): string {
       `live: ${hexLiteral(colors.live)}`,
       `warn: ${hexLiteral(colors.warn)}`,
       `crit: ${hexLiteral(colors.crit)}`,
-      `actual: ${hexLiteral(colors.actual)}`,
+      `spend: ${hexLiteral(colors.spend)}`,
+      // surfaces fall back to spend when a palette leaves quota out
+      `quota: ${hexLiteral(colors.quota ?? colors.spend)}`,
       `background: ${hexLiteral(colors.background)}`,
       `dark: ${preset.appearance === 'dark'}`,
     ];

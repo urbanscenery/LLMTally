@@ -65,7 +65,7 @@ public func renderStatusItems(
             }
         case .spacer:
             segments.append(" ")
-        case .quotaMiniBar, .consumedTokenHistory, .actualCostHistory, .agentActive:
+        case .quotaMiniBar, .consumedTokenHistory, .quotaCostHistory, .agentActive:
             // graphical metrics need the image renderer (next phase);
             // text layer honours the unavailable behaviour instead
             if descriptor.unavailableBehavior == "placeholder" {
@@ -242,7 +242,7 @@ public struct SegmentRendering {
 }
 
 public let FOLDABLE_METRICS: Set<MenuItemMetric> = [
-    .quotaReset, .consumedTokenHistory, .actualCostHistory,
+    .quotaReset, .consumedTokenHistory, .quotaCostHistory,
     .providerLabel, .agentActive, .spacer,
 ]
 
@@ -296,7 +296,7 @@ public func renderStatusSegments(
     hourBuckets: [ReportBucketDTO] = [],
     todayAgentRows: [String: Int]? = nil,
     privacy: Bool = false,
-    nominalCost: Bool = false,
+    spendCost: Bool = false,
     now: Date = Date()
 ) -> SegmentRendering {
     var segments: [StatusSegment] = []
@@ -380,8 +380,8 @@ public func renderStatusSegments(
                     "\(names.display(item.snapshot.agent)) \(bar.windowId) \(direction) "
                     + "\(displayPercent(bar))% · \(names.account(item.snapshot.account))")
             }
-        case .consumedTokenHistory, .actualCostHistory:
-            let money = descriptor.metric == .actualCostHistory
+        case .consumedTokenHistory, .quotaCostHistory:
+            let money = descriptor.metric == .quotaCostHistory
             if money && privacy {
                 // costs neutralize under privacy — no spark, no number
                 if descriptor.unavailableBehavior == "placeholder" { append(.placeholder, descriptor.metric) }
@@ -409,14 +409,16 @@ public func renderStatusSegments(
                     : dayBucketsWithin(recentBuckets, days: 7, now: now)
                 rangeLabel = "7d"
             }
+            // spend mode only means something when billed rows exist;
+            // otherwise it would plot a flat false-zero line, so data
+            // decides and the spark falls back to usage
+            let hasSpend = source.contains { $0.spendCost.pricedRows > 0 }
+            let plotSpend = money && spendCost && hasSpend
             let values = source.map { bucket in
                 if !money {
                     return bucket.tokens.inputTokens + bucket.tokens.outputTokens
                 }
-                // the spark follows the same cost mode as the Today
-                // cards; buckets predating nominal support fall back to
-                // actual rather than plotting a false zero
-                let cost = nominalCost ? (bucket.nominal ?? bucket.actual) : bucket.actual
+                let cost = plotSpend ? bucket.spendCost : bucket.quotaCost
                 return cost.usd ?? cost.pricedSubtotalUsd
             }
             if values.count < 2 {
@@ -428,7 +430,7 @@ public func renderStatusSegments(
             append(.spark(values: values, money: money,
                           line: descriptor.presentation == "line"), descriptor.metric)
             tooltip.append(money
-                ? "\(nominalCost ? "Nominal" : "Actual") cost, last \(rangeLabel) (\(values.count) buckets)"
+                ? "\(plotSpend ? "Spend" : "Quota") cost, last \(rangeLabel) (\(values.count) buckets)"
                 : "Consumed tokens, last \(rangeLabel) (\(values.count) buckets)")
         case .agentActive:
             // ledger activity, not quota. nil = no reading yet

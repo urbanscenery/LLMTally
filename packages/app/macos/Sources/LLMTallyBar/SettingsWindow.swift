@@ -42,6 +42,10 @@ enum AppConfig {
     static let criticalKey = "thresholdCritical"
     static let cadenceKey = "refreshCadenceMinutes"
     static let costModeKey = "costMode"
+    /// Weekly-chart line visibility, toggled by clicking the legend.
+    static let weeklyShowTokensKey = "weeklyShowTokens"
+    static let weeklyShowSpendKey = "weeklyShowSpend"
+    static let weeklyShowQuotaKey = "weeklyShowQuota"
 
     static func applyThresholds() {
         let defaults = UserDefaults.standard
@@ -56,8 +60,10 @@ enum AppConfig {
         return value > 0 ? value : 15
     }
 
-    static var nominalMode: Bool {
-        UserDefaults.standard.string(forKey: costModeKey) == "nominal"
+    /// Legacy values ("actual"/"nominal"/"usage") all collapse to quota: they
+    /// each named the quota-valued spark of their era. Spend is opt-in.
+    static var spendMode: Bool {
+        UserDefaults.standard.string(forKey: costModeKey) == "spend"
     }
 }
 
@@ -322,24 +328,24 @@ private struct RefreshPane: View {
 }
 
 private struct CostPane: View {
-    @AppStorage(AppConfig.costModeKey) private var costMode = "actual"
+    @AppStorage(AppConfig.costModeKey) private var costMode = "quota"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Cost").font(.title2.weight(.semibold))
-            Text("Actual and Nominal are never shown side by side. NULL is not zero.")
+            Text("Basis for the menu bar cost metric only. The popover picks per row automatically: $ spend cost when the row billed real money, else ~ quota cost.")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
             HStack {
-                Text("Mode")
+                Text("Menu bar cost")
                 Spacer()
                 Picker("", selection: $costMode) {
-                    Text("Actual").tag("actual")
-                    Text("Nominal").tag("nominal")
+                    Text("Quota").tag("quota")
+                    Text("Spend").tag("spend")
                 }
                 .pickerStyle(.segmented).frame(width: 220)
             }
-            Text("Nominal = API list price equivalent. Subscription usage is not billed at this amount.")
+            Text("Quota cost = list-price valuation of subscription-quota consumption; not billed money. Spend cost = card/prepaid credit; the spark falls back to quota cost while the ledger has no billed rows. The two are never summed. NULL is not zero.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(20)

@@ -10,11 +10,30 @@ public enum MenuItemMetric: String, Codable {
     case quotaUsagePercentage = "quota_usage_percentage"
     case quotaMiniBar = "quota_mini_bar"
     case consumedTokenHistory = "consumed_token_history"
-    case actualCostHistory = "actual_cost_history"
+    case quotaCostHistory = "quota_cost_history"
     case quotaReset = "quota_reset"
     case sourceFreshness = "source_freshness"
     case agentActive = "agent_active"
     case spacer
+
+    /// Loud migration, not a silent alias: earlier saves stored
+    /// `actual_cost_history` (pre-billing-nature) or
+    /// `usage_cost_history` (billing-nature round 1) — both name the
+    /// same quota-valued spark, so they decode into the quota-cost
+    /// metric instead of failing the whole preferences blob.
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if raw == "actual_cost_history" || raw == "usage_cost_history" {
+            self = .quotaCostHistory
+            return
+        }
+        guard let value = MenuItemMetric(rawValue: raw) else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "unknown menu item metric \"\(raw)\""))
+        }
+        self = value
+    }
 }
 
 public enum MenuItemScope: Codable, Equatable {

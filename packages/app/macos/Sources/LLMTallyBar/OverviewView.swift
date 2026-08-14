@@ -64,9 +64,18 @@ struct OverviewView: View {
         .tint(Theme.resolve(themeId).accent)
         .onAppear {
             model.loadOnAppear()
+            // a day drill-down is a transient inspection, not a mode —
+            // reopening the panel starts from the plain overview
+            model.selectDay(nil)
+            model.providerSelectedDay = nil
             if let target = PendingNavigation.consume() {
                 selectedAgent = target
             }
+        }
+        // the selection belongs to one provider's chart — entering,
+        // leaving, or changing providers must not carry it along
+        .onChange(of: selectedAgent) { _ in
+            model.providerSelectedDay = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: .llmtallyKeyCommand)) { notification in
             handleKey(notification.object as? String ?? "")
@@ -92,7 +101,15 @@ struct OverviewView: View {
         switch command {
         case "esc":
             if selectedAgent != nil {
-                selectedAgent = nil
+                // innermost first: close the day drill-down, then leave
+                // the provider page
+                if model.providerSelectedDay != nil {
+                    model.providerSelectedDay = nil
+                } else {
+                    selectedAgent = nil
+                }
+            } else if model.selectedDay != nil {
+                model.selectDay(nil)
             } else {
                 NotificationCenter.default.post(name: .llmtallyClosePopover, object: nil)
             }
@@ -165,6 +182,11 @@ struct OverviewView: View {
                 privacy: privacy,
                 detail: model.providerDetails[agent],
                 switchCooldownUntil: model.switchCooldownUntil,
+                selectedDay: model.providerSelectedDay,
+                dayModels: model.providerSelectedDay.flatMap {
+                    model.providerDayModels["\(agent)|\($0)"]
+                },
+                onSelectDay: { model.selectProviderDay(agent: agent, $0) },
                 onSwitch: { snapshot in
                     guard let accountId = snapshot.accountId else { return }
                     switchIntent = SwitchIntent(
@@ -243,7 +265,20 @@ struct OverviewView: View {
                              privacy: privacy)
                 WeeklyChart(buckets: model.overview?.report.buckets ?? [],
                             privacy: privacy,
-                            hourBuckets: model.hourBuckets)
+                            hourBuckets: model.hourBuckets,
+                            selectedDay: model.selectedDay,
+                            onSelectDay: { model.selectDay($0) })
+                if let day = model.selectedDay {
+                    // a zero-filled chart day has no report bucket —
+                    // selecting it still opens, honestly empty
+                    let bucket = model.overview?.report.buckets.first { $0.key == day }
+                        ?? emptyDayBucket(key: day)
+                    Divider()
+                    DayDetailSection(bucket: bucket,
+                                     report: model.dayReports[day],
+                                     privacy: privacy,
+                                     onClose: { model.selectDay(nil) })
+                }
             }
             .reportsPanelContentHeight()
         }
@@ -575,42 +610,48 @@ struct TodaySection: View {
     let bucket: ReportBucketDTO?
     let totals: ReportBucketDTO?
     var privacy = false
-    @AppStorage(AppConfig.costModeKey) private var costMode = "actual"
-
-    private var nominal: Bool { costMode == "nominal" }
-    private var modeLabel: String { nominal ? "Nominal" : "Actual" }
-    private var cost: CostResultDTO? {
-        guard let bucket else { return nil }
-        return nominal ? bucket.nominal : bucket.actual
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("TODAY · \(modeLabel.uppercased())")
+            Text("TODAY")
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            // quota cost is the one default cost card — a permanent empty
+            // Spend card on a subscription-only ledger would re-create
+            // the old two-card confusion; spend earns its slot only
+            // when the day billed real money (never summed with quota cost)
             HStack(spacing: 8) {
                 card("Prompts", bucket.map { "\($0.rowCount)" } ?? "0", nil)
                 card("Tokens", bucket.map { formatTokens($0.tokens.inputTokens + $0.tokens.outputTokens) } ?? "0", "in + out")
-                card(modeLabel, costText, costNote)
+                card("Quota cost", costText(bucket?.quotaCost, quota: true), quotaNote)
+                if hasSpend {
+                    card("Spend cost", costText(bucket?.spendCost, quota: false), spendNote)
+                }
             }
         }
         .padding(12)
     }
 
-    private var costText: String {
-        if privacy { return "hidden" }
-        guard let cost else { return "—" }
-        if let usd = cost.usd { return formatUsd(usd) }
-        if cost.pricedRows > 0 { return formatUsd(cost.pricedSubtotalUsd) }
-        return "—"
+    private var hasSpend: Bool {
+        guard let spend = bucket?.spendCost else { return false }
+        return spend.pricedRows > 0 || spend.unpricedRows > 0
     }
 
-    private var costNote: String? {
-        if privacy { return "Private metric hidden" }
-        guard let cost else { return nominal ? "list-price equivalent" : nil }
-        if cost.usd != nil { return nominal ? "list-price equivalent" : "billable" }
-        if cost.pricedRows > 0 { return "partial · \(cost.unpricedRows) unpriced" }
-        return "unavailable"
+    private func costText(_ cost: CostResultDTO?, quota: Bool) -> String {
+        if privacy { return "hidden" }
+        return formatCost(cost, quota: quota)
+    }
+
+    // four cards leave ~54pt per note — keep them one short word
+    private var spendNote: String? {
+        if privacy { return "hidden" }
+        guard let cost = bucket?.spendCost else { return nil }
+        if cost.usd != nil { return "billed" }
+        if cost.pricedRows > 0 { return "partial" }
+        return "no billed"
+    }
+
+    private var quotaNote: String? {
+        privacy ? "hidden" : "list-price"
     }
 
     private func card(_ title: String, _ value: String, _ note: String?) -> some View {
@@ -672,28 +713,67 @@ struct FreshnessSummary: View {
 
 // MARK: - Weekly chart
 
-/// "This week" dual line (03_design_spec §3): tokens + Actual over the
-/// last 7 real daily buckets. Each series normalizes to its own max —
-/// never one shared axis. Fewer than 2 real buckets shows
-/// `Not enough history` instead of inventing a trend.
+/// "This week" lines (03_design_spec §3): tokens + quota cost (+ spend when
+/// the week billed real money) over the last 7 calendar days, gaps
+/// zero-filled (no usage IS zero). Tokens normalize to their own max;
+/// the cost lines share one dollar scale. An empty ledger shows
+/// `Not enough history` instead of a flat invented week.
 struct WeeklyChart: View {
     let buckets: [ReportBucketDTO]
     var privacy = false
     /// Hour-grain buckets raise the line resolution (~168 points per
     /// week instead of 7); the day axis labels stay.
     var hourBuckets: [ReportBucketDTO] = []
-    @AppStorage(AppConfig.costModeKey) private var costMode = "actual"
+    /// Day drill-down (main Overview only): the selected day is
+    /// column-highlighted and clicking a column selects/toggles it.
+    var selectedDay: String? = nil
+    var onSelectDay: ((String) -> Void)? = nil
     @AppStorage(Theme.storageKey) private var themeId = "system"
+    // legend clicks toggle lines; remembered, shared by both charts
+    @AppStorage(AppConfig.weeklyShowTokensKey) private var showTokens = true
+    @AppStorage(AppConfig.weeklyShowSpendKey) private var showSpend = true
+    @AppStorage(AppConfig.weeklyShowQuotaKey) private var showQuota = true
 
-    private var nominal: Bool { costMode == "nominal" }
-    private var recent: [ReportBucketDTO] { Array(buckets.suffix(7)) }
-    private var series: [ReportBucketDTO] {
-        hourBuckets.count >= 8 ? Array(hourBuckets.suffix(168)) : recent
+    /// The last 7 real calendar days, zero-filled. Day buckets only
+    /// exist for days with rows, so a sparse agent's `suffix(7)` was
+    /// weeks of scattered days posing as "this week" — a day without
+    /// usage is a zero, not a day to skip.
+    private var recent: [ReportBucketDTO] {
+        let byKey = Dictionary(buckets.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        return (0..<7).reversed().map { offset in
+            let date = Calendar.current.date(byAdding: .day, value: -offset, to: Date()) ?? Date()
+            let key = localDayKey(date)
+            return byKey[key] ?? emptyDayBucket(key: key)
+        }
     }
 
-    private func costOf(_ bucket: ReportBucketDTO) -> Double {
-        let cost = nominal ? bucket.nominal : bucket.actual
-        return cost?.usd ?? cost?.pricedSubtotalUsd ?? 0
+    /// Hour-grain series, zero-filled over the same week for the same
+    /// reason: the line's x axis is index-based, so skipped quiet hours
+    /// would compress time.
+    private var series: [ReportBucketDTO] {
+        guard hourBuckets.count >= 8 else { return recent }
+        let byKey = Dictionary(hourBuckets.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:00"
+        return (0..<168).reversed().map { offset in
+            let date = Calendar.current.date(byAdding: .hour, value: -offset, to: Date()) ?? Date()
+            let key = formatter.string(from: date)
+            return byKey[key] ?? emptyDayBucket(key: key)
+        }
+    }
+
+    // quota cost is the default cost line; the spend line exists only while
+    // the week actually billed money — the two are never summed
+    private func spendOf(_ bucket: ReportBucketDTO) -> Double {
+        bucket.spendCost.usd ?? bucket.spendCost.pricedSubtotalUsd
+    }
+
+    private func quotaCostOf(_ bucket: ReportBucketDTO) -> Double {
+        bucket.quotaCost.usd ?? bucket.quotaCost.pricedSubtotalUsd
+    }
+
+    private var weekHasSpend: Bool {
+        series.contains { $0.spendCost.pricedRows > 0 }
     }
 
     var body: some View {
@@ -701,27 +781,70 @@ struct WeeklyChart: View {
             HStack {
                 Text("THIS WEEK").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
-                if recent.count >= 2 {
-                    legendSwatch(color: Theme.current().accent, label: "tokens")
+                if !buckets.isEmpty {
+                    legendSwatch(color: Theme.current().accent, label: "tokens",
+                                 enabled: showTokens) { showTokens.toggle() }
                     if !privacy {
-                        legendSwatch(color: Theme.current().actual, label: nominal ? "Nominal" : "Actual")
+                        legendSwatch(color: Theme.current().quota, label: "quota",
+                                     enabled: showQuota) { showQuota.toggle() }
+                        if weekHasSpend {
+                            legendSwatch(color: Theme.current().spend, label: "spend",
+                                         enabled: showSpend) { showSpend.toggle() }
+                        }
                     }
                 }
             }
-            if recent.count < 2 {
+            if buckets.isEmpty {
                 Text("Not enough history · snapshot only")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 GeometryReader { geometry in
                     let theme = Theme.current()
                     let tokens = series.map { $0.tokens.inputTokens + $0.tokens.outputTokens }
-                    let prices = series.map { costOf($0) }
+                    let spends = series.map { spendOf($0) }
+                    let quotas = series.map { quotaCostOf($0) }
+                    let drawSpend = showSpend && weekHasSpend
                     ZStack {
-                        linePath(values: tokens, in: geometry.size)
-                            .stroke(theme.accent, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                        // selected day: a soft column behind the lines,
+                        // aligned with the equal-width axis labels
+                        if let selectedDay,
+                           let index = recent.firstIndex(where: { $0.key == selectedDay }) {
+                            let columnWidth = geometry.size.width / CGFloat(recent.count)
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(theme.accent.opacity(0.14))
+                                .frame(width: columnWidth)
+                                .position(x: (CGFloat(index) + 0.5) * columnWidth,
+                                          y: geometry.size.height / 2)
+                        }
+                        if showTokens {
+                            linePath(values: tokens, in: geometry.size)
+                                .stroke(theme.accent, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                        }
                         if !privacy {
-                            linePath(values: prices, in: geometry.size)
-                                .stroke(theme.actual, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                            // the visible cost lines are dollars, so they
+                            // share ONE scale — each on its own max would
+                            // pin both to the top and erase the comparison
+                            let visibleCosts = (drawSpend ? spends : []) + (showQuota ? quotas : [])
+                            let costMax = max(visibleCosts.max() ?? 1, 0.000_001)
+                            if drawSpend {
+                                linePath(values: spends, in: geometry.size, maximum: costMax)
+                                    .stroke(theme.spend, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                            }
+                            if showQuota {
+                                linePath(values: quotas, in: geometry.size, maximum: costMax)
+                                    .stroke(theme.quota, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                            }
+                        }
+                        // one hit column per day so a click anywhere in
+                        // the plot selects the day under the pointer
+                        if onSelectDay != nil {
+                            HStack(spacing: 0) {
+                                ForEach(recent, id: \.key) { bucket in
+                                    Color.clear
+                                        .contentShape(Rectangle())
+                                        .onTapGesture { onSelectDay?(bucket.key) }
+                                }
+                            }
                         }
                     }
                 }
@@ -730,8 +853,13 @@ struct WeeklyChart: View {
                     ForEach(recent, id: \.key) { bucket in
                         Text(String(bucket.key.suffix(5)))
                             .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(bucket.key == selectedDay
+                                ? AnyShapeStyle(Theme.current().accent)
+                                : AnyShapeStyle(.secondary))
+                            .fontWeight(bucket.key == selectedDay ? .semibold : .regular)
                             .frame(maxWidth: .infinity)
+                            .contentShape(Rectangle())
+                            .onTapGesture { onSelectDay?(bucket.key) }
                     }
                 }
             }
@@ -741,17 +869,25 @@ struct WeeklyChart: View {
         .accessibilityLabel(accessibilityText)
     }
 
-    private func legendSwatch(color: Color, label: String) -> some View {
+    /// A legend entry doubles as the line's visibility toggle; a hidden
+    /// line's entry stays in place, dimmed, so it can be brought back.
+    private func legendSwatch(color: Color, label: String,
+                              enabled: Bool = true, onTap: (() -> Void)? = nil) -> some View {
         HStack(spacing: 4) {
             RoundedRectangle(cornerRadius: 1).fill(color).frame(width: 10, height: 2)
             Text(label).font(.caption2).foregroundStyle(.secondary)
         }
+        .opacity(enabled ? 1 : 0.35)
+        .contentShape(Rectangle())
+        .onTapGesture { onTap?() }
+        .help(onTap == nil ? "" : "Click to \(enabled ? "hide" : "show") the \(label) line")
     }
 
-    /// Each series against its own max — the two lines share a canvas,
-    /// not an axis.
-    private func linePath(values: [Double], in size: CGSize) -> Path {
-        let maximum = max(values.max() ?? 1, 0.000_001)
+    /// Tokens against their own max; the two cost lines pass a shared
+    /// `maximum` — same canvas, but dollars keep one axis among
+    /// themselves while tokens keep theirs.
+    private func linePath(values: [Double], in size: CGSize, maximum: Double? = nil) -> Path {
+        let maximum = maximum ?? max(values.max() ?? 1, 0.000_001)
         let count = values.count
         return Path { path in
             for (index, value) in values.enumerated() {
@@ -767,11 +903,203 @@ struct WeeklyChart: View {
     }
 
     private var accessibilityText: String {
-        guard recent.count >= 2, let last = recent.last else { return "Not enough history" }
+        guard !buckets.isEmpty, let last = recent.last else { return "Not enough history" }
         let tokens = formatTokens(last.tokens.inputTokens + last.tokens.outputTokens)
         return privacy
             ? "Weekly tokens, latest \(tokens). Cost hidden."
-            : "Weekly tokens and \(AppConfig.nominalMode ? "nominal" : "actual") cost, latest \(tokens)."
+            : "Weekly tokens and quota cost\(weekHasSpend ? " and spend cost" : ""), latest \(tokens)."
+    }
+}
+
+// MARK: - Model table
+
+/// Fixed-width model breakdown shared by every drill-down (Overview day
+/// cards, provider day section, provider TODAY table). Fixed numeric
+/// columns keep all tables on one grid — per-table content sizing let a
+/// long model name shift the columns from card to card. Rows sort
+/// busiest-first; each shows its primary cost (`$` spend when the row
+/// billed real money, else `~$` quota cost).
+struct ModelTable: View {
+    let models: [ReportBucketDTO]
+    var privacy = false
+
+    private static let promptsWidth: CGFloat = 48
+    private static let tokensWidth: CGFloat = 52
+    private static let costWidth: CGFloat = 62
+
+    private var sorted: [ReportBucketDTO] {
+        models.sorted { lhs, rhs in
+            lhs.rowCount != rhs.rowCount ? lhs.rowCount > rhs.rowCount : lhs.key < rhs.key
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            columns(
+                name: Text("Model"),
+                prompts: Text("Prompts"),
+                tokens: Text("Tokens"),
+                cost: Text("Cost"))
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+            ForEach(sorted, id: \.key) { model in
+                columns(
+                    // model names identify the provider — neutralized
+                    // like accounts (§11)
+                    name: Text(privacy ? "Model hidden" : model.key),
+                    prompts: Text("\(model.rowCount)"),
+                    tokens: Text(formatTokens(model.tokens.inputTokens + model.tokens.outputTokens)),
+                    cost: Text(privacy ? "hidden" : formatPrimaryCost(model)))
+                    .font(.caption2).monospacedDigit()
+            }
+        }
+    }
+
+    private func columns(name: Text, prompts: Text, tokens: Text, cost: Text) -> some View {
+        HStack(spacing: 6) {
+            name.lineLimit(1).truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            prompts.frame(width: Self.promptsWidth, alignment: .trailing)
+            tokens.frame(width: Self.tokensWidth, alignment: .trailing)
+            cost.frame(width: Self.costWidth, alignment: .trailing)
+        }
+    }
+}
+
+// MARK: - Day detail
+
+/// Drill-down for one weekly-chart day: the day's own totals, then one
+/// card per agent with its models nested inside — agents and models
+/// are parent and child, never two parallel lists. Each row shows its
+/// primary cost (spend when the row billed real money, else `~`quota cost);
+/// the day header keeps both bases separate — mixing them in one sum
+/// is a category error.
+struct DayDetailSection: View {
+    let bucket: ReportBucketDTO
+    let report: DayReportDTO?
+    var privacy = false
+    let onClose: () -> Void
+
+    private var agentBuckets: [ReportBucketDTO] {
+        (report?.agents.buckets ?? []).sorted { lhs, rhs in
+            lhs.rowCount != rhs.rowCount ? lhs.rowCount > rhs.rowCount : lhs.key < rhs.key
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("▾ \(bucket.key)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.current().accent)
+                Text("· \(bucket.rowCount) prompts")
+                    .font(.caption)
+                Spacer()
+                Button { onClose() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(HoverActionButtonStyle())
+                    .font(.caption2)
+                    .help("Close day detail (Esc)")
+            }
+            Text(headerLine)
+                .font(.system(size: 10)).monospacedDigit()
+                .foregroundStyle(.secondary)
+            if let report {
+                if agentBuckets.isEmpty {
+                    Text("No usage recorded for this day.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    ForEach(agentBuckets, id: \.key) { agent in
+                        agentCard(agent, models: report.modelsByAgent[agent.key]?.buckets ?? [])
+                    }
+                }
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading day breakdown…").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+    }
+
+    private var headerLine: String {
+        let tokens = "in \(formatTokens(bucket.tokens.inputTokens)) · out \(formatTokens(bucket.tokens.outputTokens))"
+        if privacy { return tokens }
+        let quota = "quota \(formatCost(bucket.quotaCost, quota: true))"
+        let spend = bucket.spendCost.pricedRows > 0 || bucket.spendCost.unpricedRows > 0
+            ? " · spend \(formatCost(bucket.spendCost, quota: false))"
+            : ""
+        return "\(quota)\(spend) · \(tokens)"
+    }
+
+    private func agentCard(_ agent: ReportBucketDTO, models: [ReportBucketDTO]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(agentDisplayName(agent.key)).font(.caption.weight(.semibold))
+                Text("· \(agent.rowCount) prompts").font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                Text(privacy ? "hidden" : formatPrimaryCost(agent))
+                    .font(.caption2.weight(.semibold)).monospacedDigit()
+            }
+            if !models.isEmpty {
+                ModelTable(models: models, privacy: privacy)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+    }
+}
+
+// MARK: - Provider day detail
+
+/// Drill-down for one day on the provider's weekly chart: that day's
+/// totals for this agent plus its per-model table — the provider-scoped
+/// sibling of the Overview's DayDetailSection, same layout and widths.
+struct ProviderDaySection: View {
+    let day: String
+    /// The agent's own day bucket (totals line); nil when the ledger
+    /// has no rows for this agent that day.
+    let bucket: ReportBucketDTO?
+    /// nil = still loading; empty = loaded, nothing that day.
+    let models: [ReportBucketDTO]?
+    var privacy = false
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("▾ \(day)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.current().accent)
+                if let bucket {
+                    Text("· \(bucket.rowCount) prompts").font(.caption)
+                }
+                Spacer()
+                if let bucket {
+                    Text(privacy ? "hidden" : formatPrimaryCost(bucket))
+                        .font(.caption2.weight(.semibold)).monospacedDigit()
+                }
+                Button { onClose() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(HoverActionButtonStyle())
+                    .font(.caption2)
+                    .help("Close day detail (Esc)")
+            }
+            if let models {
+                if models.isEmpty {
+                    Text("No usage recorded for this day.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    ModelTable(models: models, privacy: privacy)
+                }
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading day breakdown…").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
     }
 }
 
@@ -785,6 +1113,11 @@ struct ProviderDetailView: View {
     var detail: OverviewModel.ProviderDetailData?
     /// Claude switch settle window — Switch buttons count down while open.
     var switchCooldownUntil: Date?
+    /// Chart-day drill-down, mirroring the Overview's: the selected day
+    /// and its model buckets (nil while loading).
+    var selectedDay: String? = nil
+    var dayModels: [ReportBucketDTO]? = nil
+    var onSelectDay: ((String?) -> Void)? = nil
     let onSwitch: (QuotaSnapshotDTO) -> Void
 
     var body: some View {
@@ -815,33 +1148,23 @@ struct ProviderDetailView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("TODAY · BY MODEL")
                         .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                    Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 4) {
-                        GridRow {
-                            Text("Model").gridColumnAlignment(.leading)
-                            Text("Prompts").gridColumnAlignment(.trailing)
-                            Text("Tokens").gridColumnAlignment(.trailing)
-                            Text(AppConfig.nominalMode ? "Nominal" : "Actual").gridColumnAlignment(.trailing)
-                        }
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        ForEach(detail.modelBuckets, id: \.key) { bucket in
-                            GridRow {
-                                // model names identify the provider —
-                                // neutralized like accounts (§11)
-                                Text(privacy ? "Model hidden" : bucket.key).lineLimit(1)
-                                Text("\(bucket.rowCount)")
-                                Text(formatTokens(bucket.tokens.inputTokens + bucket.tokens.outputTokens))
-                                Text(modelActual(bucket))
-                            }
-                            .font(.caption2).monospacedDigit()
-                        }
-                    }
+                    ModelTable(models: detail.modelBuckets, privacy: privacy)
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
             }
             WeeklyChart(buckets: detail.dayBuckets, privacy: privacy,
-                        hourBuckets: detail.hourBuckets)
+                        hourBuckets: detail.hourBuckets,
+                        selectedDay: selectedDay,
+                        onSelectDay: { onSelectDay?($0) })
+            if let day = selectedDay {
+                Divider()
+                ProviderDaySection(day: day,
+                                   bucket: detail.dayBuckets.first { $0.key == day },
+                                   models: dayModels,
+                                   privacy: privacy,
+                                   onClose: { onSelectDay?(nil) })
+            }
             HStack {
                 // plain label: the TUI has no deep link, so naming the
                 // provider promised a context the button cannot pass
@@ -866,15 +1189,6 @@ struct ProviderDetailView: View {
             ($0.snapshot.account ?? $0.snapshot.accountId ?? "")
                 < ($1.snapshot.account ?? $1.snapshot.accountId ?? "")
         }
-    }
-
-    private func modelActual(_ bucket: ReportBucketDTO) -> String {
-        if privacy { return "hidden" }
-        let cost = AppConfig.nominalMode ? bucket.nominal : .some(bucket.actual)
-        guard let cost else { return "—" }
-        if let usd = cost.usd { return formatUsd(usd) }
-        if cost.pricedRows > 0 { return formatUsd(cost.pricedSubtotalUsd) }
-        return "—"
     }
 
     @ViewBuilder
