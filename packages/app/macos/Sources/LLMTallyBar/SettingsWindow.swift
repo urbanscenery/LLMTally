@@ -541,12 +541,25 @@ private struct AppearancePane: View {
                             .foregroundStyle(themeId == theme.id ? theme.accent : .secondary)
                         Text(theme.name)
                         Spacer()
+                        // the swatches preview what the theme actually
+                        // paints: first the chart identity (tokens /
+                        // quota cost / spend cost — the weekly lines),
+                        // then the state ramp. The old row showed only
+                        // states + accent, so the chart hues it omitted
+                        // looked mismatched next to the real chart.
                         HStack(spacing: 4) {
-                            Circle().fill(theme.live).frame(width: 10, height: 10)
-                            Circle().fill(theme.warn).frame(width: 10, height: 10)
-                            Circle().fill(theme.crit).frame(width: 10, height: 10)
                             Circle().fill(theme.accent).frame(width: 10, height: 10)
+                            Circle().fill(theme.quota).frame(width: 10, height: 10)
+                            Circle().fill(theme.spend).frame(width: 10, height: 10)
                         }
+                        .help("Chart lines · tokens / quota cost / spend cost")
+                        HStack(spacing: 4) {
+                            Circle().fill(theme.live).frame(width: 8, height: 8)
+                            Circle().fill(theme.warn).frame(width: 8, height: 8)
+                            Circle().fill(theme.crit).frame(width: 8, height: 8)
+                        }
+                        .padding(.leading, 6)
+                        .help("States · live / warning / critical")
                     }
                     .contentShape(Rectangle())
                 }
