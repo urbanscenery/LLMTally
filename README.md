@@ -46,7 +46,7 @@ bun install -g llmtally     # 또는 npm install -g llmtally (실행엔 Bun 필�
 ```bash
 llmtally                          # 대시보드 진입 (그 자체가 전부입니다)
 llmtally --theme tokyo-night      # App 팔레트 + Catppuccin / mono. p 로 고름
-llmtally --chart braille          # 일별 차트 2배 밀도 (기본 block)
+llmtally --chart heatmap          # 차트 스타일: block·braille·heatmap (g 로 고름, 기억됨)
 llmtally --refresh 300            # 자동 새로고침 초기값(초, 최소 30)
 llmtally --db /path/ledger.db     # 원장 경로 지정
 ```
@@ -56,7 +56,7 @@ llmtally --db /path/ledger.db     # 원장 경로 지정
 
 | 탭 | 내용 |
 |---|---|
-| `1` Overview | 일별 토큰 차트, Actual/Nominal 비용 |
+| `1` Overview | 일별 토큰 차트(막대·라인·히트맵), quota/spend cost, ↓·클릭으로 날짜별 상세 |
 | `2` Accounts | 계정별 쿼터 + 볼트 관리(추가·전환·제거) |
 | `3` Agents / `4` Models | 에이전트·모델별 집계 (정렬 가능). Models에서 `↑↓`+`Enter`로 모델을 열면 최신순 프롬프트 목록 |
 | `5` Search | 프롬프트 전문 검색 (`/`로 입력) |
@@ -132,14 +132,14 @@ projects·settings·히스토리는 그대로 유지됩니다.
   (retention·삭제가 남긴 공간 회수 — Doctor가 회수 가능분을 표시하고 커지면 권고합니다)
 - **마우스**: 탭 이름 클릭으로 탭 전환, 휠로 목록 스크롤, Models 표·프롬프트 목록에서 행 클릭으로 선택
   (클릭은 선택만 하며 실행은 `Enter` — 실수로 되돌리기 어려운 동작이 시작되지 않도록)
-- Agents/Models 탭에서 `d`(rows)/`c`(actual cost)/`t`(input tokens) 정렬,
+- Agents/Models 탭에서 `d`(rows)/`c`(cost)/`t`(input tokens) 정렬,
   같은 키 재입력 시 방향 토글 — 헤더에 `↑`/`↓` 표시
 - 쿼터는 **스캔과 별개로** Accounts 탭이 열려 있는 동안 180초마다 갱신됩니다 (vendor의
   토큰당 요청 예산 안에 들도록 — 스캔은 수천 개 파일을 훑는 무거운 작업이라 주기가 다릅니다).
   다른 탭에 있으면 네트워크를 쓰지 않습니다
 - 시작·주기·`r` 시점에 증분 스캔 후 활성 탭만 다시 조회합니다. daemon이 스캔 락을 잡고
   있으면 `scan busy`로 표시하고 기존 원장으로 계속 동작합니다 (실패해도 마지막 정상 화면 유지)
-- Actual은 `$`, Nominal은 `~$` 접두사로 구조적으로 구분 — `NO_COLOR=1`(또는 `--theme mono`)
+- spend cost는 `$`, quota cost는 `~$` 접두사로 구조적으로 구분 — `NO_COLOR=1`(또는 `--theme mono`)
   에서도 굵기·기호만으로 판별됩니다. 쿼터 게이지는 80% 초과 `[!]`, 95% 초과 `[!!]` + 색 램프
 - 내장 테마는 App과 같은 에디터 팔레트(다크 9 + 라이트 9)와 Catppuccin Mocha 기본값입니다.
   다크는 전경만 칠해 터미널 배경(투명 포함)을 존중하고, `p` 피커에서 면을 칠할 수 있습니다.
@@ -156,9 +156,20 @@ projects·settings·히스토리는 그대로 유지됩니다.
 
 ### 비용 표기의 의미
 
-- **Actual USD**: 소스가 직접 기록한 실지출 (OpenCode/Cline의 `cost_usd`)
-- **Nominal API-eq USD**: 구독제(Claude Code, Codex) 사용분을 **리포트 실행 시점의 API 요율**로
-  환산한 명목치 — 실지출이 아니며, 두 값은 절대 합산되지 않습니다
+비용의 1축은 **정산 성격(billing nature)**입니다 — 값의 출처(소스 기록 vs 계산)가 아니라
+그 돈이 실제로 나갔는지가 기준입니다. **cost**는 두 축을 아우르는 상위어로,
+이름만 합칠 뿐 숫자는 절대 합산하지 않습니다:
+
+- **Quota cost (`~$`)**: 구독·무료 쿼터 소모의 **정가 환산 명목치** — 실지출이 아닙니다.
+  구독제(Claude Code, Codex, Antigravity)의 계산치와 쿼터 상품(Grok Build,
+  OpenCode Go, ClinePass)이 소스에 기록한 값이 같은 통으로 합산됩니다.
+  단, 출처별 환산 기준(리포트 시점 정가 / 사용 당시 정가 / 쿼터 회계 단위)은 다릅니다
+- **Spend cost (`$`)**: 카드/선결제 크레딧에서 **실제 지출된 돈**. 해당 행이 없으면
+  카드·컬럼 자체가 표시되지 않습니다. quota cost와 spend cost는 절대 합산되지 않습니다
+- **Unclassified (`?$`)**: 정산 방식을 알 수 없는 (agent, provider) 행 — 어느 합계에도
+  넣지 않고 행 수·기록 금액을 각주로 보여줍니다
+- 분류 오버라이드: `~/.llmtally/config.json`의 `billing.overrides`
+  (`{"billing":{"overrides":{"claude-code/*":"spend"}}}` — API key로 쓰는 경우 등)
 - 가격표는 LiteLLM(기본) + OpenRouter(보조)에서 1시간 TTL로 캐시하며, 오프라인에서도
   stale 캐시로 리포트가 동작합니다 (미해석 모델은 토큰만 표시)
 - 모델 별칭·가격 오버라이드: `~/.llmtally/config.json`의 `pricing.modelAliases` / `pricing.priceOverrides`

@@ -12,8 +12,8 @@ const COLUMNS = [
   'Cache Write',
   'Output',
   'Reasoning',
-  'Actual USD',
-  'Nominal API-eq USD',
+  'Spend USD',
+  'Quota USD',
   'Unpriced',
 ] as const;
 
@@ -33,10 +33,16 @@ export function renderReportText(summary: ReportSummary): string {
   const table = renderTable([Array.from(COLUMNS), ...rows]);
   const legend = [
     '',
-    'Actual USD: source-reported billed cost (OpenCode/Cline).',
-    'Nominal API-eq USD: current API-rate equivalent for subscription usage; NOT actual spend.',
+    'Spend USD: spend cost — real money billed (API key / prepaid credit).',
+    'Quota USD: quota cost — list-price valuation of subscription-quota consumption; NOT billed money.',
+    '  (valuation bases differ per source: report-time list price, stamped-at-use price, or quota accounting units)',
     '* marks a priced subtotal: unpriced rows are excluded from the amount.',
   ];
+  if (summary.totals.unknownRows > 0) {
+    legend.push(
+      `Unclassified: ${formatCount(summary.totals.unknownRows)} rows carrying $${summary.totals.unknownUsd.toFixed(USD_DECIMALS)} stamped — excluded from both totals; classify via billing.overrides in config.json.`,
+    );
+  }
   return [...header, ...table, ...legend].join('\n');
 }
 
@@ -50,7 +56,7 @@ export function collectWarningLines(summary: ReportSummary): readonly string[] {
   for (const message of summary.pricing.warnings) {
     lines.push(sanitizeCell(`warning: ${message}`));
   }
-  for (const warning of [...summary.totals.actual.warnings, ...summary.totals.nominal.warnings]) {
+  for (const warning of [...summary.totals.spendCost.warnings, ...summary.totals.quotaCost.warnings]) {
     const line = sanitizeCell(
       `warning: ${warning.code} for model "${warning.model}" (${warning.rows} rows)`,
     );
@@ -70,8 +76,8 @@ function bucketCells(bucket: ReportBucket): string[] {
     formatCount(bucket.tokens.cacheWrite),
     formatCount(bucket.tokens.outputTokens),
     formatCount(bucket.tokens.reasoningTokens),
-    formatCost(bucket.actual),
-    formatCost(bucket.nominal),
+    formatCost(bucket.spendCost),
+    formatCost(bucket.quotaCost),
     formatCount(bucket.unpricedRows),
   ];
 }

@@ -118,8 +118,9 @@ function deps(overrides: Record<string, unknown> = {}) {
 }
 
 describe('generateReport', () => {
-  test('buckets by local day and separates actual from nominal costs', async () => {
-    // Arrange
+  test('buckets by local day and folds every quota-settled dollar into quota cost', async () => {
+    // Arrange — computed (claude/codex) and source-stamped (opencode-go)
+    // rows are all subscription quota, so they share ONE usage total
     const path = seedLedger([
       { tsUtc: AUG9_LATE, agent: 'claude-code', provider: 'anthropic', model: 'claude-fable-5', input: 1000, output: 200, cacheWrite: 100, cacheRead: 5000 },
       { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'gpt-5.5', input: 6000, output: 100, cacheRead: 5000 },
@@ -134,12 +135,72 @@ describe('generateReport', () => {
     const day1 = summary.buckets[0];
     const day2 = summary.buckets[1];
     // claude: 1000*1e-5 + 200*5e-5 + 5000*1e-6 + 100*1.25e-5
-    expect(day1?.nominal.usd).toBeCloseTo(0.02625, 10);
-    // codex: (6000-5000)*5e-6 + 100*3e-5 + 5000*5e-7
-    expect(day2?.nominal.usd).toBeCloseTo(0.0105, 10);
-    expect(day2?.actual.usd).toBe(0.125);
-    expect(summary.totals.actual.usd).toBe(0.125);
-    expect(summary.totals.nominal.usd).toBeCloseTo(0.03675, 10);
+    expect(day1?.quotaCost.usd).toBeCloseTo(0.02625, 10);
+    // codex computed + opencode stamped, same settlement → one bucket
+    expect(day2?.quotaCost.usd).toBeCloseTo(0.0105 + 0.125, 10);
+    expect(summary.totals.quotaCost.usd).toBeCloseTo(0.03675 + 0.125, 10);
+    // no spend evidence anywhere: zero rows, not a zero-dollar total
+    expect(summary.totals.spendCost.pricedRows).toBe(0);
+    expect(summary.totals.spendCost.unpricedRows).toBe(0);
+    expect(summary.totals.spendCost.usd).toBeNull();
+    expect(summary.totals.unknownRows).toBe(0);
+    expect(summary.totals.unpricedRows).toBe(0);
+  });
+
+  test('billing override reroutes a computed agent to spend (API-key user)', async () => {
+    // Arrange — the same claude row, but the user asserts API-key billing
+    const path = seedLedger([
+      { tsUtc: AUG10_EARLY, agent: 'claude-code', provider: 'anthropic', model: 'claude-fable-5', input: 1000, output: 200, cacheWrite: 100, cacheRead: 5000 },
+    ]);
+    const configPath = join(makeTempDir(), 'config.json');
+    await Bun.write(
+      configPath,
+      JSON.stringify({ billing: { overrides: { 'claude-code/anthropic': 'spend' } } }),
+    );
+
+    // Act
+    const summary = await generateReport(request(path), deps({ configPath }));
+
+    // Assert — computed at list price, but settled as real money
+    expect(summary.totals.spendCost.usd).toBeCloseTo(0.02625, 10);
+    expect(summary.totals.quotaCost.pricedRows).toBe(0);
+  });
+
+  test('billing override reroutes a stamped provider to spend', async () => {
+    // Arrange — hypothetical PAYG provider the default table cannot know
+    const path = seedLedger([
+      { tsUtc: AUG10_EARLY, agent: 'opencode', provider: 'openrouter', model: 'kimi-k3', input: 10, output: 5, cost: 0.7 },
+    ]);
+    const configPath = join(makeTempDir(), 'config.json');
+    await Bun.write(
+      configPath,
+      JSON.stringify({ billing: { overrides: { 'opencode/openrouter': 'spend' } } }),
+    );
+
+    // Act
+    const summary = await generateReport(request(path), deps({ configPath }));
+
+    // Assert — the stamped dollars move buckets, never get repriced
+    expect(summary.totals.spendCost.usd).toBe(0.7);
+    expect(summary.totals.quotaCost.pricedRows).toBe(0);
+    expect(summary.totals.unknownRows).toBe(0);
+  });
+
+  test('unlisted providers are counted as unclassified, never guessed into a total', async () => {
+    // Arrange — provider the default table does not know
+    const path = seedLedger([
+      { tsUtc: AUG10_EARLY, agent: 'opencode', provider: 'anthropic', model: 'claude-fable-5', input: 10, output: 5, cost: 0.5 },
+      { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'gpt-5.5', input: 100, output: 10 },
+    ]);
+
+    // Act
+    const summary = await generateReport(request(path), deps());
+
+    // Assert — stamped amount visible as unknown, absent from both totals
+    expect(summary.totals.unknownRows).toBe(1);
+    expect(summary.totals.unknownUsd).toBe(0.5);
+    expect(summary.totals.quotaCost.pricedRows).toBe(1);
+    expect(summary.totals.spendCost.pricedRows).toBe(0);
     expect(summary.totals.unpricedRows).toBe(0);
   });
 
@@ -153,13 +214,13 @@ describe('generateReport', () => {
     // Act
     const summary = await generateReport(request(path), deps());
 
-    // Assert — full nominal total is null but the priced subtotal survives
-    expect(summary.totals.nominal.usd).toBeNull();
-    expect(summary.totals.nominal.pricedSubtotalUsd).toBeGreaterThan(0);
-    expect(summary.totals.nominal.unpricedRows).toBe(1);
+    // Assert — full usage total is null but the priced subtotal survives
+    expect(summary.totals.quotaCost.usd).toBeNull();
+    expect(summary.totals.quotaCost.pricedSubtotalUsd).toBeGreaterThan(0);
+    expect(summary.totals.quotaCost.unpricedRows).toBe(1);
     expect(summary.totals.unpricedModels).toContain('unknown');
     expect(
-      summary.totals.nominal.warnings.some((warning) => warning.code === 'unknown_model'),
+      summary.totals.quotaCost.warnings.some((warning) => warning.code === 'unknown_model'),
     ).toBe(true);
   });
 
@@ -174,7 +235,7 @@ describe('generateReport', () => {
     const summary = await generateReport(request(path), deps());
 
     // Assert — 1000*1e-6 (base) + 200000*1e-5 (above-100k tier), not a single blended rate
-    expect(summary.totals.nominal.usd).toBeCloseTo(0.001 + 2.0, 10);
+    expect(summary.totals.quotaCost.usd).toBeCloseTo(0.001 + 2.0, 10);
   });
 
   test('offline with no cache keeps the report alive with token-only output', async () => {
@@ -191,7 +252,7 @@ describe('generateReport', () => {
 
     // Assert
     expect(summary.pricing.status).toBe('absent');
-    expect(summary.totals.nominal.usd).toBeNull();
+    expect(summary.totals.quotaCost.usd).toBeNull();
     expect(summary.totals.rowCount).toBe(1);
     expect(summary.pricing.warnings.some((w) => w.includes('refresh failed'))).toBe(true);
   });
@@ -267,37 +328,43 @@ describe('generateReport', () => {
 
     // Assert — valid row priced ((20000-5000)*5e-6 + 10*3e-5 + 5000*5e-7),
     // invalid row unpriced instead of blending into the sum
-    expect(summary.totals.nominal.usd).toBeNull();
-    expect(summary.totals.nominal.pricedRows).toBe(1);
-    expect(summary.totals.nominal.unpricedRows).toBe(1);
-    expect(summary.totals.nominal.pricedSubtotalUsd).toBeCloseTo(0.0778, 10);
+    expect(summary.totals.quotaCost.usd).toBeNull();
+    expect(summary.totals.quotaCost.pricedRows).toBe(1);
+    expect(summary.totals.quotaCost.unpricedRows).toBe(1);
+    expect(summary.totals.quotaCost.pricedSubtotalUsd).toBeCloseTo(0.0778, 10);
     expect(
-      summary.totals.nominal.warnings.some(
+      summary.totals.quotaCost.warnings.some(
         (warning) => warning.code === 'invalid_token_semantics',
       ),
     ).toBe(true);
   });
 
-  test('actual and nominal warnings never contaminate each other', async () => {
-    // Arrange — an opencode row without cost AND an unknown codex model
+  test('quota-cost and spend-cost warnings never contaminate each other', async () => {
+    // Arrange — a quota row without stamped cost AND a spend-overridden
+    // row with an unknown model
     const path = seedLedger([
       { tsUtc: AUG10_EARLY, agent: 'opencode', provider: 'opencode-go', model: 'kimi-k3', input: 1, output: 1, cost: null },
       { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'unknown', input: 1, output: 1 },
     ]);
+    const configPath = join(makeTempDir(), 'config.json');
+    await Bun.write(
+      configPath,
+      JSON.stringify({ billing: { overrides: { 'codex/openai': 'spend' } } }),
+    );
 
     // Act
-    const summary = await generateReport(request(path), deps());
+    const summary = await generateReport(request(path), deps({ configPath }));
 
     // Assert
-    expect(summary.totals.actual.warnings.map((warning) => warning.code)).toEqual([
+    expect(summary.totals.quotaCost.warnings.map((warning) => warning.code)).toEqual([
       'missing_authoritative_cost',
     ]);
-    expect(summary.totals.nominal.warnings.map((warning) => warning.code)).toEqual([
+    expect(summary.totals.spendCost.warnings.map((warning) => warning.code)).toEqual([
       'unknown_model',
     ]);
   });
 
-  test('opencode rows missing cost are reported as partial actuals', async () => {
+  test('quota rows missing their stamped cost are reported as partial quota cost', async () => {
     // Arrange
     const path = seedLedger([
       { tsUtc: AUG10_EARLY, agent: 'opencode', provider: 'opencode-go', model: 'kimi-k3', input: 1, output: 1, cost: 0.5 },
@@ -308,10 +375,10 @@ describe('generateReport', () => {
     const summary = await generateReport(request(path), deps());
 
     // Assert
-    expect(summary.totals.actual.usd).toBeNull();
-    expect(summary.totals.actual.pricedSubtotalUsd).toBe(0.5);
+    expect(summary.totals.quotaCost.usd).toBeNull();
+    expect(summary.totals.quotaCost.pricedSubtotalUsd).toBe(0.5);
     expect(
-      summary.totals.actual.warnings.some(
+      summary.totals.quotaCost.warnings.some(
         (warning) => warning.code === 'missing_authoritative_cost',
       ),
     ).toBe(true);

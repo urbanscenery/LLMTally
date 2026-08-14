@@ -21,8 +21,8 @@ export interface ThemePalette {
   readonly ok: string;
   readonly warn: string;
   readonly crit: string;
-  readonly actualCost: string;
-  readonly nominalCost: string;
+  readonly spendCost: string;
+  readonly quotaCost: string;
 }
 
 export interface ThemeDefinition {
@@ -76,8 +76,8 @@ function fromPreset(preset: ThemePreset): ThemeDefinition {
       ok: colors.live,
       warn: colors.warn,
       crit: colors.crit,
-      actualCost: colors.actual,
-      nominalCost: colors.nominal ?? colors.actual,
+      spendCost: colors.spend,
+      quotaCost: colors.quota ?? colors.spend,
     },
     ramps: {
       quota: [colors.live, colors.warn, colors.crit],
@@ -125,11 +125,11 @@ export const MONO_THEME: ResolvedTheme = {
 function attributesFor(role: ThemeRole): { bold?: boolean; dim?: boolean } {
   switch (role) {
     case 'selected':
-    case 'actualCost':
+    case 'spendCost':
     case 'tableHeader':
     case 'key':
       return { bold: true };
-    case 'nominalCost':
+    case 'quotaCost':
     case 'dim':
     case 'muted':
     case 'meterTrack':
@@ -157,8 +157,8 @@ export function resolveTheme(
     success: palette.ok,
     warning: palette.warn,
     danger: palette.crit,
-    actualCost: palette.actualCost,
-    nominalCost: palette.nominalCost,
+    spendCost: palette.spendCost,
+    quotaCost: palette.quotaCost,
     meterTrack: palette.dim,
     tableHeader: palette.secondary,
     sortIndicator: palette.accent,

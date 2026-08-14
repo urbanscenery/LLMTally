@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   isSourceAuthoritative,
   minTierThreshold,
-  nominalUsdFor,
+  listPriceUsdFor,
   selectTierRates,
 } from '@llmtally/core/pricing/calculator.ts';
 import type { PriceRates, PriceRecord, TokenTotals } from '@llmtally/core/pricing/types.ts';
@@ -26,10 +26,10 @@ function tokens(overrides: Partial<TokenTotals> = {}): TokenTotals {
   };
 }
 
-describe('nominalUsdFor', () => {
+describe('listPriceUsdFor', () => {
   test('claude prices all four dimensions and never re-prices reasoning', () => {
     // Act
-    const outcome = nominalUsdFor('claude-code', tokens(), rates);
+    const outcome = listPriceUsdFor('claude-code', tokens(), rates);
 
     // Assert — 1000*1e-5 + 200*5e-5 + 5000*1e-6 + 100*1.25e-5
     expect(outcome).toEqual({ ok: true, usd: 0.01 + 0.01 + 0.005 + 0.00125 });
@@ -37,7 +37,7 @@ describe('nominalUsdFor', () => {
 
   test('codex subtracts cached input from the base input tokens', () => {
     // Act
-    const outcome = nominalUsdFor('codex', tokens({ inputTokens: 6000 }), rates);
+    const outcome = listPriceUsdFor('codex', tokens({ inputTokens: 6000 }), rates);
 
     // Assert — (6000-5000)*1e-5 + 200*5e-5 + 5000*1e-6 + 100*1.25e-5
     expect(outcome).toEqual({ ok: true, usd: 0.01 + 0.01 + 0.005 + 0.00125 });
@@ -45,7 +45,7 @@ describe('nominalUsdFor', () => {
 
   test('codex input smaller than cache read refuses instead of clamping', () => {
     // Act & Assert
-    expect(nominalUsdFor('codex', tokens({ inputTokens: 100 }), rates)).toEqual({
+    expect(listPriceUsdFor('codex', tokens({ inputTokens: 100 }), rates)).toEqual({
       ok: false,
       code: 'invalid_token_semantics',
     });
@@ -57,23 +57,23 @@ describe('nominalUsdFor', () => {
     const noCacheWrite = { ...rates, cacheWriteUsdPerToken: null };
 
     // Act & Assert
-    expect(nominalUsdFor('claude-code', tokens(), noCacheRead)).toEqual({
+    expect(listPriceUsdFor('claude-code', tokens(), noCacheRead)).toEqual({
       ok: false,
       code: 'missing_cache_read_rate',
     });
-    expect(nominalUsdFor('claude-code', tokens(), noCacheWrite)).toEqual({
+    expect(listPriceUsdFor('claude-code', tokens(), noCacheWrite)).toEqual({
       ok: false,
       code: 'missing_cache_write_rate',
     });
     expect(
-      nominalUsdFor('claude-code', tokens({ cacheWrite: 0, cacheRead: 0 }), noCacheWrite),
+      listPriceUsdFor('claude-code', tokens({ cacheWrite: 0, cacheRead: 0 }), noCacheWrite),
     ).toMatchObject({ ok: true });
   });
 
-  test('source-authoritative and unknown agents are never nominally priced', () => {
+  test('source-authoritative and unknown agents are never list-priced here', () => {
     // Act & Assert
-    expect(nominalUsdFor('opencode', tokens(), rates)).toEqual({ ok: false, code: 'price_not_found' });
-    expect(nominalUsdFor('someday-agent', tokens(), rates)).toEqual({ ok: false, code: 'price_not_found' });
+    expect(listPriceUsdFor('opencode', tokens(), rates)).toEqual({ ok: false, code: 'price_not_found' });
+    expect(listPriceUsdFor('someday-agent', tokens(), rates)).toEqual({ ok: false, code: 'price_not_found' });
     expect(isSourceAuthoritative('opencode')).toBe(true);
     expect(isSourceAuthoritative('codex')).toBe(false);
   });

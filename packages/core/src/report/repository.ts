@@ -45,8 +45,8 @@ interface AggregateSqlRow {
   readonly cache_write: number;
   readonly cache_read: number;
   readonly reasoning_tokens: number;
-  readonly actual_cost_usd: number | null;
-  readonly actual_cost_rows: number;
+  readonly stamped_cost_usd: number | null;
+  readonly stamped_cost_rows: number;
   readonly max_input_tokens: number;
   readonly invalid_semantics_rows: number;
 }
@@ -95,8 +95,8 @@ export class SqliteReportRepository {
         SUM(cache_write) AS cache_write,
         SUM(cache_read) AS cache_read,
         SUM(reasoning_tokens) AS reasoning_tokens,
-        SUM(cost_usd) AS actual_cost_usd,
-        COUNT(cost_usd) AS actual_cost_rows,
+        SUM(cost_usd) AS stamped_cost_usd,
+        COUNT(cost_usd) AS stamped_cost_rows,
         MAX(input_tokens) AS max_input_tokens,
         SUM(CASE WHEN agent = 'codex' AND input_tokens < cache_read THEN 1 ELSE 0 END)
           AS invalid_semantics_rows
@@ -118,8 +118,8 @@ export class SqliteReportRepository {
         cacheRead: row.cache_read,
         reasoningTokens: row.reasoning_tokens,
       },
-      actualCostUsd: row.actual_cost_usd,
-      actualCostRows: row.actual_cost_rows,
+      stampedCostUsd: row.stamped_cost_usd,
+      stampedCostRows: row.stamped_cost_rows,
       maxInputTokens: row.max_input_tokens,
       invalidSemanticsRows: row.invalid_semantics_rows,
     }));

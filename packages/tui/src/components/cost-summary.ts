@@ -1,61 +1,81 @@
-import { formatCompact } from '../format.ts';
+import { formatCompact, formatUsdAmount } from '../format.ts';
 import { joinColumns, renderCard } from './card.ts';
 import { joinLine, span } from '../rich-text.ts';
 import type { RichLine } from '../rich-text.ts';
 import { formatCostCell } from '../view-model/cost.ts';
 import type { OverviewViewModel } from '../view-model/overview.ts';
 
-export const NOMINAL_DISCLAIMER =
-  '* Nominal = API-equivalent value at public list prices; subscription usage is not billed at this amount.';
+export const QUOTA_COST_DISCLAIMER =
+  '~ Quota cost = list-price valuation of subscription-quota consumption; not billed money. Valuation bases differ per source.';
 
 const CARD_WIDTH = 38;
 const STACK_BREAKPOINT = 82;
 
-function actualContent(model: OverviewViewModel): RichLine[] {
-  const cost = model.totals.actual;
-  return [
-    joinLine(span(formatCostCell(cost), 'actualCost')),
-    joinLine(
-      span(
-        cost.pricedRows === 0 ? 'no source-billed rows' : `${cost.pricedRows} source-billed rows`,
-        'muted',
-      ),
-    ),
-  ];
-}
-
-function nominalContent(model: OverviewViewModel): RichLine[] {
-  const cost = model.totals.nominal;
+function quotaCostContent(model: OverviewViewModel): RichLine[] {
+  const cost = model.totals.quotaCost;
   const note = cost.partial
     ? `partial: ${cost.unpricedRows} rows unpriced`
     : cost.pricedRows === 0
       ? 'no priceable rows'
-      : `${cost.pricedRows} rows at list prices`;
+      : `${cost.pricedRows} rows quota-valued`;
   return [
-    joinLine(span(formatCostCell(cost), 'nominalCost')),
+    joinLine(span(formatCostCell(cost), 'quotaCost')),
     joinLine(span(note, 'muted')),
   ];
 }
 
+function spendContent(model: OverviewViewModel): RichLine[] {
+  const cost = model.totals.spendCost;
+  const note = cost.partial
+    ? `partial: ${cost.unpricedRows} rows unpriced`
+    : `${cost.pricedRows} billed rows`;
+  return [
+    joinLine(span(formatCostCell(cost), 'spendCost')),
+    joinLine(span(note, 'muted')),
+  ];
+}
+
+/** True when any row settled as real money (spend card earns its slot). */
+export function hasSpend(model: OverviewViewModel): boolean {
+  return model.totals.spendCost.pricedRows > 0 || model.totals.spendCost.unpricedRows > 0;
+}
+
 /**
- * Actual and nominal are separate cards on purpose (never summed);
- * below the stack breakpoint the cards stack vertically.
+ * Usage is the default single card — on a subscription-only ledger a
+ * permanent empty SPEND card would just re-create the old two-card
+ * confusion. Spend appears only when real money exists, and the two are
+ * never summed; below the stack breakpoint the cards stack vertically.
  */
 export function renderCostSummary(model: OverviewViewModel, width: number): RichLine[] {
-  const left = renderCard({
-    title: 'ACTUAL (out-of-pocket)',
-    content: actualContent(model),
+  const quotaCard = renderCard({
+    title: 'QUOTA COST (list-price)',
+    content: quotaCostContent(model),
     width: Math.min(CARD_WIDTH, width - 2),
   });
-  const right = renderCard({
-    title: 'NOMINAL (API-equivalent)',
-    content: nominalContent(model),
+  if (!hasSpend(model)) {
+    return quotaCard.map((line) => joinLine(' ', line));
+  }
+  const spendCard = renderCard({
+    title: 'SPEND COST (billed money)',
+    content: spendContent(model),
     width: Math.min(CARD_WIDTH, width - 2),
   });
   if (width < STACK_BREAKPOINT) {
-    return [...left.map((line) => joinLine(' ', line)), ...right.map((line) => joinLine(' ', line))];
+    return [
+      ...spendCard.map((line) => joinLine(' ', line)),
+      ...quotaCard.map((line) => joinLine(' ', line)),
+    ];
   }
-  return joinColumns(left, right, CARD_WIDTH).map((line) => joinLine(' ', line));
+  return joinColumns(spendCard, quotaCard, CARD_WIDTH).map((line) => joinLine(' ', line));
+}
+
+/** Footnote for rows the classifier refused to file (loud, not lost). */
+export function unclassifiedNote(model: OverviewViewModel): string | null {
+  const { unknownRows, unknownUsd } = model.totals;
+  if (unknownRows === 0) {
+    return null;
+  }
+  return `? ${unknownRows.toLocaleString('en-US')} rows unclassified ($ ${formatUsdAmount(unknownUsd)} stamped) — not in any total; set billing.overrides in config.json`;
 }
 
 export function renderTokenSummary(model: OverviewViewModel): string {

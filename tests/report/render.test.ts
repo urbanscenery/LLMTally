@@ -14,22 +14,24 @@ function bucket(key: string, overrides: Partial<ReportBucket> = {}): ReportBucke
       cacheRead: 8_120_000,
       reasoningTokens: 88_200,
     },
-    actual: {
-      basis: 'actual',
+    spendCost: {
+      basis: 'spend',
       usd: 1.2841,
       pricedSubtotalUsd: 1.2841,
       pricedRows: 100,
       unpricedRows: 0,
       warnings: [],
     },
-    nominal: {
-      basis: 'nominal',
+    quotaCost: {
+      basis: 'quota',
       usd: null,
       pricedSubtotalUsd: 42.8173,
       pricedRows: 950,
       unpricedRows: 154,
       warnings: [{ code: 'unknown_model', model: 'unknown', rows: 154 }],
     },
+    unknownRows: 0,
+    unknownUsd: 0,
     unpricedRows: 154,
     unpricedModels: ['unknown'],
     ...overrides,
@@ -48,19 +50,21 @@ const summary: ReportSummary = {
 };
 
 describe('renderReportText', () => {
-  test('renders a table with separated actual and nominal columns and a legend', () => {
+  test('renders a table with separated spend and quota cost columns and a legend', () => {
     // Act
     const text = renderReportText(summary);
 
     // Assert
     expect(text).toContain('Range: all-time');
-    expect(text).toContain('Actual USD');
-    expect(text).toContain('Nominal API-eq USD');
+    expect(text).toContain('Spend USD');
+    expect(text).toContain('Quota USD');
     expect(text).toContain('$1.284100');
     expect(text).toContain('$42.817300*');
-    expect(text).toContain('NOT actual spend');
+    expect(text).toContain('NOT billed money');
     expect(text).toContain('TOTAL');
     expect(text).toContain('12,345,678');
+    // no unclassified rows → no unclassified legend line
+    expect(text).not.toContain('Unclassified');
   });
 
   test('renders an em dash when nothing in a column could be priced', () => {
@@ -69,13 +73,29 @@ describe('renderReportText', () => {
       ...summary,
       buckets: [
         bucket('2026-08-10', {
-          actual: { basis: 'unpriced', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 3, warnings: [] },
+          spendCost: { basis: 'unpriced', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 3, warnings: [] },
         }),
       ],
     };
 
     // Act & Assert
     expect(renderReportText(empty)).toContain('—');
+  });
+
+  test('surfaces unclassified rows with their stamped amount in the legend', () => {
+    // Arrange
+    const withUnknown = {
+      ...summary,
+      totals: bucket('TOTAL', { unknownRows: 5, unknownUsd: 0.5 }),
+    };
+
+    // Act
+    const text = renderReportText(withUnknown);
+
+    // Assert — amount visible, and the fix (billing.overrides) named
+    expect(text).toContain('Unclassified: 5 rows');
+    expect(text).toContain('$0.500000');
+    expect(text).toContain('billing.overrides');
   });
 });
 
@@ -85,9 +105,9 @@ describe('renderReportJson', () => {
     const parsed = JSON.parse(renderReportJson(summary));
 
     // Assert
-    expect(parsed.totals.actual.usd).toBe(1.2841);
-    expect(parsed.totals.nominal.usd).toBeNull();
-    expect(parsed.totals.nominal.pricedSubtotalUsd).toBe(42.8173);
+    expect(parsed.totals.spendCost.usd).toBe(1.2841);
+    expect(parsed.totals.quotaCost.usd).toBeNull();
+    expect(parsed.totals.quotaCost.pricedSubtotalUsd).toBe(42.8173);
     expect(parsed.pricing.status).toBe('stale');
   });
 });

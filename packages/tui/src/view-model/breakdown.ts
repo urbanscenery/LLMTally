@@ -1,16 +1,18 @@
 import type { ReportBucket, ReportSummary } from '@llmtally/core/report/types.ts';
 import type { TokenTotals } from '@llmtally/core/pricing/types.ts';
 import { sanitizeTerminalLine } from '@llmtally/core/terminal/sanitize.ts';
-import { toCostViewModel } from './cost.ts';
+import { primaryCostViewModel, toCostViewModel } from './cost.ts';
 import type { CostViewModel } from './cost.ts';
 
 export interface BreakdownRowViewModel {
   readonly key: string;
   readonly rowCount: number;
   readonly tokens: TokenTotals;
-  readonly actual: CostViewModel;
-  readonly nominal: CostViewModel;
+  readonly spendCost: CostViewModel;
+  readonly quotaCost: CostViewModel;
   readonly unpricedRows: number;
+  readonly unknownRows: number;
+  readonly unknownUsd: number;
 }
 
 export interface BreakdownTabViewModel {
@@ -28,20 +30,25 @@ function toRow(bucket: ReportBucket): BreakdownRowViewModel {
     key: sanitizeTerminalLine(bucket.key),
     rowCount: bucket.rowCount,
     tokens: bucket.tokens,
-    actual: toCostViewModel('actual', bucket.actual),
-    nominal: toCostViewModel('nominal', bucket.nominal),
+    spendCost: toCostViewModel('spend', bucket.spendCost),
+    quotaCost: toCostViewModel('quota', bucket.quotaCost),
     unpricedRows: bucket.unpricedRows,
+    unknownRows: bucket.unknownRows,
+    unknownUsd: bucket.unknownUsd,
   };
 }
 
 /** Pure sort selector; ties fall back to key so output stays deterministic. */
 export function sortBreakdownRows(
   rows: readonly BreakdownRowViewModel[],
-  spec: { column: 'rows' | 'actual' | 'input'; direction: 'asc' | 'desc' },
+  spec: { column: 'rows' | 'cost' | 'input'; direction: 'asc' | 'desc' },
 ): readonly BreakdownRowViewModel[] {
   const value = (row: BreakdownRowViewModel): number => {
-    if (spec.column === 'actual') {
-      return row.actual.usd ?? row.actual.pricedSubtotalUsd;
+    if (spec.column === 'cost') {
+      // ordering only — each row is ranked by its own primary basis;
+      // this never displays a spend+quota sum
+      const primary = primaryCostViewModel(row.spendCost, row.quotaCost);
+      return primary.usd ?? primary.pricedSubtotalUsd;
     }
     if (spec.column === 'input') {
       return row.tokens.inputTokens;

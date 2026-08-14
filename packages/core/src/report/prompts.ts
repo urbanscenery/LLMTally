@@ -5,14 +5,18 @@
  * tier and can be individually unpriced, and blending it into a group
  * average would misreport it.
  *
- * Actual and nominal stay separate all the way out, as everywhere else.
+ * Each row carries its billing nature; spend and usage dollars stay
+ * distinguishable all the way out, as everywhere else.
  */
 import type { Database } from 'bun:sqlite';
 
 import { openReadOnlyDatabase } from '../db/connection.ts';
 import { LATEST_SCHEMA_VERSION } from '../db/migrate.ts';
-import { nominalUsdFor, selectTierRates } from '../pricing/calculator.ts';
+import { billingNature, loadBillingOverrides } from '../pricing/billing-nature.ts';
+import type { BillingNature, BillingOverrides } from '../pricing/billing-nature.ts';
+import { isSourceAuthoritative, listPriceUsdFor, selectTierRates } from '../pricing/calculator.ts';
 import type { FetchLike } from '../pricing/cache.ts';
+import { defaultConfigPath } from '../pricing/config.ts';
 import { loadPricing, pricingKey } from '../pricing/service.ts';
 import type { NeededModel } from '../pricing/service.ts';
 import type { TokenTotals } from '../pricing/types.ts';
@@ -39,10 +43,13 @@ export interface PromptRow {
   readonly model: string;
   readonly effort: string | null;
   readonly tokens: TokenTotals;
-  /** Recorded by the source; only OpenCode and Cline have one. */
-  readonly actualUsd: number | null;
-  /** API-equivalent value; null when the model could not be priced. */
-  readonly nominalUsd: number | null;
+  /** Settlement class of this row's dollars (quota / spend / unknown). */
+  readonly nature: BillingNature;
+  /**
+   * The row's one cost figure: source-stamped when the source records
+   * cost, otherwise list-priced; null when it could not be priced.
+   */
+  readonly costUsd: number | null;
   readonly text: string;
 }
 
@@ -155,15 +162,20 @@ export async function listPrompts(
     configPath: deps.configPath,
     nowUtc: deps.nowUtc,
   });
+  const billing = loadBillingOverrides(deps.configPath ?? defaultConfigPath());
 
   return {
-    rows: rows.map((row) => toPromptRow(row, pricing)),
+    rows: rows.map((row) => toPromptRow(row, pricing, billing.overrides)),
     truncated,
-    warnings: pricing.warnings,
+    warnings: [...pricing.warnings, ...billing.warnings],
   };
 }
 
-function toPromptRow(row: PromptSqlRow, pricing: LoadedPricing): PromptRow {
+function toPromptRow(
+  row: PromptSqlRow,
+  pricing: LoadedPricing,
+  overrides: BillingOverrides,
+): PromptRow {
   const tokens: TokenTotals = {
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
@@ -178,19 +190,23 @@ function toPromptRow(row: PromptSqlRow, pricing: LoadedPricing): PromptRow {
     model: row.model,
     effort: row.effort,
     tokens,
-    actualUsd: row.cost_usd,
-    nominalUsd: nominalFor(row, tokens, pricing),
+    nature: billingNature(row.agent, row.provider, overrides),
+    costUsd: isSourceAuthoritative(row.agent) ? row.cost_usd : listPriceFor(row, tokens, pricing),
     text: row.prompt_text ?? '',
   };
 }
 
 /** loadPricing already resolved every model we asked about. */
-function nominalFor(row: PromptSqlRow, tokens: TokenTotals, pricing: LoadedPricing): number | null {
+function listPriceFor(
+  row: PromptSqlRow,
+  tokens: TokenTotals,
+  pricing: LoadedPricing,
+): number | null {
   const resolution = pricing.resolutions.get(pricingKey(row.agent, row.provider, row.model));
   if (resolution === undefined || resolution.status !== 'resolved') {
     return null;
   }
-  const outcome = nominalUsdFor(
+  const outcome = listPriceUsdFor(
     row.agent,
     tokens,
     selectTierRates(resolution.record, tokens.inputTokens),

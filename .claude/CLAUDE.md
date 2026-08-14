@@ -66,7 +66,12 @@ cross-package import는 `@llmtally/*` 지정자를 쓰고 tsconfig `paths`로 �
 ## 주의사항
 
 - Claude Code 원본 로그는 기본 30일 후 삭제됨(`cleanupPeriodDays` 미설정 시) — 수집 로직·doctor 커맨드에서 항상 고려
-- 구독제 사용분 비용은 API 환산 명목치 — UI에서 구독/API 구분 표기
+- 비용 표시의 1축은 **정산 성격(billing nature)**: 구독·쿼터 소모의 정가 환산은
+  **quota cost**(`~$`), 카드/선결제 실지출은 **spend cost**(`$`), 분류 불가는
+  unclassified(`?$`, 어느 합계에도 제외). **cost**는 두 축의 상위어(정렬 키·행의 primary
+  숫자) — 이름만 합치고 숫자 합산은 금지. 돈 맥락의 quota는 반드시 cost와 결합
+  (bare "Quota"는 잔량 게이지 전용). 분류는 `(agent, provider)` 기본표 + `billing.overrides`
+  (2026-08-14~15 개정, `local_docs/costs/2026-08-15-quota-cost-rename-plan.md`)
 - 수집은 각 에이전트가 스스로 남기는 로그·저장소만 읽는다. 서드파티 도구가 만든 캐시나
   레지스트리는 포맷이 비문서화이고 그 도구가 돌지 않으면 멈추므로 의존하지 않는다
   (Antigravity IDE 세션은 그래서 아직 미지원)

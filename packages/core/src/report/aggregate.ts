@@ -1,7 +1,8 @@
+import type { BillingNature } from '../pricing/billing-nature.ts';
 import {
   isSourceAuthoritative,
+  listPriceUsdFor,
   minTierThreshold,
-  nominalUsdFor,
   selectTierRates,
 } from '../pricing/calculator.ts';
 import type {
@@ -13,39 +14,95 @@ import type {
 } from '../pricing/types.ts';
 import type { ReportBucket, ReportGroupBy, ReportRow, ReportUsageRow } from './types.ts';
 
-/** Cost fragments computed for one SQL grain row before bucket folding. */
+/**
+ * Cost fragments computed for one SQL grain row before bucket folding.
+ * Settlement decides the bucket (spend cost vs quota cost); provenance only
+ * decides how the dollars inside it were obtained. Unknown rows join
+ * neither total — their stamped dollars are carried for display only.
+ */
 export interface GroupCost {
-  readonly actualUsd: number;
-  readonly actualRows: number;
-  readonly actualMissingRows: number;
-  readonly nominalUsd: number;
-  readonly nominalRows: number;
-  readonly nominalUnpricedRows: number;
-  readonly actualWarnings: readonly CostWarning[];
-  readonly nominalWarnings: readonly CostWarning[];
+  readonly spendCostUsd: number;
+  readonly spendCostRows: number;
+  readonly spendCostUnpricedRows: number;
+  readonly quotaCostUsd: number;
+  readonly quotaCostRows: number;
+  readonly quotaCostUnpricedRows: number;
+  readonly unknownUsd: number;
+  readonly unknownRows: number;
+  readonly spendCostWarnings: readonly CostWarning[];
+  readonly quotaCostWarnings: readonly CostWarning[];
 }
 
-const NO_ACTUAL = { actualUsd: 0, actualRows: 0, actualMissingRows: 0, actualWarnings: [] } as const;
+const EMPTY_GROUP_COST: GroupCost = {
+  spendCostUsd: 0,
+  spendCostRows: 0,
+  spendCostUnpricedRows: 0,
+  quotaCostUsd: 0,
+  quotaCostRows: 0,
+  quotaCostUnpricedRows: 0,
+  unknownUsd: 0,
+  unknownRows: 0,
+  spendCostWarnings: [],
+  quotaCostWarnings: [],
+};
+
+/** One settlement side of a group before it is placed by nature. */
+interface SettledCost {
+  readonly usd: number;
+  readonly rows: number;
+  readonly unpricedRows: number;
+  readonly warnings: readonly CostWarning[];
+}
 
 export function computeGroupCost(
   row: ReportRow,
+  nature: BillingNature,
   resolution: PriceResolution | null,
   iterateRows: () => IterableIterator<ReportUsageRow>,
 ): GroupCost {
-  if (isSourceAuthoritative(row.agent)) {
-    const missing = row.rowCount - row.actualCostRows;
+  if (nature === 'unknown') {
+    // never guessed into a total; the stamped dollars stay visible so
+    // an unclassified provider is loud instead of silently misfiled
     return {
-      actualUsd: row.actualCostUsd ?? 0,
-      actualRows: row.actualCostRows,
-      actualMissingRows: missing,
-      nominalUsd: 0,
-      nominalRows: 0,
-      nominalUnpricedRows: 0,
-      actualWarnings:
+      ...EMPTY_GROUP_COST,
+      unknownRows: row.rowCount,
+      unknownUsd: row.stampedCostUsd ?? 0,
+    };
+  }
+  const settled = settledCostFor(row, resolution, iterateRows);
+  if (nature === 'spend') {
+    return {
+      ...EMPTY_GROUP_COST,
+      spendCostUsd: settled.usd,
+      spendCostRows: settled.rows,
+      spendCostUnpricedRows: settled.unpricedRows,
+      spendCostWarnings: settled.warnings,
+    };
+  }
+  return {
+    ...EMPTY_GROUP_COST,
+    quotaCostUsd: settled.usd,
+    quotaCostRows: settled.rows,
+    quotaCostUnpricedRows: settled.unpricedRows,
+    quotaCostWarnings: settled.warnings,
+  };
+}
+
+function settledCostFor(
+  row: ReportRow,
+  resolution: PriceResolution | null,
+  iterateRows: () => IterableIterator<ReportUsageRow>,
+): SettledCost {
+  if (isSourceAuthoritative(row.agent)) {
+    const missing = row.rowCount - row.stampedCostRows;
+    return {
+      usd: row.stampedCostUsd ?? 0,
+      rows: row.stampedCostRows,
+      unpricedRows: missing,
+      warnings:
         missing > 0
           ? [{ code: 'missing_authoritative_cost', model: row.model, rows: missing }]
           : [],
-      nominalWarnings: [],
     };
   }
 
@@ -53,11 +110,10 @@ export function computeGroupCost(
     const code: CostWarningCode =
       resolution?.reason === 'unknown_model' ? 'unknown_model' : 'price_not_found';
     return {
-      ...NO_ACTUAL,
-      nominalUsd: 0,
-      nominalRows: 0,
-      nominalUnpricedRows: row.rowCount,
-      nominalWarnings: [{ code, model: row.model, rows: row.rowCount }],
+      usd: 0,
+      rows: 0,
+      unpricedRows: row.rowCount,
+      warnings: [{ code, model: row.model, rows: row.rowCount }],
     };
   }
 
@@ -68,26 +124,19 @@ export function computeGroupCost(
   const threshold = minTierThreshold(record);
   const crossesTier = threshold !== null && row.maxInputTokens > threshold;
   if (crossesTier || row.invalidSemanticsRows > 0) {
-    return rowLevelGroupCost(row, resolution, iterateRows);
+    return rowLevelSettledCost(row, resolution, iterateRows);
   }
 
-  const outcome = nominalUsdFor(row.agent, row.tokens, record);
+  const outcome = listPriceUsdFor(row.agent, row.tokens, record);
   if (!outcome.ok) {
     return {
-      ...NO_ACTUAL,
-      nominalUsd: 0,
-      nominalRows: 0,
-      nominalUnpricedRows: row.rowCount,
-      nominalWarnings: [{ code: outcome.code, model: row.model, rows: row.rowCount }],
+      usd: 0,
+      rows: 0,
+      unpricedRows: row.rowCount,
+      warnings: [{ code: outcome.code, model: row.model, rows: row.rowCount }],
     };
   }
-  return {
-    ...NO_ACTUAL,
-    nominalUsd: outcome.usd,
-    nominalRows: row.rowCount,
-    nominalUnpricedRows: 0,
-    nominalWarnings: [],
-  };
+  return { usd: outcome.usd, rows: row.rowCount, unpricedRows: 0, warnings: [] };
 }
 
 /**
@@ -95,35 +144,34 @@ export function computeGroupCost(
  * row picks its own tier rates, and individually invalid rows become
  * unpriced without contaminating the valid rows of the same group.
  */
-function rowLevelGroupCost(
+function rowLevelSettledCost(
   row: ReportRow,
   resolution: Extract<PriceResolution, { status: 'resolved' }>,
   iterateRows: () => IterableIterator<ReportUsageRow>,
-): GroupCost {
-  let nominalUsd = 0;
-  let nominalRows = 0;
+): SettledCost {
+  let usd = 0;
+  let rows = 0;
   let unpricedRows = 0;
   const warningRows = new Map<CostWarningCode, number>();
   for (const usage of iterateRows()) {
     const rates = selectTierRates(resolution.record, usage.inputTokens);
-    const outcome = nominalUsdFor(row.agent, usage, rates);
+    const outcome = listPriceUsdFor(row.agent, usage, rates);
     if (outcome.ok) {
-      nominalUsd += outcome.usd;
-      nominalRows += 1;
+      usd += outcome.usd;
+      rows += 1;
     } else {
       unpricedRows += 1;
       warningRows.set(outcome.code, (warningRows.get(outcome.code) ?? 0) + 1);
     }
   }
   return {
-    ...NO_ACTUAL,
-    nominalUsd,
-    nominalRows,
-    nominalUnpricedRows: unpricedRows,
-    nominalWarnings: [...warningRows.entries()].map(([code, rows]) => ({
+    usd,
+    rows,
+    unpricedRows,
+    warnings: [...warningRows.entries()].map(([code, count]) => ({
       code,
       model: row.model,
-      rows,
+      rows: count,
     })),
   };
 }
@@ -138,15 +186,17 @@ interface MutableBucket {
     cacheRead: number;
     reasoningTokens: number;
   };
-  actualUsd: number;
-  actualRows: number;
-  actualMissingRows: number;
-  nominalUsd: number;
-  nominalRows: number;
-  nominalUnpricedRows: number;
+  spendCostUsd: number;
+  spendCostRows: number;
+  spendCostUnpricedRows: number;
+  quotaCostUsd: number;
+  quotaCostRows: number;
+  quotaCostUnpricedRows: number;
+  unknownUsd: number;
+  unknownRows: number;
   unpricedModels: Set<string>;
-  actualWarnings: Map<string, CostWarning>;
-  nominalWarnings: Map<string, CostWarning>;
+  spendCostWarnings: Map<string, CostWarning>;
+  quotaCostWarnings: Map<string, CostWarning>;
 }
 
 export function bucketKeyFor(groupBy: ReportGroupBy, row: ReportRow): string {
@@ -187,17 +237,19 @@ function accumulate(target: MutableBucket, row: ReportRow, cost: GroupCost): voi
   target.tokens.cacheWrite += row.tokens.cacheWrite;
   target.tokens.cacheRead += row.tokens.cacheRead;
   target.tokens.reasoningTokens += row.tokens.reasoningTokens;
-  target.actualUsd += cost.actualUsd;
-  target.actualRows += cost.actualRows;
-  target.actualMissingRows += cost.actualMissingRows;
-  target.nominalUsd += cost.nominalUsd;
-  target.nominalRows += cost.nominalRows;
-  target.nominalUnpricedRows += cost.nominalUnpricedRows;
-  if (cost.nominalUnpricedRows > 0 || cost.actualMissingRows > 0) {
+  target.spendCostUsd += cost.spendCostUsd;
+  target.spendCostRows += cost.spendCostRows;
+  target.spendCostUnpricedRows += cost.spendCostUnpricedRows;
+  target.quotaCostUsd += cost.quotaCostUsd;
+  target.quotaCostRows += cost.quotaCostRows;
+  target.quotaCostUnpricedRows += cost.quotaCostUnpricedRows;
+  target.unknownUsd += cost.unknownUsd;
+  target.unknownRows += cost.unknownRows;
+  if (cost.spendCostUnpricedRows > 0 || cost.quotaCostUnpricedRows > 0) {
     target.unpricedModels.add(row.model);
   }
-  mergeWarnings(target.actualWarnings, cost.actualWarnings);
-  mergeWarnings(target.nominalWarnings, cost.nominalWarnings);
+  mergeWarnings(target.spendCostWarnings, cost.spendCostWarnings);
+  mergeWarnings(target.quotaCostWarnings, cost.quotaCostWarnings);
 }
 
 function mergeWarnings(target: Map<string, CostWarning>, warnings: readonly CostWarning[]): void {
@@ -216,15 +268,17 @@ function emptyBucket(key: string): MutableBucket {
     key,
     rowCount: 0,
     tokens: { inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0, reasoningTokens: 0 },
-    actualUsd: 0,
-    actualRows: 0,
-    actualMissingRows: 0,
-    nominalUsd: 0,
-    nominalRows: 0,
-    nominalUnpricedRows: 0,
+    spendCostUsd: 0,
+    spendCostRows: 0,
+    spendCostUnpricedRows: 0,
+    quotaCostUsd: 0,
+    quotaCostRows: 0,
+    quotaCostUnpricedRows: 0,
+    unknownUsd: 0,
+    unknownRows: 0,
     unpricedModels: new Set(),
-    actualWarnings: new Map(),
-    nominalWarnings: new Map(),
+    spendCostWarnings: new Map(),
+    quotaCostWarnings: new Map(),
   };
 }
 
@@ -233,27 +287,29 @@ function freezeBucket(bucket: MutableBucket): ReportBucket {
     key: bucket.key,
     rowCount: bucket.rowCount,
     tokens: { ...bucket.tokens } as TokenTotals,
-    actual: costResult(
-      'actual',
-      bucket.actualUsd,
-      bucket.actualRows,
-      bucket.actualMissingRows,
-      [...bucket.actualWarnings.values()],
+    spendCost: costResult(
+      'spend',
+      bucket.spendCostUsd,
+      bucket.spendCostRows,
+      bucket.spendCostUnpricedRows,
+      [...bucket.spendCostWarnings.values()],
     ),
-    nominal: costResult(
-      'nominal',
-      bucket.nominalUsd,
-      bucket.nominalRows,
-      bucket.nominalUnpricedRows,
-      [...bucket.nominalWarnings.values()],
+    quotaCost: costResult(
+      'quota',
+      bucket.quotaCostUsd,
+      bucket.quotaCostRows,
+      bucket.quotaCostUnpricedRows,
+      [...bucket.quotaCostWarnings.values()],
     ),
-    unpricedRows: bucket.nominalUnpricedRows + bucket.actualMissingRows,
+    unknownRows: bucket.unknownRows,
+    unknownUsd: bucket.unknownUsd,
+    unpricedRows: bucket.spendCostUnpricedRows + bucket.quotaCostUnpricedRows,
     unpricedModels: [...bucket.unpricedModels].sort(),
   };
 }
 
 function costResult(
-  basis: 'actual' | 'nominal',
+  basis: 'spend' | 'quota',
   subtotalUsd: number,
   pricedRows: number,
   unpricedRows: number,

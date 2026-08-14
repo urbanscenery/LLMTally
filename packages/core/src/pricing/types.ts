@@ -52,7 +52,13 @@ export interface UnresolvedPrice {
 
 export type PriceResolution = ResolvedPrice | UnresolvedPrice;
 
-export type CostBasis = 'actual' | 'nominal' | 'unpriced';
+/**
+ * Settlement basis of a cost figure: `spend` is real money (card /
+ * prepaid credit), `quota` is the list-price valuation of subscription
+ * quota consumption. "cost" alone is the umbrella term — the two are
+ * named together, never summed together. See pricing/billing-nature.ts.
+ */
+export type CostBasis = 'spend' | 'quota' | 'unpriced';
 
 export interface TokenTotals {
   readonly inputTokens: number;

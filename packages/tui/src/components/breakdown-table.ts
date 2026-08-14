@@ -66,18 +66,18 @@ const COLUMNS: readonly Column[] = [
     render: (row) => formatCompact(row.tokens.reasoningTokens),
   },
   {
-    id: 'actual',
-    header: 'Actual',
+    id: 'spend',
+    header: 'Spend',
     align: 'right',
     minWidth: 10,
-    render: (row) => formatCostCell(row.actual),
+    render: (row) => formatCostCell(row.spendCost),
   },
   {
-    id: 'nominal',
-    header: 'Nominal',
+    id: 'quota',
+    header: 'Quota',
     align: 'right',
     minWidth: 12,
-    render: (row) => formatCostCell(row.nominal),
+    render: (row) => formatCostCell(row.quotaCost),
   },
   {
     id: 'unpriced',
@@ -89,10 +89,15 @@ const COLUMNS: readonly Column[] = [
 ];
 
 /** Lowest-value columns disappear first when the terminal narrows. */
-const DROP_ORDER = ['unpriced', 'cacheW', 'reason', 'cacheR', 'nominal', 'out'] as const;
+const DROP_ORDER = ['unpriced', 'cacheW', 'reason', 'cacheR', 'spend', 'out'] as const;
 
-function pickColumns(width: number): Column[] {
+function pickColumns(width: number, showSpend: boolean): Column[] {
   const dropped = new Set<string>();
+  if (!showSpend) {
+    // a ledger with no billed rows would render an all-“—” column and
+    // resurrect the old two-cost confusion
+    dropped.add('spend');
+  }
   const fits = (): boolean => {
     const kept = COLUMNS.filter((column) => !dropped.has(column.id));
     const total = kept.reduce((acc, column) => acc + column.minWidth + 2, 0);
@@ -112,16 +117,20 @@ function renderCell(column: Column, text: string, width: number): string {
   return column.align === 'left' ? padEndWidth(truncated, width) : padStartWidth(truncated, width);
 }
 
-/** Column carrying each sortable key (k9s-style indicator placement). */
+/**
+ * Column carrying each sortable key (k9s-style indicator placement).
+ * The cost sort ranks by each row's primary basis; its indicator sits
+ * on the quota column because that one is always visible.
+ */
 const SORT_COLUMN_IDS: Readonly<Record<BreakdownSortColumn, string>> = {
   rows: 'rows',
-  actual: 'actual',
+  cost: 'quota',
   input: 'in',
 };
 
 export const SORT_LABELS: Readonly<Record<BreakdownSortColumn, string>> = {
   rows: 'Rows',
-  actual: 'Actual',
+  cost: 'Cost',
   input: 'In',
 };
 
@@ -138,7 +147,9 @@ export function renderBreakdownTable(
   /** Highlighted row; -1 (the default) marks none. */
   cursor = -1,
 ): RichLine[] {
-  const columns = pickColumns(width);
+  const showSpend =
+    model.totals.spendCost.pricedRows > 0 || model.totals.spendCost.unpricedRows > 0;
+  const columns = pickColumns(width, showSpend);
   const sortedColumnId = sort === undefined ? null : SORT_COLUMN_IDS[sort.column];
   const arrow = sort?.direction === 'asc' ? '↑' : '↓';
   const headerText = (column: Column): string =>
@@ -164,8 +175,8 @@ export function renderBreakdownTable(
 
   // per-column semantic roles so cost cells keep their identity
   const CELL_ROLES: Readonly<Record<string, ThemeRole>> = {
-    actual: 'actualCost',
-    nominal: 'nominalCost',
+    spend: 'spendCost',
+    usage: 'quotaCost',
     unpriced: 'muted',
   };
 

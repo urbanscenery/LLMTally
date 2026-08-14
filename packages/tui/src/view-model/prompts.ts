@@ -12,8 +12,9 @@ export interface PromptRowViewModel {
   readonly cacheRead: number;
   readonly cacheWrite: number;
   readonly reasoningTokens: number;
-  readonly actualUsd: number | null;
-  readonly nominalUsd: number | null;
+  /** Settlement class deciding the `$`/`~$`/`?$` prefix. */
+  readonly nature: 'quota' | 'spend' | 'unknown';
+  readonly costUsd: number | null;
   /** Single line: prompts are multi-line and the list is one row each. */
   readonly text: string;
 }
@@ -48,8 +49,8 @@ export function toPromptsViewModel(result: PromptListResult, scope: string): Pro
       cacheRead: row.tokens.cacheRead,
       cacheWrite: row.tokens.cacheWrite,
       reasoningTokens: row.tokens.reasoningTokens,
-      actualUsd: row.actualUsd,
-      nominalUsd: row.nominalUsd,
+      nature: row.nature,
+      costUsd: row.costUsd,
       text: toSingleLine(row.text),
     })),
     truncated: result.truncated,

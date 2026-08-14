@@ -56,15 +56,18 @@ function localTimestamp(tsUtc: number): string {
   )}:${pad(date.getSeconds())}`;
 }
 
-/** Actual and nominal never share a column; the prefix says which it is. */
-function costCell(row: PromptRowViewModel): { text: string; role: 'actualCost' | 'nominalCost' | 'muted' } {
-  if (row.actualUsd !== null) {
-    return { text: `$${row.actualUsd.toFixed(4)}`, role: 'actualCost' };
+/** The prefix says how the row settles: `$` spend, `~$` quota, `?$` unclassified. */
+function costCell(row: PromptRowViewModel): { text: string; role: 'spendCost' | 'quotaCost' | 'muted' } {
+  if (row.costUsd === null) {
+    return { text: '—', role: 'muted' };
   }
-  if (row.nominalUsd !== null) {
-    return { text: `~$${row.nominalUsd.toFixed(4)}`, role: 'nominalCost' };
+  if (row.nature === 'spend') {
+    return { text: `$${row.costUsd.toFixed(4)}`, role: 'spendCost' };
   }
-  return { text: '—', role: 'muted' };
+  if (row.nature === 'quota') {
+    return { text: `~$${row.costUsd.toFixed(4)}`, role: 'quotaCost' };
+  }
+  return { text: `?$${row.costUsd.toFixed(4)}`, role: 'muted' };
 }
 
 function tokensCell(row: PromptRowViewModel): string {

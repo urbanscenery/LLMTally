@@ -23,6 +23,7 @@ function usageRecord(overrides: Partial<ClaudeUsageRecord>): ClaudeUsageRecord {
     tsUtc: 1_785_578_405,
     model: 'claude-fable-5',
     effort: null,
+    messageId: null,
     requestId: null,
     sessionId: null,
     cwd: null,

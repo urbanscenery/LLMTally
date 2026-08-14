@@ -58,8 +58,8 @@ describe('themes', () => {
       'success',
       'warning',
       'danger',
-      'actualCost',
-      'nominalCost',
+      'spendCost',
+      'quotaCost',
       'meterTrack',
       'tableHeader',
       'sortIndicator',
@@ -90,10 +90,10 @@ describe('themes', () => {
     // Assert
     expect(tokyo?.palette.accent).toBe('#9b75df');
     expect(tokyo?.palette.ok).toBe('#9ed662');
-    expect(tokyo?.palette.actualCost).toBe('#ff9e64');
+    expect(tokyo?.palette.spendCost).toBe('#ff9e64');
     expect(dracula?.palette.accent).toBe('#ff79c6');
     expect(dracula?.palette.ok).toBe('#4bff79');
-    expect(dracula?.palette.actualCost).toBe('#bc8dff');
+    expect(dracula?.palette.spendCost).toBe('#bc8dff');
   });
 
   test('light themes require a painted surface; dark themes do not', () => {
@@ -142,8 +142,8 @@ describe('themes', () => {
   test('mono theme keeps structure attributes but no colors', () => {
     // Act & Assert
     expect(MONO_THEME.resolve('accent').color).toBeNull();
-    expect(MONO_THEME.resolve('actualCost')).toMatchObject({ color: null, bold: true });
-    expect(MONO_THEME.resolve('nominalCost')).toMatchObject({ color: null, dim: true });
+    expect(MONO_THEME.resolve('spendCost')).toMatchObject({ color: null, bold: true });
+    expect(MONO_THEME.resolve('quotaCost')).toMatchObject({ color: null, dim: true });
   });
 
   test('findTheme returns null for unknown names', () => {

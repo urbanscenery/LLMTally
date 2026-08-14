@@ -6,7 +6,7 @@ import type {
   TokenTotals,
 } from './types.ts';
 
-export type NominalOutcome =
+export type ListPriceOutcome =
   | { readonly ok: true; readonly usd: number }
   | { readonly ok: false; readonly code: CostWarningCode };
 
@@ -37,11 +37,11 @@ export function isSourceAuthoritative(agent: string): boolean {
  * dimension the usage actually consumed make the computation refuse — a
  * guessed rate is worse than an unpriced row.
  */
-export function nominalUsdFor(
+export function listPriceUsdFor(
   agent: string,
   tokens: TokenTotals,
   rates: PriceRates,
-): NominalOutcome {
+): ListPriceOutcome {
   const semantics = AGENT_TOKEN_SEMANTICS[agent];
   if (semantics === undefined || semantics.formula === 'source_authoritative') {
     return { ok: false, code: 'price_not_found' };

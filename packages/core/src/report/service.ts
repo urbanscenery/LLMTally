@@ -1,6 +1,8 @@
 import { openReadOnlyDatabase } from '../db/connection.ts';
 import { LATEST_SCHEMA_VERSION } from '../db/migrate.ts';
+import { billingNature, loadBillingOverrides } from '../pricing/billing-nature.ts';
 import type { FetchLike } from '../pricing/cache.ts';
+import { defaultConfigPath } from '../pricing/config.ts';
 import { loadPricing, pricingKey } from '../pricing/service.ts';
 import type { NeededModel } from '../pricing/service.ts';
 import { computeGroupCost, foldBuckets } from './aggregate.ts';
@@ -51,6 +53,9 @@ export async function generateReport(
       configPath: deps.configPath,
       nowUtc: deps.nowUtc,
     });
+    // settlement classification shares the pricing config file; a broken
+    // billing section degrades to defaults and surfaces as a warning
+    const billing = loadBillingOverrides(deps.configPath ?? defaultConfigPath());
 
     // aggregate and per-row tier reads must observe ONE snapshot: without
     // this transaction a concurrent scan could commit between them and
@@ -70,6 +75,7 @@ export async function generateReport(
         row,
         cost: computeGroupCost(
           row,
+          billingNature(row.agent, row.provider, billing.overrides),
           pricing.resolutions.get(pricingKey(row.agent, row.provider, row.model)) ?? null,
           () => repository.iterateRowsForGroup(request, row),
         ),
@@ -91,7 +97,7 @@ export async function generateReport(
         status: pricing.status,
         asOfUtc: pricing.asOfUtc,
         sources: pricing.sources,
-        warnings: pricing.warnings,
+        warnings: [...pricing.warnings, ...billing.warnings],
       },
     };
   } finally {

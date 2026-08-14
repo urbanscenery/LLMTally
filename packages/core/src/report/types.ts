@@ -36,8 +36,9 @@ export interface ReportRow {
   readonly model: string;
   readonly rowCount: number;
   readonly tokens: TokenTotals;
-  readonly actualCostUsd: number | null;
-  readonly actualCostRows: number;
+  /** Cost the source itself stamped (provenance, not settlement). */
+  readonly stampedCostUsd: number | null;
+  readonly stampedCostRows: number;
   readonly maxInputTokens: number;
   /** Codex rows whose input_tokens < cache_read (cancel out in SUMs). */
   readonly invalidSemanticsRows: number;
@@ -56,8 +57,14 @@ export interface ReportBucket {
   readonly key: string;
   readonly rowCount: number;
   readonly tokens: TokenTotals;
-  readonly actual: CostResult;
-  readonly nominal: CostResult;
+  /** Real money (card / prepaid credit). Summing the two costs is forbidden. */
+  readonly spendCost: CostResult;
+  /** Quota cost — list-price valuation of subscription-quota consumption. */
+  readonly quotaCost: CostResult;
+  /** Rows whose billing nature could not be classified (see billing-nature.ts). */
+  readonly unknownRows: number;
+  /** Source-stamped dollars carried by those rows — shown, never totalled. */
+  readonly unknownUsd: number;
   readonly unpricedRows: number;
   readonly unpricedModels: readonly string[];
 }

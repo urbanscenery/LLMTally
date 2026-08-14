@@ -11,12 +11,12 @@ import { viewText } from './helpers.ts';
 
 const NOW = 1_800_000_000;
 
-function cost(basis: 'actual' | 'nominal', overrides: Partial<CostResult> = {}): CostResult {
+function cost(basis: 'spend' | 'quota', overrides: Partial<CostResult> = {}): CostResult {
   return {
     basis,
-    usd: basis === 'actual' ? null : 42.5,
-    pricedSubtotalUsd: basis === 'actual' ? 0 : 42.5,
-    pricedRows: basis === 'actual' ? 0 : 9,
+    usd: basis === 'spend' ? null : 42.5,
+    pricedSubtotalUsd: basis === 'spend' ? 0 : 42.5,
+    pricedRows: basis === 'spend' ? 0 : 9,
     unpricedRows: 0,
     warnings: [],
     ...overrides,
@@ -34,9 +34,11 @@ function bucket(key: string, rowCount: number): ReportBucket {
       cacheRead: rowCount * 500,
       reasoningTokens: rowCount,
     },
-    actual: cost('actual'),
-    nominal: cost('nominal'),
+    spendCost: cost('spend'),
+    quotaCost: cost('quota'),
     unpricedRows: 0,
+    unknownRows: 0,
+    unknownUsd: 0,
     unpricedModels: [],
   };
 }
@@ -81,22 +83,43 @@ describe('toBreakdownViewModel', () => {
 });
 
 describe('renderBreakdownTable', () => {
-  test('wide table shows actual and nominal as separate columns', () => {
-    // Arrange
+  test('a spend-free ledger hides the Spend column entirely', () => {
+    // Arrange — fixture has zero spend rows everywhere
     const model = toBreakdownViewModel('agent', summaryFixture([bucket('claude-code', 10)]));
 
     // Act
     const lines = frameText(renderBreakdownTable(model, 120, 10));
     const header = lines[0] ?? '';
 
-    // Assert
-    expect(header).toContain('Actual');
-    expect(header).toContain('Nominal');
+    // Assert — no all-“—” column resurrecting the two-cost confusion
+    expect(header).toContain('Quota');
+    expect(header).not.toContain('Spend');
     expect(lines.join('\n')).toContain('~$ 42.50');
     expect(lines[lines.length - 1]).toContain('total');
   });
 
-  test('narrow width drops low-priority columns but keeps actual cost', () => {
+  test('spend rows bring the Spend column back as a separate column', () => {
+    // Arrange — one bucket carries billed money; the totals row is the
+    // visibility authority, as it is in a real fold
+    const spend = cost('spend', { usd: 1.25, pricedSubtotalUsd: 1.25, pricedRows: 4 });
+    const spendBucket: ReportBucket = { ...bucket('opencode', 4), spendCost: spend };
+    const summary = summaryFixture([spendBucket]);
+    const model = toBreakdownViewModel('agent', {
+      ...summary,
+      totals: { ...summary.totals, spendCost: spend },
+    });
+
+    // Act
+    const lines = frameText(renderBreakdownTable(model, 120, 10));
+    const header = lines[0] ?? '';
+
+    // Assert
+    expect(header).toContain('Spend');
+    expect(header).toContain('Quota');
+    expect(lines.join('\n')).toContain('$ 1.25');
+  });
+
+  test('narrow width drops low-priority columns but keeps usage cost', () => {
     // Arrange
     const model = toBreakdownViewModel('agent', summaryFixture([bucket('claude-code', 10)]));
 
@@ -106,9 +129,8 @@ describe('renderBreakdownTable', () => {
 
     // Assert
     expect(header).toContain('Name');
-    expect(header).toContain('Actual');
+    expect(header).toContain('Quota');
     expect(header).not.toContain('CacheW');
-    expect(header).not.toContain('Nominal');
   });
 
   test('long unicode keys truncate without breaking row width', () => {
@@ -168,7 +190,7 @@ describe('agentsTabView', () => {
 });
 
 describe('sortable tables', () => {
-  test('sortBreakdownRows orders by actual cost with key tiebreak', async () => {
+  test('sortBreakdownRows orders by spend cost with key tiebreak', async () => {
     // Arrange
     const { sortBreakdownRows } = await import('@llmtally/tui/view-model/breakdown.ts');
     const model = toBreakdownViewModel(
@@ -176,9 +198,9 @@ describe('sortable tables', () => {
       summaryFixture([bucket('opencode', 3), bucket('codex', 90), bucket('claude-code', 10)]),
     );
 
-    // Act — nominal-only rows have actual usd null → subtotal 0 → tie on actual
+    // Act — usage-only rows have spend usd null → subtotal 0 → tie on spend
     const byInput = sortBreakdownRows(model.rows, { column: 'input', direction: 'asc' });
-    const byActual = sortBreakdownRows(model.rows, { column: 'actual', direction: 'desc' });
+    const byActual = sortBreakdownRows(model.rows, { column: 'cost', direction: 'desc' });
 
     // Assert
     expect(byInput.map((row) => row.key)).toEqual(['opencode', 'claude-code', 'codex']);
@@ -200,9 +222,9 @@ describe('sortable tables', () => {
     // switch to agents, sort by cost, then toggle direction
     screen.pressKey('3');
     screen.pressKey('c');
-    expect(controller.getState().agentsSort).toEqual({ column: 'actual', direction: 'desc' });
+    expect(controller.getState().agentsSort).toEqual({ column: 'cost', direction: 'desc' });
     screen.pressKey('c');
-    expect(controller.getState().agentsSort).toEqual({ column: 'actual', direction: 'asc' });
+    expect(controller.getState().agentsSort).toEqual({ column: 'cost', direction: 'asc' });
     screen.pressKey('t');
     expect(controller.getState().agentsSort).toEqual({ column: 'input', direction: 'desc' });
     // models keeps its own independent spec
