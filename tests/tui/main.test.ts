@@ -31,6 +31,16 @@ describe('parseArgs', () => {
     // Act & Assert
     expect(() => parseArgs(['--bogus'])).toThrow(UsageError);
   });
+
+  test('--chart accepts every style and defers to the remembered one', () => {
+    // Act & Assert — null means "use the saved preference"
+    expect(parseArgs([]).chartMode).toBeNull();
+    for (const style of ['block', 'braille', 'heatmap'] as const) {
+      expect(parseArgs(['--chart', style]).chartMode).toBe(style);
+    }
+    expect(() => parseArgs(['--chart', 'line'])).toThrow(UsageError);
+    expect(() => parseArgs(['--chart', 'pie'])).toThrow(UsageError);
+  });
 });
 
 describe('run', () => {

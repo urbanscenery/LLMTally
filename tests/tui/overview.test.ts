@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 import type { CostResult } from '@llmtally/core/pricing/types.ts';
 import type { ReportBucket, ReportSummary } from '@llmtally/core/report/types.ts';
 import { renderDailyBlockChart } from '@llmtally/tui/components/daily-block-chart.ts';
-import { NOMINAL_DISCLAIMER, renderCostSummary } from '@llmtally/tui/components/cost-summary.ts';
+import { QUOTA_COST_DISCLAIMER, renderCostSummary } from '@llmtally/tui/components/cost-summary.ts';
 import { createInitialState, withTabResource } from '@llmtally/tui/state.ts';
 import { formatCostCell, toCostViewModel } from '@llmtally/tui/view-model/cost.ts';
 import { toOverviewViewModel } from '@llmtally/tui/view-model/overview.ts';
@@ -14,7 +14,7 @@ const NOW = 1_800_000_000;
 
 function cost(overrides: Partial<CostResult> = {}): CostResult {
   return {
-    basis: 'nominal',
+    basis: 'quota',
     usd: 12.5,
     pricedSubtotalUsd: 12.5,
     pricedRows: 10,
@@ -29,11 +29,26 @@ function bucket(key: string, inputTokens: number, overrides: Partial<ReportBucke
     key,
     rowCount: 5,
     tokens: { inputTokens, outputTokens: 100, cacheWrite: 0, cacheRead: 50, reasoningTokens: 7 },
-    actual: cost({ basis: 'actual', usd: null, pricedSubtotalUsd: 0, pricedRows: 0 }),
-    nominal: cost(),
+    spendCost: cost({ basis: 'spend', usd: null, pricedSubtotalUsd: 0, pricedRows: 0 }),
+    quotaCost: cost(),
     unpricedRows: 0,
+    unknownRows: 0,
+    unknownUsd: 0,
     unpricedModels: [],
     ...overrides,
+  };
+}
+
+function point(date: string, value: number) {
+  return {
+    date,
+    value,
+    rowCount: 5,
+    tokens: { inputTokens: value, outputTokens: 100, cacheWrite: 0, cacheRead: 50, reasoningTokens: 7 },
+    spendCost: toCostViewModel('spend', cost({ basis: 'spend' })),
+    quotaCost: toCostViewModel('quota', cost()),
+    unknownRows: 0,
+    unknownUsd: 0,
   };
 }
 
@@ -56,10 +71,7 @@ describe('renderDailyBlockChart', () => {
   test('a zero series renders without dividing by zero', () => {
     // Act
     const lines = viewText(renderDailyBlockChart(
-      [
-        { date: '2026-08-01', value: 0 },
-        { date: '2026-08-02', value: 0 },
-      ],
+      [point('2026-08-01', 0), point('2026-08-02', 0)],
       60,
       4,
     ));
@@ -73,10 +85,7 @@ describe('renderDailyBlockChart', () => {
   test('the max value fills the full column height', () => {
     // Act
     const lines = viewText(renderDailyBlockChart(
-      [
-        { date: '2026-08-01', value: 10 },
-        { date: '2026-08-02', value: 1000 },
-      ],
+      [point('2026-08-01', 10), point('2026-08-02', 1000)],
       60,
       4,
     ));
@@ -88,10 +97,9 @@ describe('renderDailyBlockChart', () => {
 
   test('only the most recent points that fit the width are drawn', () => {
     // Arrange
-    const points = Array.from({ length: 100 }, (_, index) => ({
-      date: `2026-05-${String((index % 28) + 1).padStart(2, '0')}`,
-      value: index,
-    }));
+    const points = Array.from({ length: 100 }, (_, index) =>
+      point(`2026-05-${String((index % 28) + 1).padStart(2, '0')}`, index),
+    );
 
     // Act
     const lines = viewText(renderDailyBlockChart(points, 30, 3));
@@ -103,15 +111,15 @@ describe('renderDailyBlockChart', () => {
 });
 
 describe('cost view model', () => {
-  test('actual and nominal render with distinct structural prefixes', () => {
+  test('actual and usage render with distinct structural prefixes', () => {
     // Act & Assert
-    expect(formatCostCell(toCostViewModel('actual', cost({ basis: 'actual' })))).toBe('$ 12.50');
-    expect(formatCostCell(toCostViewModel('nominal', cost()))).toBe('~$ 12.50');
+    expect(formatCostCell(toCostViewModel('spend', cost({ basis: 'spend' })))).toBe('$ 12.50');
+    expect(formatCostCell(toCostViewModel('quota', cost()))).toBe('~$ 12.50');
   });
 
   test('partial pricing shows the subtotal with a plus marker', () => {
     // Act
-    const partial = toCostViewModel('nominal', cost({ usd: null, pricedSubtotalUsd: 3.25, pricedRows: 4, unpricedRows: 2 }));
+    const partial = toCostViewModel('quota', cost({ usd: null, pricedSubtotalUsd: 3.25, pricedRows: 4, unpricedRows: 2 }));
 
     // Assert
     expect(partial.partial).toBe(true);
@@ -121,13 +129,13 @@ describe('cost view model', () => {
   test('zero priced rows renders an em dash', () => {
     // Act & Assert
     expect(
-      formatCostCell(toCostViewModel('actual', cost({ usd: null, pricedSubtotalUsd: 0, pricedRows: 0 }))),
+      formatCostCell(toCostViewModel('spend', cost({ usd: null, pricedSubtotalUsd: 0, pricedRows: 0 }))),
     ).toBe('—');
   });
 });
 
 describe('overviewTabView', () => {
-  test('renders chart, separated cost cards, and the nominal disclaimer', () => {
+  test('renders chart, separated cost cards, and the usage disclaimer', () => {
     // Arrange
     const model = toOverviewViewModel(
       summaryFixture([bucket('2026-08-01', 1000), bucket('2026-08-02', 5000)]),
@@ -143,11 +151,11 @@ describe('overviewTabView', () => {
     // Act
     const text = viewText(overviewTabView(state, 100, 30, NOW)).join('\n');
 
-    // Assert
+    // Assert — a spend-free ledger shows the usage card alone
     expect(text).toContain('Daily input tokens');
-    expect(text).toContain('ACTUAL (out-of-pocket)');
-    expect(text).toContain('NOMINAL (API-equivalent)');
-    expect(text).toContain(NOMINAL_DISCLAIMER.slice(0, 40));
+    expect(text).toContain('QUOTA COST (list-price)');
+    expect(text).not.toContain('SPEND');
+    expect(text).toContain(QUOTA_COST_DISCLAIMER.slice(0, 40));
     expect(text).not.toContain('NaN');
   });
 
@@ -166,25 +174,56 @@ describe('overviewTabView', () => {
     expect(viewText(overviewTabView(state, 80, 24, NOW)).join('')).toContain('press r to collect');
   });
 
-  test('narrow terminals stack the cost cards vertically', () => {
-    // Arrange
-    const model = toOverviewViewModel(summaryFixture([bucket('2026-08-01', 10)]));
+  test('spend rows bring the SPEND card back; narrow terminals stack it above usage', () => {
+    // Arrange — totals carry billed money
+    const base = toOverviewViewModel(summaryFixture([bucket('2026-08-01', 10)]));
+    const model = {
+      ...base,
+      totals: {
+        ...base.totals,
+        spendCost: { ...base.totals.spendCost, usd: 1.25, pricedSubtotalUsd: 1.25, pricedRows: 5, partial: false },
+      },
+    };
 
     // Act
     const lines = viewText(renderCostSummary(model, 60));
     const text = lines.join('\n');
 
-    // Assert — both cards present, on separate lines
-    const actualLine = lines.findIndex((line) => line.includes('ACTUAL'));
-    const nominalLine = lines.findIndex((line) => line.includes('NOMINAL'));
-    expect(actualLine).toBeGreaterThanOrEqual(0);
-    expect(nominalLine).toBeGreaterThan(actualLine);
-    expect(text).toContain('ACTUAL (out-of-pocket)');
+    // Assert — both cards present, spend first, on separate lines
+    const spendLine = lines.findIndex((line) => line.includes('SPEND'));
+    const usageLine = lines.findIndex((line) => line.includes('QUOTA'));
+    expect(spendLine).toBeGreaterThanOrEqual(0);
+    expect(usageLine).toBeGreaterThan(spendLine);
+    expect(text).toContain('SPEND COST (billed money)');
+  });
+
+  test('unclassified rows surface as a loud footnote with their amount', () => {
+    // Arrange
+    const base = toOverviewViewModel(summaryFixture([bucket('2026-08-01', 10)]));
+    const model = {
+      ...base,
+      totals: { ...base.totals, unknownRows: 3, unknownUsd: 0.5 },
+    };
+    const state = withTabResource(createInitialState(), 'overview', {
+      phase: 'ready',
+      data: model,
+      error: null,
+      updatedAtUtc: NOW,
+      invalidated: false,
+    });
+
+    // Act
+    const text = viewText(overviewTabView(state, 100, 30, NOW)).join('\n');
+
+    // Assert — row count AND stamped amount, plus the fix location
+    expect(text).toContain('3 rows unclassified');
+    expect(text).toContain('$ 0.50');
+    expect(text).toContain('billing.overrides');
   });
 });
 
 describe('overview height budget (review regression)', () => {
-  test('80x24 keeps nominal card, summary, and disclaimer visible', () => {
+  test('80x24 keeps usage card, summary, and disclaimer visible', () => {
     // Arrange — realistic 90-day series
     const buckets = Array.from({ length: 90 }, (_, index) =>
       bucket(`2026-05-${String((index % 28) + 1).padStart(2, '0')}`, 1000 + index),
@@ -204,9 +243,9 @@ describe('overview height budget (review regression)', () => {
     // Assert — everything fits inside the body budget
     expect(lines.length).toBeLessThanOrEqual(20);
     const text = lines.join('\n');
-    expect(text).toContain('NOMINAL (API-equivalent)');
+    expect(text).toContain('QUOTA COST (list-price)');
     expect(text).toContain('rows ');
-    expect(text).toContain(NOMINAL_DISCLAIMER.slice(0, 30));
+    expect(text).toContain(QUOTA_COST_DISCLAIMER.slice(0, 30));
   });
 
   test('very short terminals drop the chart before dropping cost facts', () => {
@@ -226,8 +265,7 @@ describe('overview height budget (review regression)', () => {
     // Assert
     expect(lines.length).toBeLessThanOrEqual(14);
     const text = lines.join('\n');
-    expect(text).toContain('ACTUAL');
-    expect(text).toContain('NOMINAL');
-    expect(text).toContain(NOMINAL_DISCLAIMER.slice(0, 30));
+    expect(text).toContain('QUOTA COST');
+    expect(text).toContain(QUOTA_COST_DISCLAIMER.slice(0, 30));
   });
 });

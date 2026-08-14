@@ -45,9 +45,11 @@ function reportSummary(groupBy: ReportGroupBy): ReportSummary {
       key: 'total',
       rowCount: 0,
       tokens: { inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0, reasoningTokens: 0 },
-      actual: { basis: 'actual', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
-      nominal: { basis: 'nominal', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
+      spendCost: { basis: 'spend', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
+      quotaCost: { basis: 'quota', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
       unpricedRows: 0,
+      unknownRows: 0,
+      unknownUsd: 0,
       unpricedModels: [],
     },
     pricing: { status: 'fresh', asOfUtc: NOW, sources: [], warnings: [] },
@@ -111,6 +113,12 @@ function makeFakes(options: FakeDataSourceOptions = {}) {
     async loadReport(groupBy: ReportGroupBy): Promise<ReportSummary> {
       calls.report.push(groupBy);
       return reportSummary(groupBy);
+    },
+    async loadDayReport(): Promise<{
+      agents: ReportSummary;
+      modelsByAgent: Record<string, ReportSummary>;
+    }> {
+      return { agents: reportSummary('agent'), modelsByAgent: {} };
     },
   };
   const screen = new FakeScreen();

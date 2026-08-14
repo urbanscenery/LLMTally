@@ -94,7 +94,7 @@ describe('help overlay', () => {
     // Assert
     expect(frame).toHaveLength(24);
     expect(text.join('\n')).toContain('╭─ Help');
-    expect(text.join('\n')).toContain('sort by actual cost');
+    expect(text.join('\n')).toContain('sort by cost');
     for (const line of frame) {
       expect(lineWidth(line)).toBeLessThanOrEqual(100);
     }

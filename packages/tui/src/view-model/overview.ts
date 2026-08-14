@@ -7,6 +7,13 @@ import type { CostViewModel } from './cost.ts';
 export interface DailyPointViewModel {
   readonly date: string;
   readonly value: number;
+  /** The day's full bucket, so selecting a date needs no extra query. */
+  readonly rowCount: number;
+  readonly tokens: TokenTotals;
+  readonly spendCost: CostViewModel;
+  readonly quotaCost: CostViewModel;
+  readonly unknownRows: number;
+  readonly unknownUsd: number;
 }
 
 export interface OverviewViewModel {
@@ -19,9 +26,12 @@ export interface OverviewViewModel {
   readonly totals: {
     readonly rowCount: number;
     readonly tokens: TokenTotals;
-    readonly actual: CostViewModel;
-    readonly nominal: CostViewModel;
+    readonly spendCost: CostViewModel;
+    readonly quotaCost: CostViewModel;
     readonly unpricedRows: number;
+    /** Rows whose billing nature is unclassified — in neither total. */
+    readonly unknownRows: number;
+    readonly unknownUsd: number;
   };
   readonly pricing: {
     readonly status: string;
@@ -35,6 +45,12 @@ export function toOverviewViewModel(summary: ReportSummary): OverviewViewModel {
   const points = summary.buckets.map((bucket) => ({
     date: sanitizeTerminalLine(bucket.key),
     value: Math.max(0, bucket.tokens.inputTokens),
+    rowCount: bucket.rowCount,
+    tokens: bucket.tokens,
+    spendCost: toCostViewModel('spend', bucket.spendCost),
+    quotaCost: toCostViewModel('quota', bucket.quotaCost),
+    unknownRows: bucket.unknownRows,
+    unknownUsd: bucket.unknownUsd,
   }));
   return {
     chart: {
@@ -45,9 +61,11 @@ export function toOverviewViewModel(summary: ReportSummary): OverviewViewModel {
     totals: {
       rowCount: summary.totals.rowCount,
       tokens: summary.totals.tokens,
-      actual: toCostViewModel('actual', summary.totals.actual),
-      nominal: toCostViewModel('nominal', summary.totals.nominal),
+      spendCost: toCostViewModel('spend', summary.totals.spendCost),
+      quotaCost: toCostViewModel('quota', summary.totals.quotaCost),
       unpricedRows: summary.totals.unpricedRows,
+      unknownRows: summary.totals.unknownRows,
+      unknownUsd: summary.totals.unknownUsd,
     },
     pricing: {
       status: sanitizeTerminalLine(summary.pricing.status),

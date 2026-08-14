@@ -1,13 +1,14 @@
 import { TUI_TABS } from './types.ts';
 import type { RefreshState, ResourceState, TuiTab } from './types.ts';
 import type { BreakdownTabViewModel } from './view-model/breakdown.ts';
+import type { DayDetailViewModel } from './view-model/day-detail.ts';
 import type { OverviewViewModel } from './view-model/overview.ts';
 import type { AccountsTabViewModel } from './view-model/accounts.ts';
 import type { DoctorTabViewModel } from './view-model/doctor.ts';
 import type { PromptsViewModel } from './view-model/prompts.ts';
 import type { TuiOverlay } from './overlay.ts';
 
-export type BreakdownSortColumn = 'rows' | 'actual' | 'input';
+export type BreakdownSortColumn = 'rows' | 'cost' | 'input';
 
 export interface SortSpec {
   readonly column: BreakdownSortColumn;
@@ -33,6 +34,9 @@ export interface TuiState {
   readonly accountsCursor: number;
   readonly searchCursor: number;
   readonly searchQuery: string;
+  /** Chart day the Overview drilled into; null shows the totals. */
+  readonly overviewSelectedDate: string | null;
+  readonly overviewDayDetail: ResourceState<DayDetailViewModel>;
   /** Model the Models tab drilled into; null shows the aggregate table. */
   readonly modelDrillDown: string | null;
   readonly modelPrompts: ResourceState<PromptsViewModel>;
@@ -100,6 +104,22 @@ export function withSearchQuery(state: TuiState, query: string): TuiState {
   return { ...state, searchQuery: query, searchCursor: 0 };
 }
 
+/**
+ * Selecting a chart day resets its detail resource: the old day's
+ * agent/model rows must never render under the new day's header.
+ * Clearing the selection also clears the detail.
+ */
+export function withOverviewSelectedDate(state: TuiState, date: string | null): TuiState {
+  if (state.overviewSelectedDate === date) {
+    return state;
+  }
+  return {
+    ...state,
+    overviewSelectedDate: date,
+    overviewDayDetail: emptyResource(),
+  };
+}
+
 /** Entering a model resets its prompt cursor; leaving clears the list. */
 export function withModelDrillDown(state: TuiState, model: string | null): TuiState {
   return {
@@ -134,6 +154,8 @@ export function createInitialState(): TuiState {
     accountsCursor: 0,
     searchCursor: 0,
     searchQuery: '',
+    overviewSelectedDate: null,
+    overviewDayDetail: emptyResource(),
     modelDrillDown: null,
     modelPrompts: emptyResource(),
     modelPromptsCursor: 0,

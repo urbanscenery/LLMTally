@@ -42,9 +42,11 @@ function emptyReport(groupBy: ReportGroupBy): ReportSummary {
       key: 'total',
       rowCount: 0,
       tokens: { inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0, reasoningTokens: 0 },
-      actual: { basis: 'actual', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
-      nominal: { basis: 'nominal', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
+      spendCost: { basis: 'spend', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
+      quotaCost: { basis: 'quota', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
       unpricedRows: 0,
+      unknownRows: 0,
+      unknownUsd: 0,
       unpricedModels: [],
     },
     pricing: { status: 'fresh', asOfUtc: NOW, sources: [], warnings: [] },
@@ -59,6 +61,12 @@ function makeDataSource(scan: () => Promise<ScanSummary>): TuiDataSource {
     },
     async loadReport(groupBy: ReportGroupBy): Promise<ReportSummary> {
       return emptyReport(groupBy);
+    },
+    async loadDayReport(): Promise<{
+      agents: ReportSummary;
+      modelsByAgent: Record<string, ReportSummary>;
+    }> {
+      return { agents: emptyReport('agent'), modelsByAgent: {} };
     },
     async loadDoctorChecks() {
       return [];
@@ -99,7 +107,12 @@ async function settle(ms = 60): Promise<void> {
 
 function preferences() {
   return {
-    load: () => ({ theme: null, autoRefreshSeconds: undefined, paintBackground: undefined }),
+    load: () => ({
+      theme: null,
+      autoRefreshSeconds: undefined,
+      paintBackground: undefined,
+      chartStyle: null,
+    }),
     save: () => null,
   };
 }
@@ -207,9 +220,11 @@ describe('models drill-down and search', () => {
       key,
       rowCount: rows,
       tokens: { inputTokens: rows, outputTokens: 0, cacheWrite: 0, cacheRead: 0, reasoningTokens: 0 },
-      actual: { basis: 'actual' as const, usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
-      nominal: { basis: 'nominal' as const, usd: 1, pricedSubtotalUsd: 1, pricedRows: rows, unpricedRows: 0, warnings: [] },
+      spendCost: { basis: 'spend' as const, usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
+      quotaCost: { basis: 'quota' as const, usd: 1, pricedSubtotalUsd: 1, pricedRows: rows, unpricedRows: 0, warnings: [] },
       unpricedRows: 0,
+      unknownRows: 0,
+      unknownUsd: 0,
       unpricedModels: [],
     });
     return { ...base, buckets: [bucket('model-a', 10), bucket('model-b', 5)] };
@@ -234,8 +249,8 @@ describe('models drill-down and search', () => {
                 model: filter.model ?? 'any',
                 effort: null,
                 tokens: { inputTokens: 10, outputTokens: 2, cacheWrite: 0, cacheRead: 0, reasoningTokens: 0 },
-                actualUsd: null,
-                nominalUsd: 0.5,
+                nature: 'quota' as const,
+                costUsd: 0.5,
                 text: 'hello prompt',
               },
             ],
@@ -625,5 +640,160 @@ describe('ledger compaction', () => {
     expect(beforeConfirm).toBe(0);
     expect(compactions).toBe(1);
     expect(frame).toContain('reclaimed 51.0 MB');
+  });
+});
+
+describe('overview day selection', () => {
+  function dayBucket(key: string, inputTokens: number) {
+    return {
+      key,
+      rowCount: 5,
+      tokens: { inputTokens, outputTokens: 100, cacheWrite: 0, cacheRead: 50, reasoningTokens: 7 },
+      spendCost: { basis: 'spend' as const, usd: 1.25, pricedSubtotalUsd: 1.25, pricedRows: 5, unpricedRows: 0, warnings: [] },
+      quotaCost: { basis: 'quota' as const, usd: 4.5, pricedSubtotalUsd: 4.5, pricedRows: 5, unpricedRows: 0, warnings: [] },
+      unpricedRows: 0,
+      unknownRows: 0,
+      unknownUsd: 0,
+      unpricedModels: [],
+    };
+  }
+
+  function dayDataSource() {
+    const dayReports: string[] = [];
+    const source = makeDataSource(async () => scanSummary());
+    const dataSource: TuiDataSource = {
+      ...source,
+      async loadReport(groupBy: ReportGroupBy): Promise<ReportSummary> {
+        const summary = emptyReport(groupBy);
+        if (groupBy !== 'day') {
+          return summary;
+        }
+        return {
+          ...summary,
+          buckets: [dayBucket('2026-08-01', 1000), dayBucket('2026-08-02', 5000)],
+          totals: { ...summary.totals, rowCount: 10 },
+        };
+      },
+      async loadDayReport(date: string) {
+        dayReports.push(date);
+        return {
+          agents: {
+            ...emptyReport('agent'),
+            buckets: [dayBucket('claude-code', 900)],
+          },
+          modelsByAgent: {
+            'claude-code': {
+              ...emptyReport('model'),
+              buckets: [dayBucket('claude-fable-5', 900)],
+            },
+          },
+        };
+      },
+    };
+    return { dataSource, dayReports };
+  }
+
+  async function daySession() {
+    const screen = new FakeScreen(100, 30);
+    const { dataSource, dayReports } = dayDataSource();
+    const saved: Record<string, unknown>[] = [];
+    const session = await createTuiSession({
+      createScreen: async () => screen,
+      dataSource,
+      chartMode: null,
+      themeName: null,
+      refreshSeconds: null,
+      monoForced: true,
+      firstRun: false,
+      preferences: {
+        load: () => ({
+          theme: null,
+          autoRefreshSeconds: undefined,
+          paintBackground: undefined,
+          chartStyle: null,
+        }),
+        save: (patch) => {
+          saved.push({ ...patch });
+          return null;
+        },
+      },
+    });
+    return { screen, session, dayReports, saved };
+  }
+
+  test('down selects the newest day, arrows walk, Esc returns', async () => {
+    // Arrange
+    const { screen, session, dayReports } = await daySession();
+    const done = session.run();
+    await settle();
+
+    // Act — enter selection on the newest day
+    screen.pressKey('down');
+    await settle();
+    const selectedFrame = screen.lastFrame().join('\n');
+
+    // walk to the previous day
+    screen.pressKey('left');
+    await settle();
+    const walkedFrame = screen.lastFrame().join('\n');
+
+    // and leave
+    screen.pressKey('escape');
+    await settle();
+    const closedFrame = screen.lastFrame().join('\n');
+    session.stop();
+    await done;
+
+    // Assert
+    expect(selectedFrame).toContain('▾ 2026-08-02');
+    expect(selectedFrame).toContain('claude-code · 5 prompts');
+    expect(selectedFrame).toContain('claude-fable-5');
+    expect(walkedFrame).toContain('▾ 2026-08-01');
+    expect(closedFrame).toContain('QUOTA COST (list-price)');
+    expect(dayReports).toEqual(['2026-08-02', '2026-08-01']);
+  });
+
+  test('a chart click selects the day under the pointer', async () => {
+    // Arrange
+    const { screen, session, dayReports } = await daySession();
+    const done = session.run();
+    await settle();
+
+    // Act — body row 2 is the first plot row (blank + title above);
+    // the shell adds 2 rows above the body, so screen y = 4. Column 7
+    // is the first plot cell after the value axis.
+    screen.click(7, 4);
+    await settle();
+    const frame = screen.lastFrame().join('\n');
+    session.stop();
+    await done;
+
+    // Assert
+    expect(frame).toContain('▾ 2026-08-01');
+    expect(dayReports).toEqual(['2026-08-01']);
+  });
+
+  test('g picks a chart style, remembers it, and re-renders', async () => {
+    // Arrange
+    const { screen, session, saved } = await daySession();
+    const done = session.run();
+    await settle();
+
+    // Act — open the picker and choose the heatmap (last option)
+    screen.pressKey('g');
+    await settle();
+    const pickerFrame = screen.lastFrame().join('\n');
+    screen.pressKey('down');
+    screen.pressKey('down');
+    screen.pressKey('return');
+    await settle();
+    const heatmapFrame = screen.lastFrame().join('\n');
+    session.stop();
+    await done;
+
+    // Assert
+    expect(pickerFrame).toContain('Chart style');
+    expect(heatmapFrame).toContain('(calendar)');
+    expect(saved).toContainEqual({ chartStyle: 'heatmap' });
   });
 });

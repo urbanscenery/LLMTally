@@ -4,7 +4,7 @@
  * is open the keybinding registry routes every key here — a picker must
  * not be able to change hidden state behind itself.
  */
-export type PickerTopic = 'theme' | 'auto-refresh' | 'account-action';
+export type PickerTopic = 'theme' | 'auto-refresh' | 'account-action' | 'chart-style';
 
 export type ConfirmTopic =
   | 'account-add'

@@ -16,6 +16,7 @@ export type TuiAction =
   | 'sort-tokens'
   | 'auto-refresh-cycle'
   | 'theme-cycle'
+  | 'chart-style'
   | 'toggle-help'
   /** Documented in help; handled by the Accounts tab before dispatch. */
   | 'noop';
@@ -89,7 +90,7 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
     action: 'sort-cost',
     scope: ['agents', 'models'],
     group: 'Data',
-    label: 'sort by actual cost',
+    label: 'sort by cost',
     keysLabel: 'c',
     priority: 69,
   },
@@ -101,6 +102,25 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
     label: 'sort by input tokens',
     keysLabel: 't',
     priority: 68,
+  },
+  {
+    matches: [{ name: 'g' }],
+    action: 'chart-style',
+    scope: ['overview'],
+    group: 'Data',
+    label: 'chart style (bars / braille / heatmap)',
+    keysLabel: 'g',
+    footer: { keys: '[g]', text: 'raph' },
+    priority: 66,
+  },
+  {
+    matches: [{ name: 'down' }],
+    action: 'noop', // handled by the Overview tab before dispatch
+    scope: ['overview'],
+    group: 'Data',
+    label: 'select a chart day (←/→ move, ↑/Esc close, click works too)',
+    keysLabel: '↓ then ←/→',
+    priority: 25,
   },
   {
     matches: [{ name: 'r' }],

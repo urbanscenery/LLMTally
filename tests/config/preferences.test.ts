@@ -26,6 +26,7 @@ describe('ui preferences', () => {
       theme: 'dracula',
       autoRefreshSeconds: 300,
       paintBackground: undefined,
+      chartStyle: null,
     });
   });
 
@@ -42,6 +43,7 @@ describe('ui preferences', () => {
       theme: 'tokyo-night',
       autoRefreshSeconds: 60,
       paintBackground: undefined,
+      chartStyle: null,
     });
   });
 
@@ -87,6 +89,7 @@ describe('ui preferences', () => {
       theme: null,
       autoRefreshSeconds: undefined,
       paintBackground: undefined,
+      chartStyle: null,
     });
     expect(loadUiPreferences(broken).theme).toBeNull();
   });
@@ -104,7 +107,20 @@ describe('ui preferences', () => {
       theme: 'onedark',
       autoRefreshSeconds: undefined,
       paintBackground: true,
+      chartStyle: null,
     });
+  });
+
+  test('chartStyle round-trips and a theme save leaves it alone', () => {
+    // Arrange
+    const path = configPath();
+    saveUiPreferences({ chartStyle: 'heatmap' }, path);
+
+    // Act
+    saveUiPreferences({ theme: 'onedark' }, path);
+
+    // Assert
+    expect(loadUiPreferences(path).chartStyle).toBe('heatmap');
   });
 
   test('an unwritable path reports an error instead of throwing', () => {

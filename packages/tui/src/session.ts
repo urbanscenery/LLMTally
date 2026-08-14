@@ -20,6 +20,7 @@ import {
   withInvalidatedTabs,
   withModelDrillDown,
   withModelPromptsCursor,
+  withOverviewSelectedDate,
   withSearchCursor,
   withModelsCursor,
   withSearchQuery,
@@ -28,10 +29,13 @@ import {
 } from './state.ts';
 import { MONO_THEME, THEMES, canonicalThemeName, findTheme, resolveTheme, shouldPaintSurface } from './theme.ts';
 import type { ResolvedTheme } from './theme.ts';
-import type { ChartGlyphMode } from './components/daily-block-chart.ts';
+import { CHART_STYLES, CHART_STYLE_LABELS, isChartStyle } from './components/chart-style.ts';
+import type { ChartStyle } from './components/chart-style.ts';
 import type { ResourceState, TuiKeyEvent, TuiScreen } from './types.ts';
 import type { PromptListResult } from '@llmtally/core/report/prompts.ts';
 import type { PromptsViewModel } from './view-model/prompts.ts';
+import { toDayDetailViewModel } from './view-model/day-detail.ts';
+import type { DayDetailViewModel } from './view-model/day-detail.ts';
 import { tableWindow } from './components/breakdown-table.ts';
 import { isSwitchable } from './view-model/accounts.ts';
 import { clampCursor } from './views/accounts.ts';
@@ -45,7 +49,7 @@ const MODELS_TABLE_HEADER_LINES = 4;
 import { doctorTabView } from './views/doctor.ts';
 import { searchTabView } from './views/search.ts';
 import { toPromptsViewModel } from './view-model/prompts.ts';
-import { makeOverviewTabView } from './views/overview.ts';
+import { makeOverviewTabView, overviewDateAtClick } from './views/overview.ts';
 
 export const MONO_THEME_NAME = 'mono';
 /** Matches the core quota cache TTL, so a poll is at most one vendor call. */
@@ -58,7 +62,8 @@ export interface TuiSessionOptions {
   /** Given a live theme provider, builds the screen to render into. */
   readonly createScreen: (themeProvider: () => ResolvedTheme) => Promise<TuiScreen>;
   readonly dataSource: TuiDataSource;
-  readonly chartMode: ChartGlyphMode;
+  /** Flag override; when null the remembered chart style is used. */
+  readonly chartMode: ChartStyle | null;
   /** Flag override; when absent the remembered preference is used. */
   readonly themeName: string | null;
   readonly refreshSeconds: number | null | undefined;
@@ -194,6 +199,8 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
   );
   const initialInterval =
     options.refreshSeconds !== undefined ? options.refreshSeconds : (remembered.autoRefreshSeconds ?? null);
+  let chartStyle: ChartStyle =
+    options.chartMode ?? (isChartStyle(remembered.chartStyle) ? remembered.chartStyle : 'block');
 
   let loader: TabLoader | null = null;
   let scheduler: RefreshScheduler | null = null;
@@ -205,7 +212,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
   const controller = new TuiController({
     screen,
     views: {
-      overview: makeOverviewTabView(options.chartMode),
+      overview: makeOverviewTabView(() => chartStyle),
       accounts: accountsTabView,
       agents: agentsTabView,
       models: modelsTabView,
@@ -236,10 +243,11 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
     onDoctorKey: (key) => handleDoctorKey(key),
     onSearchKey: (key) => handleSearchKey(key),
     onModelsKey: (key) => handleModelsKey(key),
+    onOverviewKey: (key) => handleOverviewKey(key),
     onInputSubmit: (value) => {
       runSearch(value);
     },
-    onBodyClick: (bodyRow, bodyHeight) => handleBodyClick(bodyRow, bodyHeight),
+    onBodyClick: (bodyRow, bodyHeight, column) => handleBodyClick(bodyRow, bodyHeight, column),
   });
 
   function notice(title: string, message: string, busy: boolean): void {
@@ -265,6 +273,15 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       controller.setOverlay(
         makePicker('auto-refresh', 'Auto refresh', autoRefreshOptions(current), current === null ? 'off' : String(current)),
       );
+      return;
+    }
+    if (topic === 'chart-style') {
+      const styleOptions: PickerOption[] = CHART_STYLES.map((style) => ({
+        id: style,
+        label: CHART_STYLE_LABELS[style],
+        hint: style === chartStyle ? 'current' : undefined,
+      }));
+      controller.setOverlay(makePicker('chart-style', 'Chart style', styleOptions, chartStyle));
     }
   }
 
@@ -301,6 +318,19 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       if (error !== null) {
         notice('Auto refresh', error, false);
       }
+      return;
+    }
+    if (topic === 'chart-style') {
+      if (!isChartStyle(optionId)) {
+        return;
+      }
+      chartStyle = optionId;
+      const error = prefs.save({ chartStyle: optionId });
+      if (error !== null) {
+        notice('Chart style', error, false);
+        return;
+      }
+      controller.commit(controller.getState());
     }
   }
 
@@ -566,6 +596,89 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
   }
 
   /**
+   * Overview chart day selection: ↓ enters on the newest day, ←/→ walk
+   * the data days (calendar gaps are skipped — an empty day has nothing
+   * to show), ↑/Esc leave. While a day is selected ←/→ are consumed, so
+   * tab switching falls back to Tab and the digits.
+   */
+  function handleOverviewKey(key: TuiKeyEvent): boolean {
+    const state = controller.getState();
+    const points = state.overview.data?.chart.points ?? [];
+    if (points.length === 0) {
+      return false;
+    }
+    const selected = state.overviewSelectedDate;
+    if (selected === null) {
+      if (key.name === 'down' || key.name === 'j') {
+        selectOverviewDate(points[points.length - 1]?.date ?? null);
+        return true;
+      }
+      return false;
+    }
+    if (key.name === 'escape' || key.name === 'up' || key.name === 'k') {
+      controller.commit(withOverviewSelectedDate(state, null));
+      return true;
+    }
+    // a reload may have dropped the selected day (retention); walking
+    // from the newest day keeps the keys responsive instead of dead
+    const found = points.findIndex((point) => point.date === selected);
+    const current = found < 0 ? points.length - 1 : found;
+    if (key.name === 'left' || key.name === 'h') {
+      selectOverviewDate(points[Math.max(0, current - 1)]?.date ?? null);
+      return true;
+    }
+    if (key.name === 'right' || key.name === 'l') {
+      selectOverviewDate(points[Math.min(points.length - 1, current + 1)]?.date ?? null);
+      return true;
+    }
+    // ↓ entered the selection; a repeat should not fall through to a
+    // global binding and must not move anything either
+    return key.name === 'down' || key.name === 'j';
+  }
+
+  function selectOverviewDate(date: string | null): void {
+    if (date === null) {
+      return;
+    }
+    const state = controller.getState();
+    if (state.overviewSelectedDate === date) {
+      return;
+    }
+    controller.commit(withOverviewSelectedDate(state, date));
+    void loadDayDetail(date);
+  }
+
+  /** Same discard rule as the prompt lists: a result for a day the user
+   * has already left must never land under the new day's header. */
+  async function loadDayDetail(date: string): Promise<void> {
+    const stillWanted = (): boolean => controller.getState().overviewSelectedDate === date;
+    const put = (resource: ResourceState<DayDetailViewModel>): void => {
+      if (stillWanted()) {
+        controller.commit({ ...controller.getState(), overviewDayDetail: resource });
+      }
+    };
+    put({ phase: 'loading', data: null, error: null, updatedAtUtc: null, invalidated: false });
+    try {
+      const result = await options.dataSource.loadDayReport(date);
+      put({
+        phase: 'ready',
+        data: toDayDetailViewModel(date, result.agents, result.modelsByAgent),
+        error: null,
+        updatedAtUtc: null,
+        invalidated: false,
+      });
+    } catch (error) {
+      put({
+        phase: 'error',
+        data: null,
+        error: sanitizeTerminalLine(error instanceof Error ? error.message : String(error)),
+        updatedAtUtc: null,
+        invalidated: false,
+      });
+    }
+  }
+
+  /**
    * Prompt lists are loaded outside the tab loader: both are driven by a
    * user action rather than a refresh cycle, and a result must be
    * discarded when the user has already moved on to a different model or
@@ -626,8 +739,28 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
    * account still takes a deliberate Enter, so a stray click cannot
    * start something irreversible.
    */
-  function handleBodyClick(bodyRow: number, bodyHeight: number): boolean {
+  function handleBodyClick(bodyRow: number, bodyHeight: number, column: number): boolean {
     const state = controller.getState();
+    if (state.activeTab === 'overview') {
+      const model = state.overview.data;
+      if (model === null) {
+        return false;
+      }
+      const date = overviewDateAtClick(
+        model,
+        chartStyle,
+        screen.width,
+        bodyHeight,
+        bodyRow,
+        column,
+        state.overviewSelectedDate,
+      );
+      if (date !== null) {
+        selectOverviewDate(date);
+        return true;
+      }
+      return false;
+    }
     const promptClick = (rowCount: number, cursor: number, linesAbove: number): number | null =>
       promptIndexAtLine(
         promptWindowStart(rowCount, cursor, bodyHeight - linesAbove - PROMPT_LIST_HEADER_LINES)

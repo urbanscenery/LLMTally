@@ -7,7 +7,7 @@
  * Usage: bun scripts/verify-opentui-compile.ts
  * Exit codes: 0 pass, 1 fail.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,9 +15,23 @@ const repoRoot = join(import.meta.dir, '..');
 const workDir = mkdtempSync(join(tmpdir(), 'llmtally-opentui-spike-'));
 const binaryPath = join(workDir, 'opentui-smoke');
 
+/**
+ * bun 1.3.x leaks its ~60MB `.{hash}-{n}.bun-build` compile temp in the
+ * build's cwd even on success; two compiles per run added up to
+ * gigabytes at the repo root before this cleanup existed.
+ */
+function removeLeakedBunBuildTemps(): void {
+  for (const name of readdirSync(repoRoot)) {
+    if (/^\.[0-9a-f]{16}-[0-9a-f]{8}\.bun-build$/.test(name)) {
+      rmSync(join(repoRoot, name), { force: true });
+    }
+  }
+}
+
 function fail(message: string): never {
   console.error(`verify-opentui-compile: FAIL — ${message}`);
   rmSync(workDir, { recursive: true, force: true });
+  removeLeakedBunBuildTemps();
   process.exit(1);
 }
 
@@ -76,4 +90,5 @@ if (help.exitCode !== 0 || !help.stdout.toString().includes('Tabs:')) {
 }
 
 rmSync(workDir, { recursive: true, force: true });
+removeLeakedBunBuildTemps();
 console.log('verify-opentui-compile: PASS — compiled binaries rendered and exited cleanly');

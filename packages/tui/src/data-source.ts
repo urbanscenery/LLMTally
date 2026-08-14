@@ -50,6 +50,13 @@ export interface TuiDataSource {
   /** Drops the quota cache so the next read hits the vendors. */
   invalidateQuotaCache(): void;
   loadReport(groupBy: ReportGroupBy): Promise<ReportSummary>;
+  /**
+   * One local calendar day (YYYY-MM-DD): the per-agent breakdown plus,
+   * for each agent seen that day, its per-model breakdown.
+   */
+  loadDayReport(
+    date: string,
+  ): Promise<{ agents: ReportSummary; modelsByAgent: Record<string, ReportSummary> }>;
   loadDoctorChecks(): Promise<readonly DoctorCheck[]>;
   loadPrompts(filter: { model: string | null; search: string | null }): Promise<PromptListResult>;
   installDaemon(): Promise<string>;
@@ -273,6 +280,31 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
         range: { fromDate: null, toDate: null },
         noRefresh: false,
       });
+    },
+
+    async loadDayReport(
+      date: string,
+    ): Promise<{ agents: ReportSummary; modelsByAgent: Record<string, ReportSummary> }> {
+      const base = {
+        databasePath: options.databasePath,
+        // both ends inclusive local calendar dates — one day exactly
+        range: { fromDate: date, toDate: date },
+        noRefresh: false,
+      };
+      const agents = await generateReport({ ...base, agent: null, groupBy: 'agent' });
+      // one model query per agent seen that day — a handful of local
+      // SQLite aggregations, and the nesting the view actually shows
+      const modelsByAgent: Record<string, ReportSummary> = {};
+      await Promise.all(
+        agents.buckets.map(async (bucket) => {
+          modelsByAgent[bucket.key] = await generateReport({
+            ...base,
+            agent: bucket.key,
+            groupBy: 'model',
+          });
+        }),
+      );
+      return { agents, modelsByAgent };
     },
   };
 }

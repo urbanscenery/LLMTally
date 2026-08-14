@@ -32,9 +32,10 @@ export interface TuiControllerOptions {
   readonly onDoctorKey?: (key: TuiKeyEvent) => boolean;
   readonly onSearchKey?: (key: TuiKeyEvent) => boolean;
   readonly onModelsKey?: (key: TuiKeyEvent) => boolean;
+  readonly onOverviewKey?: (key: TuiKeyEvent) => boolean;
   readonly onInputSubmit?: (value: string) => void;
-  /** Body click at a 0-based body row; return true when consumed. */
-  readonly onBodyClick?: (bodyRow: number, bodyHeight: number) => boolean;
+  /** Body click at a 0-based body row/column; return true when consumed. */
+  readonly onBodyClick?: (bodyRow: number, bodyHeight: number, column: number) => boolean;
 }
 
 /**
@@ -60,8 +61,11 @@ export class TuiController {
   private readonly onDoctorKey: ((key: TuiKeyEvent) => boolean) | null;
   private readonly onSearchKey: ((key: TuiKeyEvent) => boolean) | null;
   private readonly onModelsKey: ((key: TuiKeyEvent) => boolean) | null;
+  private readonly onOverviewKey: ((key: TuiKeyEvent) => boolean) | null;
   private readonly onInputSubmit: ((value: string) => void) | null;
-  private readonly onBodyClick: ((bodyRow: number, bodyHeight: number) => boolean) | null;
+  private readonly onBodyClick:
+    | ((bodyRow: number, bodyHeight: number, column: number) => boolean)
+    | null;
   private stopped = false;
   private started = false;
   private resolveDone: (() => void) | null = null;
@@ -83,6 +87,7 @@ export class TuiController {
     this.onDoctorKey = options.onDoctorKey ?? null;
     this.onSearchKey = options.onSearchKey ?? null;
     this.onModelsKey = options.onModelsKey ?? null;
+    this.onOverviewKey = options.onOverviewKey ?? null;
     this.onInputSubmit = options.onInputSubmit ?? null;
     this.onBodyClick = options.onBodyClick ?? null;
     this.done = new Promise((resolve) => {
@@ -141,7 +146,7 @@ export class TuiController {
     }
     const bodyRow = event.y - BODY_TOP;
     if (bodyRow >= 0) {
-      this.onBodyClick?.(bodyRow, Math.max(1, this.screen.height - 4));
+      this.onBodyClick?.(bodyRow, Math.max(1, this.screen.height - 4), event.x);
     }
   }
 
@@ -180,6 +185,9 @@ export class TuiController {
       return;
     }
     if (this.state.activeTab === 'models' && this.onModelsKey?.(key) === true) {
+      return;
+    }
+    if (this.state.activeTab === 'overview' && this.onOverviewKey?.(key) === true) {
       return;
     }
     const binding = resolveBinding(key, this.state);
@@ -295,6 +303,9 @@ export class TuiController {
           this.render();
         }
         return;
+      case 'chart-style':
+        this.onOpenPicker?.('chart-style');
+        return;
       case 'toggle-help': {
         // Esc only closes; ? toggles. But ? must never REPLACE a
         // standing confirm/input/picker — swapping a destructive
@@ -328,7 +339,7 @@ export class TuiController {
           return;
         }
         const column =
-          action === 'sort-rows' ? 'rows' : action === 'sort-cost' ? 'actual' : 'input';
+          action === 'sort-rows' ? 'rows' : action === 'sort-cost' ? 'cost' : 'input';
         this.state = withSortToggle(this.state, this.state.activeTab, column);
         this.render();
         return;

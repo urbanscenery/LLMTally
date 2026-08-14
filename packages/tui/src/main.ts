@@ -14,7 +14,8 @@ import { createOpentuiScreen } from './renderer.ts';
 import { createTuiSession } from './session.ts';
 import { findTheme, themeNames } from './theme.ts';
 import type { ResolvedTheme } from './theme.ts';
-import type { ChartGlyphMode } from './components/daily-block-chart.ts';
+import { CHART_STYLES, isChartStyle } from './components/chart-style.ts';
+import type { ChartStyle } from './components/chart-style.ts';
 
 export const USAGE = `llmtally — per-prompt usage ledger for local AI coding agents
 
@@ -25,7 +26,7 @@ Options:
   --db <path>      Ledger database path (default: ~/.llmtally/ledger.db)
   --refresh <sec>  Auto-refresh interval to start with (min 30; remembered otherwise)
   --theme <name>   Color theme (p to pick; light themes paint a surface). mono = no color
-  --chart <mode>   Daily chart glyphs: block (default) | braille (2x density)
+  --chart <mode>   Chart style: block | braille | heatmap (g to pick; remembered)
   --help           Show this help
 
 Tabs: [1] Overview  [2] Accounts  [3] Agents  [4] Models  [5] Search  [6] Doctor
@@ -49,7 +50,8 @@ export interface AppOptions {
   /** null = start with auto-refresh off; undefined = use the saved choice. */
   readonly refreshSeconds: number | null | undefined;
   readonly themeName: string | null;
-  readonly chartMode: ChartGlyphMode;
+  /** null = use the remembered chart style. */
+  readonly chartMode: ChartStyle | null;
   readonly help: boolean;
 }
 
@@ -57,7 +59,7 @@ export function parseArgs(argv: readonly string[]): AppOptions {
   let databasePath = defaultDatabasePath();
   let refreshSeconds: number | null | undefined;
   let themeName: string | null = null;
-  let chartMode: ChartGlyphMode = 'block';
+  let chartMode: ChartStyle | null = null;
   let help = false;
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -97,8 +99,8 @@ export function parseArgs(argv: readonly string[]): AppOptions {
       }
       case '--chart': {
         const value = argv[index + 1];
-        if (value !== 'block' && value !== 'braille') {
-          throw new UsageError('--chart must be "block" or "braille"');
+        if (!isChartStyle(value)) {
+          throw new UsageError(`--chart must be one of: ${CHART_STYLES.join(', ')}`);
         }
         chartMode = value;
         index += 1;

@@ -30,12 +30,19 @@ export interface UiPreferences {
    * themes still paint because they require a surface).
    */
   readonly paintBackground: boolean | undefined;
+  /**
+   * Overview chart style name. Stored as an opaque string: the TUI
+   * validates it against the styles it knows, so a value written by a
+   * newer build degrades to the default instead of failing the load.
+   */
+  readonly chartStyle: string | null;
 }
 
 export const EMPTY_PREFERENCES: UiPreferences = {
   theme: null,
   autoRefreshSeconds: undefined,
   paintBackground: undefined,
+  chartStyle: null,
 };
 
 export function defaultPreferencesPath(home: string = homedir()): string {
@@ -83,6 +90,7 @@ export function loadUiPreferences(path: string = defaultPreferencesPath()): UiPr
           ? Math.floor(seconds)
           : undefined,
     paintBackground: typeof ui.paintBackground === 'boolean' ? ui.paintBackground : undefined,
+    chartStyle: asString(ui.chartStyle),
   };
 }
 
@@ -110,6 +118,9 @@ export function saveUiPreferences(
     }
     if ('paintBackground' in patch) {
       ui.paintBackground = patch.paintBackground;
+    }
+    if ('chartStyle' in patch) {
+      ui.chartStyle = patch.chartStyle;
     }
     mkdirSync(dirname(path), { recursive: true, mode: DIRECTORY_MODE });
     writeFilePrivate(path, `${JSON.stringify({ ...base, version: CONFIG_VERSION, ui }, null, 2)}\n`);
