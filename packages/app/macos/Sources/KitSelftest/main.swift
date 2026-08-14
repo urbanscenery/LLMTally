@@ -224,6 +224,91 @@ do {
     expect(!text.contains("secret@example.com"), "notification text carries no email")
     let again = planNotifications(state: fired.state, quota: broken)
     expectEqual(again.notifications.count, 0, "auth fires once per episode")
+    expectEqual(fired.notifications.first?.severity, NotificationSeverity.actNow, "auth is act-now tier")
+    expect(fired.notifications.first?.systemBanner ?? false, "auth still reaches the macOS banner")
+}
+
+do {
+    // reset-soon fires once per reset instant, bell only, notice tier
+    let resetsAt = Date().timeIntervalSince1970 + 12 * 60
+    let closing = [snapshot(agent: "claude-code", windows: [
+        QuotaWindowDTO(id: "five_hour", usedPercent: 59, resetsAtUtc: resetsAt)])]
+    let fired = planNotifications(state: NotificationState(), quota: closing)
+    expectEqual(fired.notifications.count, 1, "reset-soon fires for ≥50% within 30m")
+    let event = fired.notifications.first
+    expectEqual(event?.severity, NotificationSeverity.notice, "reset-soon is a notice")
+    expect(!(event?.systemBanner ?? true), "reset-soon stays out of the macOS banner")
+    expect(event?.title.contains("59% used") ?? false, "title carries the percent")
+    expect(event?.title.contains("resets in") ?? false, "title leads with the reset")
+
+    let again = planNotifications(state: fired.state, quota: closing)
+    expectEqual(again.notifications.count, 0, "same reset instant does not re-fire")
+
+    // the NEXT window (new reset instant) is a new episode
+    let nextWindow = [snapshot(agent: "claude-code", windows: [
+        QuotaWindowDTO(id: "five_hour", usedPercent: 61, resetsAtUtc: resetsAt + 5 * 3600)])]
+    _ = nextWindow // (outside 30m → silent; the episode key design is what re-arms)
+    let farOut = planNotifications(state: again.state, quota: nextWindow)
+    expectEqual(farOut.notifications.count, 0, "a reset far away is silent")
+}
+
+do {
+    // mismatch and rate-limited: once per episode, bell only
+    let mismatch = [snapshot(agent: "claude-code", failureKind: "account_mismatch")]
+    let m = planNotifications(state: NotificationState(), quota: mismatch)
+    expectEqual(m.notifications.count, 1, "mismatch fires once")
+    expectEqual(m.notifications.first?.severity, NotificationSeverity.actNow, "mismatch is act-now")
+    expect(!(m.notifications.first?.systemBanner ?? true), "mismatch is bell-only")
+
+    let limited = [snapshot(agent: "grok", failureKind: "rate_limited")]
+    let r = planNotifications(state: NotificationState(), quota: limited)
+    expectEqual(r.notifications.first?.severity, NotificationSeverity.notice, "rate limit is a notice")
+    expectEqual(planNotifications(state: r.state, quota: limited).notifications.count, 0,
+                "rate limit fires once per episode")
+}
+
+// MARK: notification log (in-app bell)
+
+do {
+    let resetsAt = Date().timeIntervalSince1970 + 10 * 60
+    let closing = [snapshot(agent: "claude-code", windows: [
+        QuotaWindowDTO(id: "five_hour", usedPercent: 59, resetsAtUtc: resetsAt)])]
+    let tick = planNotifications(state: NotificationState(), quota: closing)
+    var log = logAfterPlanning(NotificationLogState(), planned: tick.notifications,
+                               activeKeys: tick.state.activePlannedKeys())
+    expectEqual(log.events.count, 1, "planned notification lands in the log")
+    expectEqual(unreadNotifications(log).count, 1, "and starts unread")
+    expectEqual(worstUnreadSeverity(log), NotificationSeverity.notice, "bell dot severity is notice")
+
+    // a reset-soon episode ends with the reset instant itself: a tick
+    // after the reset drops the key → resolved + auto-read
+    let afterReset = Date(timeIntervalSince1970: resetsAt + 60)
+    let calmTick = planNotifications(state: tick.state, quota: [snapshot(agent: "claude-code")],
+                                     now: afterReset)
+    log = logAfterPlanning(log, planned: calmTick.notifications,
+                           activeKeys: calmTick.state.activePlannedKeys(), now: afterReset)
+    expect(log.events.first?.resolvedAtUtc != nil, "passing the reset resolves the event")
+    expectEqual(unreadNotifications(log).count, 0, "resolved events read themselves")
+
+    // dismissal removes; act-now rows resist until resolved
+    let auth = planNotifications(state: NotificationState(),
+                                 quota: [snapshot(agent: "codex", failureKind: "auth_invalid")])
+    var authLog = logAfterPlanning(NotificationLogState(), planned: auth.notifications,
+                                   activeKeys: auth.state.activePlannedKeys())
+    let lockedId = authLog.events[0].id
+    authLog = logDismissing(authLog, id: lockedId)
+    expectEqual(authLog.events.count, 1, "unresolved act-now row refuses dismissal")
+    authLog = logClearingAll(authLog)
+    expectEqual(authLog.events.count, 1, "clear-all keeps unresolved act-now rows")
+
+    // retention: old events fall off, the cap holds
+    var big = NotificationLogState()
+    let old = Date().addingTimeInterval(-15 * 86_400)
+    big.events.append(LoggedNotification(
+        id: "old#1", key: "warn|x", agent: "codex", severity: .notice,
+        title: "old", body: "", createdAtUtc: old.timeIntervalSince1970))
+    big = logAfterPlanning(big, planned: [], activeKeys: [])
+    expectEqual(big.events.count, 0, "14-day retention drops old events")
 }
 
 // MARK: privacy

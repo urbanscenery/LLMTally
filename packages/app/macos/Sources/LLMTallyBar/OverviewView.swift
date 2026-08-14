@@ -30,9 +30,11 @@ struct OverviewView: View {
     // the shared app-lifetime model: reopening paints last-good data
     // immediately, the refresh lands behind it
     @ObservedObject private var model = OverviewModel.shared
+    @ObservedObject private var bell = NotificationCenterModel.shared
     @State private var selectedAgent: String?
     @State private var switchIntent: SwitchIntent?
     @State private var focusedRow: Int?
+    @State private var showNotifications = false
     @AppStorage(PrivacySetting.key) private var privacy = false
     @AppStorage(Theme.storageKey) private var themeId = "system"
 
@@ -100,7 +102,9 @@ struct OverviewView: View {
         guard switchIntent == nil else { return }  // the sheet owns its keys
         switch command {
         case "esc":
-            if selectedAgent != nil {
+            if showNotifications {
+                closeNotifications()
+            } else if selectedAgent != nil {
                 // innermost first: close the day drill-down, then leave
                 // the provider page
                 if model.providerSelectedDay != nil {
@@ -139,7 +143,15 @@ struct OverviewView: View {
 
     private var header: some View {
         HStack {
-            if let agent = selectedAgent {
+            if showNotifications {
+                Button {
+                    closeNotifications()
+                } label: {
+                    Label("Notifications", systemImage: "chevron.left")
+                }
+                .buttonStyle(HoverActionButtonStyle())
+                .font(.headline)
+            } else if let agent = selectedAgent {
                 Button {
                     selectedAgent = nil
                 } label: {
@@ -152,13 +164,26 @@ struct OverviewView: View {
                 Text("LLMTally").font(.headline)
             }
             Spacer()
-            if model.loadError != nil {
+            if showNotifications {
+                if bell.hasDismissable {
+                    Button("Clear all") { bell.clearAll() }
+                        .buttonStyle(HoverActionButtonStyle())
+                        .font(.caption)
+                }
+            } else if model.loadError != nil {
                 // the header stays one line; the full error wraps in the
                 // banner below — a truncated error is exactly the part
                 // the user needed
                 Text("load error").font(.caption2).foregroundStyle(.red)
             } else if let quota = model.overview?.quota {
                 FreshnessSummary(quota: quota)
+            }
+            NotificationBellButton(center: bell, isOpen: showNotifications) {
+                if showNotifications {
+                    closeNotifications()
+                } else {
+                    showNotifications = true
+                }
             }
             Button {
                 SettingsWindowController.shared.show()
@@ -172,9 +197,21 @@ struct OverviewView: View {
         .frame(height: 40)
     }
 
+    /// Leaving the panel is what reads the rows (the badge went out the
+    /// moment it opened) — the 시안's GitHub/Slack convention.
+    private func closeNotifications() {
+        bell.markAllRead()
+        showNotifications = false
+    }
+
     @ViewBuilder
     private var content: some View {
-        if let agent = selectedAgent {
+        if showNotifications {
+            NotificationCenterView(center: bell, privacy: privacy) { agent in
+                closeNotifications()
+                selectedAgent = agent
+            }
+        } else if let agent = selectedAgent {
             ProviderDetailView(
                 agent: agent,
                 items: model.agentGroups().first(where: { $0.agent == agent })?.items ?? [],
@@ -236,16 +273,19 @@ struct OverviewView: View {
                     Divider()
                 }
                 if let headline = model.headline() {
-                    // quiet = nothing needs attention — a plain one-liner,
-                    // not a card that singles out one account
-                    if headline.rank == .quiet {
-                        AllClearLine()
-                    } else {
+                    // the headline card is act-now territory only (auth,
+                    // mismatch, critical) — notice-tier states (warning,
+                    // reset-soon, stale, rate-limited) went to the bell
+                    // (06_notification_center_design §3), so their
+                    // moment here is the plain all-clear line
+                    if isActNowRank(headline.rank) {
                         HeadlineView(item: headline, privacy: privacy,
                                      alias: aliases[headline.snapshot.agent] ?? "P?")
                             .contentShape(Rectangle())
                             .hoverHighlight()
                             .onTapGesture { selectedAgent = headline.snapshot.agent }
+                    } else {
+                        AllClearLine(noticesInBell: headline.rank != .quiet)
                     }
                     Divider()
                 }
@@ -381,6 +421,10 @@ struct SwitchIntent: Identifiable {
 
 /// The quiet-state headline: one line, no account details.
 struct AllClearLine: View {
+    /// True when notice-tier states exist but were routed to the bell —
+    /// the line stays honest: nothing needs ACTION, notices are waiting.
+    var noticesInBell = false
+
     var body: some View {
         HStack(spacing: 6) {
             Circle().fill(Theme.current().accent).frame(width: 6, height: 6)
@@ -388,6 +432,11 @@ struct AllClearLine: View {
                 .font(.caption.weight(.semibold))
                 .textCase(.uppercase)
                 .foregroundStyle(.secondary)
+            if noticesInBell {
+                Text("· notices in the bell")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
             Spacer()
         }
         .padding(.horizontal, 14)

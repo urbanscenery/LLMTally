@@ -53,44 +53,56 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     /// their permission callbacks land (audit codex C3-03).
     private let planQueue = DispatchQueue(label: "llmtally.notifications.plan")
 
+    private let logStore = NotificationLogStore()
+
     func process(quota: [QuotaSnapshotDTO], privacy: Bool) {
-        guard canDeliver else {
-            let result = planNotifications(state: loadState(), quota: quota, privacy: privacy)
-            saveState(result.state)
-            for notification in result.notifications {
-                FileHandle.standardError.write(
-                    Data("notification (unbundled, skipped): \(notification.title)\n".utf8))
-            }
-            return
-        }
-        // authorization gates PLANNING, not just delivery: consuming an
-        // episode while notifications are denied would mute it forever,
-        // and persisting re-arm removals alone is not separable from
-        // the planner's state (audit C1-02 / C2-09). While denied, the
-        // whole state machine pauses; it resumes from the old state the
-        // moment authorization appears.
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            guard settings.authorizationStatus == .authorized ||
-                  settings.authorizationStatus == .provisional else {
-                NSLog("llmtally: notifications not authorized; planner paused, episodes stay armed")
-                return
-            }
-            self.planQueue.async {
+        // Planning no longer waits for macOS authorization: every fired
+        // episode lands in the in-app bell, so a denied banner is
+        // postponed into the log instead of muted forever (this retires
+        // the audit C1-02/C2-09 pause — the pause existed only because
+        // a consumed episode used to have nowhere else to go).
+        planQueue.async {
             let result = planNotifications(state: self.loadState(), quota: quota, privacy: privacy)
             self.saveState(result.state)
-            for notification in result.notifications {
-                let content = UNMutableNotificationContent()
-                content.title = notification.title
-                content.body = notification.body
-                content.userInfo = ["agent": notification.agent]
-                UNUserNotificationCenter.current().add(
-                    UNNotificationRequest(identifier: notification.key, content: content, trigger: nil)
-                ) { error in
-                    if let error {
-                        NSLog("llmtally notification add failed: %@", String(describing: error))
+
+            let log = logAfterPlanning(self.logStore.load(),
+                                       planned: result.notifications,
+                                       activeKeys: result.state.activePlannedKeys())
+            self.logStore.save(log)
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .llmtallyNotificationLogChanged, object: nil)
+            }
+
+            // the macOS banner set stays the original four; bell-only
+            // events (mismatch, rate-limited, reset-soon) skip delivery
+            let bannered = result.notifications.filter(\.systemBanner)
+            guard !bannered.isEmpty else { return }
+            guard self.canDeliver else {
+                for notification in bannered {
+                    FileHandle.standardError.write(
+                        Data("notification (unbundled, skipped): \(notification.title)\n".utf8))
+                }
+                return
+            }
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                guard settings.authorizationStatus == .authorized ||
+                      settings.authorizationStatus == .provisional else {
+                    NSLog("llmtally: banners not authorized; events kept in the in-app bell")
+                    return
+                }
+                for notification in bannered {
+                    let content = UNMutableNotificationContent()
+                    content.title = notification.title
+                    content.body = notification.body
+                    content.userInfo = ["agent": notification.agent]
+                    UNUserNotificationCenter.current().add(
+                        UNNotificationRequest(identifier: notification.key, content: content, trigger: nil)
+                    ) { error in
+                        if let error {
+                            NSLog("llmtally notification add failed: %@", String(describing: error))
+                        }
                     }
                 }
-            }
             }
         }
     }

@@ -85,6 +85,13 @@ public func attention(for snapshot: QuotaSnapshotDTO, now: Date = Date()) -> Age
     return AgentAttention(snapshot: snapshot, rank: .quiet, topWindow: topWindow)
 }
 
+/// Act-now ranks keep the popover headline until resolved; everything
+/// below them is a notice that lives in the bell
+/// (06_notification_center_design §3).
+public func isActNowRank(_ rank: AttentionRank) -> Bool {
+    rank == .authInvalid || rank == .accountMismatch || rank == .critical
+}
+
 /// Highest-attention item; ties break toward the tighter window.
 public func headlineAttention(_ items: [AgentAttention]) -> AgentAttention? {
     items.min { lhs, rhs in
