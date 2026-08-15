@@ -60,6 +60,8 @@ describe('OpenCodeAdapter.scan', () => {
       model: 'gpt-5.6-luna',
       effort: 'max',
       promptText: 'first part\nsecond part',
+      // the parentID user message is the prompt identity shared by every step
+      promptKey: 'user-1',
       inputTokens: 3,
       outputTokens: 119,
       reasoningTokens: 64,

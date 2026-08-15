@@ -25,8 +25,12 @@ import {
   CODEX_PROVIDER_FALLBACK,
 } from './constants.ts';
 import { buildCodexNaturalId, usageDigest } from './natural-id.ts';
-import { extractCodexPrompt } from './prompts.ts';
-import type { CodexSessionMetaRecord, CodexTokenCountRecord } from './records.ts';
+import { agentMessagePromptText, extractCodexPrompt } from './prompts.ts';
+import type {
+  CodexAgentMessageRecord,
+  CodexSessionMetaRecord,
+  CodexTokenCountRecord,
+} from './records.ts';
 import { classifyCodexLine, isCodexCandidateLine } from './records.ts';
 import { CodexTurnTracker } from './turn-state.ts';
 
@@ -41,6 +45,7 @@ interface RolloutMeta {
   cwd: string | null;
   isSidechain: boolean;
   parentThreadId: string | null;
+  agentPath: string | null;
 }
 
 export interface CodexAdapterOptions {
@@ -161,6 +166,13 @@ export class CodexAdapter implements SourceAdapter {
         }
         return;
       }
+      case 'agent_message': {
+        const promptText = incomingTaskPrompt(classified, meta);
+        if (promptText !== null) {
+          tracker.recordUserPrompt(promptText);
+        }
+        return;
+      }
       case 'token_count':
         this.#handleUsage(classified, startOffset, target, meta, tracker, entries, warnings);
         return;
@@ -204,7 +216,9 @@ export class CodexAdapter implements SourceAdapter {
       warnings.push(
         lineWarning(this.agent, target.path, startOffset, 'prompt_unresolved', 'usage event without turn context recorded with unknown model'),
       );
-      entries.push(this.#entryFrom(record, meta, naturalId, UNKNOWN_MODEL, null, null, meta.cwd));
+      entries.push(
+        this.#entryFrom(record, meta, naturalId, UNKNOWN_MODEL, null, null, null, meta.cwd),
+      );
       return;
     }
     const turn = decision.turn;
@@ -218,7 +232,18 @@ export class CodexAdapter implements SourceAdapter {
       return;
     }
     entries.push(
-      this.#entryFrom(record, meta, naturalId, turn.model, turn.effort, turn.promptText, turn.cwd ?? meta.cwd),
+      this.#entryFrom(
+        record,
+        meta,
+        naturalId,
+        turn.model,
+        turn.effort,
+        turn.promptText,
+        // the turn id is the prompt identity: every usage event of one turn
+        // answers the same prompt(s), and it survives compaction re-emits
+        turn.turnId,
+        turn.cwd ?? meta.cwd,
+      ),
     );
   }
 
@@ -229,6 +254,7 @@ export class CodexAdapter implements SourceAdapter {
     model: string,
     effort: string | null,
     promptText: string | null,
+    promptKey: string | null,
     cwd: string | null,
   ): LedgerEntry {
     return {
@@ -239,6 +265,7 @@ export class CodexAdapter implements SourceAdapter {
       model,
       effort,
       promptText,
+      promptKey,
       inputTokens: record.last.inputTokens,
       outputTokens: record.last.outputTokens,
       cacheWrite: record.last.cacheWriteInputTokens,
@@ -307,6 +334,7 @@ export class CodexAdapter implements SourceAdapter {
         cwd: asString(cursor.cwd),
         isSidechain: cursor.isSidechain === true,
         parentThreadId: asString(cursor.parentThreadId),
+        agentPath: asString(cursor.agentPath),
       },
       tracker: CodexTurnTracker.fromJson(cursor.pendingPrompt, cursor.activeTurn),
       warnings: [],
@@ -321,6 +349,27 @@ function applySessionMeta(meta: RolloutMeta, record: CodexSessionMetaRecord): vo
   meta.cwd = record.cwd;
   meta.isSidechain = record.isSidechain;
   meta.parentThreadId = record.parentThreadId;
+  meta.agentPath = record.agentPath;
+}
+
+/**
+ * A spawned subagent never sees a typed prompt: its task arrives as
+ * inter-agent mail addressed to its own agent path (NEW_TASK, and later
+ * MESSAGE follow-ups from its parent or peers). Mail FROM one of its own
+ * children (a FINAL_ANSWER coming back up) is a result, not a prompt —
+ * the same way a tool result is not a prompt. Root rollouts have no agent
+ * path and keep using the user's typed messages, so their outgoing mail
+ * is never mistaken for a prompt.
+ */
+function incomingTaskPrompt(record: CodexAgentMessageRecord, meta: RolloutMeta): string | null {
+  const self = meta.agentPath;
+  if (self === null || record.recipient !== self) {
+    return null;
+  }
+  if (record.author !== null && record.author.startsWith(`${self}/`)) {
+    return null;
+  }
+  return agentMessagePromptText(record.rawTexts, record.hasEncryptedPayload);
 }
 
 function emptyMeta(): RolloutMeta {
@@ -331,6 +380,7 @@ function emptyMeta(): RolloutMeta {
     cwd: null,
     isSidechain: false,
     parentThreadId: null,
+    agentPath: null,
   };
 }
 
@@ -349,6 +399,7 @@ function buildCursor(
     cwd: meta.cwd,
     isSidechain: meta.isSidechain,
     parentThreadId: meta.parentThreadId,
+    agentPath: meta.agentPath,
     pendingPrompt: trackerState.pendingPrompt,
     activeTurn: trackerState.activeTurn,
   };

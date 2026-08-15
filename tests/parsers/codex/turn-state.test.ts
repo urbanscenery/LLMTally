@@ -75,6 +75,59 @@ describe('CodexTurnTracker', () => {
     });
   });
 
+  test('a re-emitted turn_context for the same turn keeps its prompt and counters', () => {
+    // Arrange — codex writes turn_context again after a compaction
+    const tracker = new CodexTurnTracker();
+    tracker.startTurn(turnContext('turn-1'));
+    tracker.recordUserPrompt('long task');
+    tracker.acceptUsage(tokenCount(usage()));
+
+    // Act
+    tracker.startTurn({ ...turnContext('turn-1'), model: 'gpt-5.6-sol', effort: 'medium' });
+    const decision = tracker.acceptUsage(tokenCount(usage({ totalTokens: 400 })));
+
+    // Assert — prompt survives, ordinal continues, model refreshed
+    expect(decision).toMatchObject({
+      kind: 'accepted',
+      ordinal: 2,
+      turn: { turnId: 'turn-1', promptText: 'long task', model: 'gpt-5.6-sol', effort: 'medium' },
+    });
+  });
+
+  test('a prompt pending across a same-turn re-emit still waits for the next turn', () => {
+    // Arrange
+    const tracker = new CodexTurnTracker();
+    tracker.startTurn(turnContext('turn-1'));
+    tracker.recordUserPrompt('first');
+    tracker.acceptUsage(tokenCount(usage()));
+    tracker.recordUserPrompt('queued for later');
+    tracker.startTurn(turnContext('turn-1'));
+
+    // Act
+    const sameTurn = tracker.acceptUsage(tokenCount(usage({ totalTokens: 400 })));
+    tracker.startTurn(turnContext('turn-2'));
+    const nextTurn = tracker.acceptUsage(tokenCount(usage({ totalTokens: 500 })));
+
+    // Assert
+    expect(sameTurn).toMatchObject({ kind: 'accepted', turn: { promptText: 'first' } });
+    expect(nextTurn).toMatchObject({ kind: 'accepted', turn: { turnId: 'turn-2', promptText: 'queued for later' } });
+  });
+
+  test('several prompts before the first usage are kept together, not overwritten', () => {
+    // Arrange
+    const tracker = new CodexTurnTracker();
+    tracker.startTurn(turnContext('turn-1'));
+    tracker.recordUserPrompt('do the thing');
+    tracker.recordUserPrompt('and also this');
+    tracker.recordUserPrompt('and also this');
+
+    // Act & Assert — identical repeats collapse, distinct ones stack
+    expect(tracker.acceptUsage(tokenCount(usage()))).toMatchObject({
+      kind: 'accepted',
+      turn: { promptText: 'do the thing\nand also this' },
+    });
+  });
+
   test('skips duplicate cumulative total snapshots without advancing the ordinal', () => {
     // Arrange
     const tracker = new CodexTurnTracker();

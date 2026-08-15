@@ -10,6 +10,8 @@ export interface AssistantCandidate {
   readonly sessionId: string | null;
   readonly timeUpdated: number;
   readonly dataJson: string;
+  /** The user message this assistant answered (data.parentID join). */
+  readonly userId: string | null;
   readonly parts: readonly { readonly id: string; readonly dataJson: string }[];
 }
 
@@ -33,6 +35,7 @@ export function groupJoinedRows(rows: readonly OpenCodeJoinedRow[]): AssistantCa
     sessionId: string | null;
     timeUpdated: number;
     dataJson: string;
+    userId: string | null;
     parts: { id: string; dataJson: string }[];
   } | null = null;
 
@@ -46,6 +49,7 @@ export function groupJoinedRows(rows: readonly OpenCodeJoinedRow[]): AssistantCa
         sessionId: row.assistantSessionId,
         timeUpdated: row.assistantTimeUpdated,
         dataJson: row.assistantData,
+        userId: row.userId,
         parts: [],
       };
     }
@@ -115,6 +119,9 @@ export function normalizeAssistant(
       model,
       effort: asString(data.variant),
       promptText: prompt.text,
+      // the user message id is opencode's own prompt identity; every
+      // assistant step of one turn points at it through data.parentID
+      promptKey: candidate.userId,
       inputTokens,
       outputTokens,
       cacheWrite,

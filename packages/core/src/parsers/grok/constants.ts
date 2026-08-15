@@ -1,5 +1,5 @@
 export const GROK_AGENT = 'grok';
-export const GROK_PARSER_VERSION = 1;
+export const GROK_PARSER_VERSION = 2;
 export const GROK_CURSOR_VERSION = 1;
 /** Grok Build talks to xAI through cli-chat-proxy.grok.com. */
 export const GROK_PROVIDER = 'xai';

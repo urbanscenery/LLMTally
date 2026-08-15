@@ -38,6 +38,13 @@ describe('isCandidateLine', () => {
     expect(isCandidateLine('{"type":"user","message":{}}')).toBe(true);
     expect(isCandidateLine('{"type":"summary","summary":"..."}')).toBe(false);
   });
+
+  test('accepts every sidechain line so subagent chains can be walked', () => {
+    // Arrange & Act & Assert — attachments carry neither usage nor a user type
+    expect(isCandidateLine('{"type":"attachment","uuid":"at1","isSidechain":true}')).toBe(true);
+    expect(isCandidateLine('{"type":"attachment","uuid":"at1","isSidechain": true}')).toBe(true);
+    expect(isCandidateLine('{"type":"attachment","uuid":"at1","isSidechain":false}')).toBe(false);
+  });
 });
 
 describe('classifyClaudeLine', () => {
@@ -52,6 +59,7 @@ describe('classifyClaudeLine', () => {
       messageId: null,
       parentUuid: 'u1',
       isSidechain: false,
+      spawnedPrompt: null,
       tsUtc: 1_785_578_405,
       model: 'claude-fable-5',
       effort: 'high',
@@ -140,9 +148,91 @@ describe('classifyClaudeLine', () => {
       message: { content: '  <system-reminder>hidden</system-reminder>' },
     });
 
-    // Act & Assert
+    // Act & Assert — neither is a prompt; without a uuid there is nothing to link
     expect(classifyClaudeLine(metaLine)).toEqual({ kind: 'skipped' });
     expect(classifyClaudeLine(systemLine)).toEqual({ kind: 'skipped' });
+  });
+
+  test('turns non-prompt records with a uuid into chain links', () => {
+    // Arrange — attachment hop, tool_result user, meta user, usage-less assistant
+    const attachment = JSON.stringify({ type: 'attachment', uuid: 'at1', parentUuid: 'su1', isSidechain: true });
+    const toolResult = JSON.stringify({
+      type: 'user',
+      uuid: 'tr1',
+      parentUuid: 'sa1',
+      isSidechain: true,
+      message: { content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] },
+    });
+    const meta = JSON.stringify({ type: 'user', uuid: 'm1', parentUuid: 'x', isMeta: true, message: { content: 'body' } });
+    const noUsage = JSON.stringify({ type: 'assistant', uuid: 'a1', parentUuid: 'p', message: { model: 'claude-fable-5' } });
+    const noUuid = JSON.stringify({ type: 'attachment', parentUuid: 'su1', isSidechain: true });
+
+    // Act & Assert
+    expect(classifyClaudeLine(attachment)).toEqual({ kind: 'link', uuid: 'at1', parentUuid: 'su1', isSidechain: true });
+    expect(classifyClaudeLine(toolResult)).toEqual({ kind: 'link', uuid: 'tr1', parentUuid: 'sa1', isSidechain: true });
+    expect(classifyClaudeLine(meta)).toEqual({ kind: 'link', uuid: 'm1', parentUuid: 'x', isSidechain: false });
+    expect(classifyClaudeLine(noUsage)).toEqual({ kind: 'link', uuid: 'a1', parentUuid: 'p', isSidechain: false });
+    expect(classifyClaudeLine(noUuid)).toEqual({ kind: 'skipped' });
+  });
+
+  test('extracts the Agent tool_use prompt from an assistant record verbatim', () => {
+    // Arrange — the spawning record as copied into a fork transcript
+    const spawning = JSON.stringify({
+      type: 'assistant',
+      uuid: 'fa1',
+      parentUuid: null,
+      isSidechain: true,
+      timestamp: '2026-08-16T01:00:00.000Z',
+      message: {
+        id: 'msg_parent',
+        model: 'claude-fable-5',
+        usage: { input_tokens: 5, output_tokens: 6 },
+        content: [
+          { type: 'text', text: 'Spawning a helper.' },
+          { type: 'tool_use', name: 'Agent', input: { subagent_type: 'fork', description: 'Fix parser', prompt: 'You are the fork owning Task #3.' } },
+        ],
+      },
+    });
+    const otherTool = JSON.stringify({
+      type: 'assistant',
+      uuid: 'a2',
+      timestamp: '2026-08-16T01:00:00.000Z',
+      message: { model: 'claude-fable-5', usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls', prompt: 'not an agent' } }] },
+    });
+
+    // Act & Assert — the prompt only, never the description; other tools give null
+    expect(classifyClaudeLine(spawning)).toMatchObject({ kind: 'usage', spawnedPrompt: 'You are the fork owning Task #3.' });
+    expect(classifyClaudeLine(otherTool)).toMatchObject({ kind: 'usage', spawnedPrompt: null });
+  });
+
+  test('rebuilds slash commands into the typed form and skips other tag-led text', () => {
+    // Arrange
+    const withArgs = JSON.stringify({
+      type: 'user',
+      uuid: 'c1',
+      message: { content: '<command-message>ecc:multi-workflow</command-message>\n<command-name>/ecc:multi-workflow</command-name>\n<command-args>  build it  </command-args>' },
+    });
+    const nameFirst = JSON.stringify({
+      type: 'user',
+      uuid: 'c2',
+      message: { content: '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>' },
+    });
+    const stdout = JSON.stringify({
+      type: 'user',
+      uuid: 'c3',
+      message: { content: '<local-command-stdout>Set model to Fable 5</local-command-stdout>' },
+    });
+    const nameless = JSON.stringify({
+      type: 'user',
+      uuid: 'c4',
+      message: { content: '<command-message>only a message</command-message>' },
+    });
+
+    // Act & Assert
+    expect(classifyClaudeLine(withArgs)).toMatchObject({ kind: 'user', promptText: '/ecc:multi-workflow build it' });
+    expect(classifyClaudeLine(nameFirst)).toMatchObject({ kind: 'user', promptText: '/model' });
+    expect(classifyClaudeLine(stdout)).toMatchObject({ kind: 'link', uuid: 'c3' });
+    expect(classifyClaudeLine(nameless)).toMatchObject({ kind: 'link', uuid: 'c4' });
   });
 
   test('skips assistant records without a usage object', () => {

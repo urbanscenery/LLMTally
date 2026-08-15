@@ -47,6 +47,7 @@ export function promptIndexAtLine(
 const TIME_WIDTH = 16;
 const TOKENS_WIDTH = 26;
 const COST_WIDTH = 11;
+const CALLS_WIDTH = 6;
 
 function localTimestamp(tsUtc: number): string {
   const date = new Date(tsUtc * 1000);
@@ -78,6 +79,16 @@ function tokensCell(row: PromptRowViewModel): string {
   return parts.join(' ');
 }
 
+/** `×N` says how many API calls the prompt took; a lone call shows nothing. */
+function callsCell(row: PromptRowViewModel): string {
+  return row.calls > 1 ? `×${row.calls}` : '';
+}
+
+/** Subagent prompts are marked so the user's own prompts stand out. */
+function sidechainMark(row: PromptRowViewModel): string {
+  return row.isSidechain ? '↳ ' : '';
+}
+
 export function promptEntryLines(
   row: PromptRowViewModel,
   selected: boolean,
@@ -90,11 +101,17 @@ export function promptEntryLines(
     span(padEndWidth(truncateToWidth(row.model, 26), 26), selected ? 'selected' : 'default'),
     span(padEndWidth(tokensCell(row), TOKENS_WIDTH), 'muted'),
     span(padStartWidth(cost.text, COST_WIDTH), cost.role),
+    span(padStartWidth(callsCell(row), CALLS_WIDTH), 'muted'),
   );
   const indent = 4;
+  const mark = sidechainMark(row);
   const body = joinLine(
     span(' '.repeat(indent)),
-    span(truncateToWidth(row.text === '' ? '(no prompt text stored)' : row.text, Math.max(10, width - indent - 1)), row.text === '' ? 'dim' : 'default'),
+    span(mark, 'muted'),
+    span(
+      truncateToWidth(row.text === '' ? '(no prompt text stored)' : row.text, Math.max(10, width - indent - mark.length - 1)),
+      row.text === '' ? 'dim' : 'default',
+    ),
   );
   return [meta, body];
 }

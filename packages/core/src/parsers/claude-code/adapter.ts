@@ -101,6 +101,8 @@ export class ClaudeCodeAdapter implements SourceAdapter {
         const classified = classifyClaudeLine(line.text);
         if (classified.kind === 'user') {
           tracker.recordUserPrompt(classified);
+        } else if (classified.kind === 'link') {
+          tracker.link(classified);
         } else if (classified.kind === 'malformed') {
           warnings.push(lineWarning(this.agent, target.path, line.startOffset, 'malformed_json', classified.reason));
         } else if (classified.kind === 'invalid') {
@@ -116,8 +118,11 @@ export class ClaudeCodeAdapter implements SourceAdapter {
               lineWarning(this.agent, target.path, line.startOffset, 'invalid_record', 'usage record has neither uuid nor requestId'),
             );
           } else {
-            const promptText = tracker.resolvePrompt(classified);
-            if (promptText === null) {
+            // before resolving, so the spawning record itself is attributed
+            // to the prompt it handed out (its parent is null in a fork file)
+            tracker.recordSpawnedPrompt(classified);
+            const resolved = tracker.resolvePrompt(classified);
+            if (resolved === null) {
               warnings.push(
                 lineWarning(this.agent, target.path, line.startOffset, 'prompt_unresolved', 'no eligible prompt found for usage record'),
               );
@@ -129,7 +134,8 @@ export class ClaudeCodeAdapter implements SourceAdapter {
               provider: CLAUDE_PROVIDER,
               model: classified.model,
               effort: classified.effort,
-              promptText,
+              promptText: resolved?.promptText ?? null,
+              promptKey: resolved?.promptKey ?? null,
               inputTokens: classified.inputTokens,
               outputTokens: classified.outputTokens,
               cacheWrite: classified.cacheWrite,

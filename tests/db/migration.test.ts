@@ -122,6 +122,9 @@ describe('008 claude message dedup reset', () => {
     const db = new Database(':memory:', { strict: true });
     migrate(db);
     db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '7')", []);
+    // rewinding past 009 means its column must go too, or re-applying fails
+    db.run('DROP INDEX idx_usage_ledger_prompt_key', []);
+    db.run('ALTER TABLE usage_ledger DROP COLUMN prompt_key', []);
     const insert = `INSERT INTO usage_ledger
         (ts_utc, agent, model, natural_id, parser_version)
       VALUES (1786350000, ?, 'model-x', ?, 1)`;
@@ -146,7 +149,46 @@ describe('008 claude message dedup reset', () => {
     const cursors = db
       .query<{ agent: string }, []>('SELECT agent FROM scan_state')
       .all();
-    expect(cursors).toEqual([{ agent: 'codex' }]);
+    // 008 alone keeps the codex cursor; 009 (applied in the same upgrade)
+    // drops every cursor so all sources rescan for prompt keys
+    expect(cursors).toEqual([]);
+    db.close();
+  });
+});
+
+describe('009_prompt_key migration', () => {
+  test('adds prompt_key, keeps every ledger row and drops all scan cursors', async () => {
+    // Arrange — a v8 ledger with rows from two agents and cursors for both
+    const { migrate } = await import('@llmtally/core/db/migrate.ts');
+    const db = new Database(':memory:', { strict: true });
+    migrate(db);
+    db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '8')", []);
+    db.run('DROP INDEX idx_usage_ledger_prompt_key', []);
+    db.run('ALTER TABLE usage_ledger DROP COLUMN prompt_key', []);
+    const insert = `INSERT INTO usage_ledger
+        (ts_utc, agent, model, prompt_text, natural_id, parser_version)
+      VALUES (1786350000, ?, 'model-x', 'kept words', ?, 2)`;
+    db.run(insert, ['claude-code', 'msg:1']);
+    db.run(insert, ['codex', 'turn:1']);
+    db.run(
+      "INSERT INTO scan_state (agent, path, mtime, size) VALUES ('claude-code', '/tmp/a.jsonl', 0, 0), ('codex', '/tmp/b.jsonl', 0, 0)",
+      [],
+    );
+
+    // Act
+    migrate(db);
+
+    // Assert — history survives with a NULL key, cursors are gone
+    const rows = db
+      .query<{ agent: string; prompt_key: string | null; prompt_text: string }, []>(
+        'SELECT agent, prompt_key, prompt_text FROM usage_ledger ORDER BY agent',
+      )
+      .all();
+    expect(rows).toEqual([
+      { agent: 'claude-code', prompt_key: null, prompt_text: 'kept words' },
+      { agent: 'codex', prompt_key: null, prompt_text: 'kept words' },
+    ]);
+    expect(db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM scan_state').get()?.n).toBe(0);
     db.close();
   });
 });

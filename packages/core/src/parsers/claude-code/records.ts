@@ -1,9 +1,15 @@
 export const CLAUDE_AGENT = 'claude-code';
 export const CLAUDE_PROVIDER = 'anthropic';
-export const CLAUDE_PARSER_VERSION = 2;
+export const CLAUDE_PARSER_VERSION = 3;
 
 const MILLISECONDS_PER_SECOND = 1000;
 const SYSTEM_MESSAGE_PREFIX = '<';
+// a slash command is logged as XML-ish tags rather than the typed line;
+// the name (with its leading slash) plus the args is what the user typed
+const COMMAND_TAG_PREFIXES = ['<command-name>', '<command-message>'] as const;
+const AGENT_TOOL_NAME = 'Agent';
+const COMMAND_NAME_PATTERN = /<command-name>([\s\S]*?)<\/command-name>/u;
+const COMMAND_ARGS_PATTERN = /<command-args>([\s\S]*?)<\/command-args>/u;
 
 export interface ClaudeUserRecord {
   readonly kind: 'user';
@@ -19,6 +25,13 @@ export interface ClaudeUsageRecord {
   readonly messageId: string | null;
   readonly parentUuid: string | null;
   readonly isSidechain: boolean;
+  /**
+   * The prompt this assistant record handed to a spawned agent (the
+   * `Agent` tool_use input). A fork transcript opens with a copy of that
+   * parent record instead of a user prompt, so it is the only prompt the
+   * fork's usage can be attributed to.
+   */
+  readonly spawnedPrompt: string | null;
   readonly tsUtc: number;
   readonly model: string;
   readonly effort: string | null;
@@ -29,6 +42,18 @@ export interface ClaudeUsageRecord {
   readonly outputTokens: number;
   readonly cacheWrite: number;
   readonly cacheRead: number;
+}
+
+/**
+ * A record that neither prompts nor bills but sits on the uuid chain
+ * (attachments, tool results, system notes, meta users). Sidechain
+ * attribution has to hop across it to reach the next assistant record.
+ */
+export interface ClaudeLinkRecord {
+  readonly kind: 'link';
+  readonly uuid: string | null;
+  readonly parentUuid: string | null;
+  readonly isSidechain: boolean;
 }
 
 export interface ClaudeSkippedRecord {
@@ -48,6 +73,7 @@ export interface ClaudeInvalidRecord {
 export type ClassifiedClaudeLine =
   | ClaudeUserRecord
   | ClaudeUsageRecord
+  | ClaudeLinkRecord
   | ClaudeSkippedRecord
   | ClaudeMalformedRecord
   | ClaudeInvalidRecord;
@@ -57,13 +83,18 @@ const SKIPPED: ClaudeSkippedRecord = { kind: 'skipped' };
 /**
  * Cheap string prefilter applied before JSON.parse. Usage records always
  * contain "usage"; user records are matched independently because prompt
- * correlation must see them even though they carry no usage block.
+ * correlation must see them even though they carry no usage block. Every
+ * sidechain record is a candidate too: subagent attribution walks the
+ * uuid chain, and the hops between prompt and answer (attachments, tool
+ * results) carry neither marker.
  */
 export function isCandidateLine(line: string): boolean {
   return (
     line.includes('"usage"') ||
     line.includes('"type":"user"') ||
-    line.includes('"type": "user"')
+    line.includes('"type": "user"') ||
+    line.includes('"isSidechain":true') ||
+    line.includes('"isSidechain": true')
   );
 }
 
@@ -86,20 +117,33 @@ export function classifyClaudeLine(line: string): ClassifiedClaudeLine {
   if (raw.type === 'assistant') {
     return classifyAssistant(raw);
   }
-  return SKIPPED;
+  return linkOrSkip(raw);
 }
 
-function classifyUser(raw: Record<string, unknown>): ClaudeUserRecord | ClaudeSkippedRecord {
-  if (raw.isMeta === true) {
+/** Records without a uuid cannot be on any chain, so there is nothing to link. */
+function linkOrSkip(raw: Record<string, unknown>): ClaudeLinkRecord | ClaudeSkippedRecord {
+  const uuid = asString(raw.uuid);
+  if (uuid === null || uuid.length === 0) {
     return SKIPPED;
+  }
+  return {
+    kind: 'link',
+    uuid,
+    parentUuid: asString(raw.parentUuid),
+    isSidechain: raw.isSidechain === true,
+  };
+}
+
+function classifyUser(
+  raw: Record<string, unknown>,
+): ClaudeUserRecord | ClaudeLinkRecord | ClaudeSkippedRecord {
+  if (raw.isMeta === true) {
+    return linkOrSkip(raw);
   }
   const message = asObject(raw.message);
-  const promptText = extractPromptText(message?.content);
-  if (promptText === null || promptText.length === 0) {
-    return SKIPPED;
-  }
-  if (promptText.trimStart().startsWith(SYSTEM_MESSAGE_PREFIX)) {
-    return SKIPPED;
+  const promptText = eligiblePromptText(extractPromptText(message?.content));
+  if (promptText === null) {
+    return linkOrSkip(raw);
   }
   return {
     kind: 'user',
@@ -110,13 +154,42 @@ function classifyUser(raw: Record<string, unknown>): ClaudeUserRecord | ClaudeSk
   };
 }
 
+/**
+ * Filters injected / system-ish user content. Slash commands are the one
+ * `<`-prefixed shape that IS the user's own input, so they are rebuilt
+ * into the typed form; every other tag-led message (local command
+ * output, caveats, system reminders) is not a prompt.
+ */
+function eligiblePromptText(text: string | null): string | null {
+  if (text === null || text.length === 0) {
+    return null;
+  }
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith(SYSTEM_MESSAGE_PREFIX)) {
+    return text;
+  }
+  if (COMMAND_TAG_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) {
+    return slashCommandPrompt(trimmed);
+  }
+  return null;
+}
+
+function slashCommandPrompt(text: string): string | null {
+  const name = COMMAND_NAME_PATTERN.exec(text)?.[1]?.trim() ?? '';
+  if (name.length === 0) {
+    return null;
+  }
+  const args = COMMAND_ARGS_PATTERN.exec(text)?.[1]?.trim() ?? '';
+  return args.length === 0 ? name : `${name} ${args}`;
+}
+
 function classifyAssistant(
   raw: Record<string, unknown>,
-): ClaudeUsageRecord | ClaudeSkippedRecord | ClaudeInvalidRecord {
+): ClaudeUsageRecord | ClaudeLinkRecord | ClaudeSkippedRecord | ClaudeInvalidRecord {
   const message = asObject(raw.message);
   const usage = asObject(message?.usage);
   if (usage === null) {
-    return SKIPPED;
+    return linkOrSkip(raw);
   }
   const model = asString(message?.model);
   if (model === null || model.length === 0) {
@@ -139,6 +212,7 @@ function classifyAssistant(
     messageId: asString(message?.id),
     parentUuid: asString(raw.parentUuid),
     isSidechain: raw.isSidechain === true,
+    spawnedPrompt: extractSpawnedPrompt(message?.content),
     tsUtc,
     model,
     effort: asString(raw.effort),
@@ -150,6 +224,24 @@ function classifyAssistant(
     cacheWrite,
     cacheRead,
   };
+}
+
+/** The `prompt` given to the Agent tool, verbatim; the description is not the prompt. */
+function extractSpawnedPrompt(content: unknown): string | null {
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  for (const block of content) {
+    const object = asObject(block);
+    if (object === null || object.type !== 'tool_use' || object.name !== AGENT_TOOL_NAME) {
+      continue;
+    }
+    const prompt = asString(asObject(object.input)?.prompt);
+    if (prompt !== null && prompt.trim().length > 0) {
+      return prompt;
+    }
+  }
+  return null;
 }
 
 function extractPromptText(content: unknown): string | null {

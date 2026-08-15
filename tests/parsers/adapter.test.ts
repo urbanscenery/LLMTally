@@ -110,20 +110,134 @@ describe('ClaudeCodeAdapter.scan', () => {
     expect(entries.map((entry) => entry.outputTokens)).toEqual([7, 250]);
   });
 
-  test('keeps sidechain usage separate from the main prompt', async () => {
-    // Act
+  test('keeps sidechain usage separate from the main prompt across attachment and tool_result hops', async () => {
+    // Act — the fixture chains su1 → attachment → attachment → sa1 →
+    // tool_result user → sa2, and sa3 hangs off an unknown parent
     const { entries, batches } = await scanAll(fixturePath('claude-code', 'sidechain.jsonl'));
     const byId = new Map(entries.map((entry) => [entry.naturalId, entry]));
 
-    // Assert
+    // Assert — main and sidechain never cross; keys carry the prompt uuid
     expect(byId.get('ma1')?.promptText).toBe('Main task prompt');
     expect(byId.get('ma2')?.promptText).toBe('Main task prompt');
+    expect(byId.get('ma2')?.promptKey).toBe('mu1');
     expect(byId.get('sa1')?.promptText).toBe('Subagent instruction');
     expect(byId.get('sa2')?.promptText).toBe('Subagent instruction');
+    expect(byId.get('sa2')?.promptKey).toBe('su1');
     expect(byId.get('sa1')?.isSidechain).toBe(true);
-    expect(byId.get('sa3')?.promptText).toBeNull();
+    // a broken chain falls back to the latest sidechain prompt of the file
+    expect(byId.get('sa3')?.promptText).toBe('Subagent instruction');
+    expect(byId.get('sa3')?.promptKey).toBe('su1');
+    const codes = batches.flatMap((batch) => batch.warnings.map((warning) => warning.code));
+    expect(codes).not.toContain('prompt_unresolved');
+  });
+
+  test('sidechain usage before any sidechain prompt stays unresolved with a warning', async () => {
+    // Arrange — a subagent file whose first record already bills
+    const path = join(makeTempDir(), 'agent-orphan.jsonl');
+    writeFileSync(
+      path,
+      `${JSON.stringify({ type: 'assistant', uuid: 'sa1', parentUuid: 'elsewhere', isSidechain: true, timestamp: '2026-08-01T10:00:05.000Z', message: { role: 'assistant', id: 'msg_orphan', model: 'claude-haiku-4-5-20251001', usage: { input_tokens: 1, output_tokens: 1 } } })}\n`,
+    );
+
+    // Act
+    const { entries, batches } = await scanAll(path);
+
+    // Assert
+    expect(entries.map((entry) => entry.promptText)).toEqual([null]);
+    expect(entries.map((entry) => entry.promptKey)).toEqual([null]);
     const codes = batches.flatMap((batch) => batch.warnings.map((warning) => warning.code));
     expect(codes).toContain('prompt_unresolved');
+  });
+
+  test('a fork transcript attributes its usage to the Agent prompt that spawned it', async () => {
+    // Arrange — as Claude Code writes subagents/agent-*.jsonl for a fork:
+    // a uuid-less context ref, a copy of the parent's spawning assistant
+    // record (parent null, same message id as the parent session), then
+    // the ordinary tool_result → assistant chain
+    const path = join(makeTempDir(), 'agent-fork.jsonl');
+    const usage = { input_tokens: 2, output_tokens: 3 };
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ type: 'fork-context-ref', agentId: 'agent-1', parentSessionId: 'sess-p', parentLastUuid: 'pl1' }),
+        JSON.stringify({ type: 'assistant', uuid: 'fa1', parentUuid: null, isSidechain: true, timestamp: '2026-08-16T01:00:00.000Z', message: { id: 'msg_parent_copy', model: 'claude-fable-5', usage, content: [{ type: 'tool_use', name: 'Agent', input: { subagent_type: 'fork', description: 'Fix parser', prompt: 'You are the fork owning Task #3.' } }] } }),
+        JSON.stringify({ type: 'user', uuid: 'ft1', parentUuid: 'fa1', isSidechain: true, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Fork started' }, { type: 'text', text: '<fork-boilerplate>You are a worker fork.</fork-boilerplate>' }] } }),
+        JSON.stringify({ type: 'assistant', uuid: 'fa2', parentUuid: 'ft1', isSidechain: true, timestamp: '2026-08-16T01:00:05.000Z', message: { id: 'msg_fork_1', model: 'claude-fable-5', usage, content: [{ type: 'text', text: 'On it.' }] } }),
+        JSON.stringify({ type: 'user', uuid: 'ft2', parentUuid: 'fa2', isSidechain: true, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'ok' }] } }),
+        JSON.stringify({ type: 'assistant', uuid: 'fa3', parentUuid: 'ft2', isSidechain: true, timestamp: '2026-08-16T01:00:09.000Z', message: { id: 'msg_fork_2', model: 'claude-fable-5', usage, content: [{ type: 'text', text: 'Done.' }] } }),
+      ].join('\n') + '\n',
+    );
+
+    // Act
+    const { entries, batches } = await scanAll(path);
+
+    // Assert — the spawning copy and every fork call share the spawn prompt,
+    // keyed by the spawning record's uuid; nothing is left unresolved
+    expect(entries.map((entry) => [entry.naturalId, entry.promptText, entry.promptKey])).toEqual([
+      ['msg:msg_parent_copy', 'You are the fork owning Task #3.', 'fa1'],
+      ['msg:msg_fork_1', 'You are the fork owning Task #3.', 'fa1'],
+      ['msg:msg_fork_2', 'You are the fork owning Task #3.', 'fa1'],
+    ]);
+    expect(entries.every((entry) => entry.isSidechain)).toBe(true);
+    const codes = batches.flatMap((batch) => batch.warnings.map((warning) => warning.code));
+    expect(codes).not.toContain('prompt_unresolved');
+  });
+
+  test('a main-branch Agent tool_use never displaces the parent prompt', async () => {
+    // Arrange — the parent session spawning a fork keeps its own prompt
+    const path = join(makeTempDir(), 'parent.jsonl');
+    const usage = { input_tokens: 2, output_tokens: 3 };
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ type: 'user', uuid: 'pu1', parentUuid: null, isSidechain: false, message: { role: 'user', content: 'fix everything' } }),
+        JSON.stringify({ type: 'assistant', uuid: 'pa1', parentUuid: 'pu1', isSidechain: false, timestamp: '2026-08-16T01:00:00.000Z', message: { id: 'msg_spawn', model: 'claude-fable-5', usage, content: [{ type: 'tool_use', name: 'Agent', input: { subagent_type: 'fork', prompt: 'You are the fork.' } }] } }),
+        JSON.stringify({ type: 'assistant', uuid: 'pa2', parentUuid: 'pa1', isSidechain: false, timestamp: '2026-08-16T01:00:05.000Z', message: { id: 'msg_after', model: 'claude-fable-5', usage, content: [{ type: 'text', text: 'waiting' }] } }),
+      ].join('\n') + '\n',
+    );
+
+    // Act
+    const { entries } = await scanAll(path);
+
+    // Assert
+    expect(entries.map((entry) => [entry.promptText, entry.promptKey])).toEqual([
+      ['fix everything', 'pu1'],
+      ['fix everything', 'pu1'],
+    ]);
+  });
+
+  test('a session started by a slash command attributes its usage to the typed command', async () => {
+    // Arrange — /model output, then a skill command whose expanded body is
+    // meta, then usage, then plain text and more usage
+    const path = join(makeTempDir(), 'slash.jsonl');
+    const user = (uuid: string, content: unknown, extra: Record<string, unknown> = {}) =>
+      JSON.stringify({ type: 'user', uuid, parentUuid: null, isSidechain: false, message: { role: 'user', content }, ...extra });
+    const usage = (uuid: string, id: string, ts: string) =>
+      JSON.stringify({ type: 'assistant', uuid, parentUuid: null, isSidechain: false, timestamp: ts, message: { role: 'assistant', id, model: 'claude-opus-5', usage: { input_tokens: 2, output_tokens: 3 } } });
+    writeFileSync(
+      path,
+      [
+        user('c0', '<local-command-caveat>Caveat: generated locally</local-command-caveat>', { isMeta: true }),
+        user('c1', '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>'),
+        user('c2', '<local-command-stdout>Set model to Fable 5</local-command-stdout>'),
+        usage('a0', 'msg_0', '2026-08-01T10:00:00.000Z'),
+        user('c3', '<command-message>ecc:multi-workflow</command-message>\n<command-name>/ecc:multi-workflow</command-name>\n<command-args>build the thing  </command-args>'),
+        user('c4', [{ type: 'text', text: '# Workflow body injected by the skill' }], { isMeta: true }),
+        usage('a1', 'msg_1', '2026-08-01T10:00:05.000Z'),
+        user('c5', 'now plain text'),
+        usage('a2', 'msg_2', '2026-08-01T10:00:09.000Z'),
+      ].join('\n') + '\n',
+    );
+
+    // Act
+    const { entries } = await scanAll(path);
+
+    // Assert — usage under /model, under the skill command, then under plain text
+    expect(entries.map((entry) => [entry.promptText, entry.promptKey])).toEqual([
+      ['/model', 'c1'],
+      ['/ecc:multi-workflow build the thing', 'c3'],
+      ['now plain text', 'c5'],
+    ]);
   });
 
   test('reports malformed lines and holds the truncated tail', async () => {

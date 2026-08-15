@@ -82,6 +82,7 @@ describe('ClineAdapter', () => {
       provider: 'cline-pass',
       model: 'cline-pass/kimi-k3',
       promptText: 'summarize the delivery service',
+      promptKey: 'sess-cline-1:msg_u1',
       inputTokens: 5850,
       costUsd: 0.02121,
       sessionId: 'sess-cline-1',
@@ -90,6 +91,7 @@ describe('ClineAdapter', () => {
     });
     // the tool_result never replaced the pending prompt
     expect(entries[1]?.promptText).toBe('summarize the delivery service');
+    expect(entries[1]?.promptKey).toBe('sess-cline-1:msg_u1');
     expect(batches.flatMap((batch) => batch.warnings.map((warning) => warning.code))).toContain(
       'invalid_record',
     );

@@ -1,10 +1,18 @@
-import type { ClaudeUsageRecord, ClaudeUserRecord } from './records.ts';
+import type { ClaudeLinkRecord, ClaudeUsageRecord, ClaudeUserRecord } from './records.ts';
 
 const MAIN_BRANCH_KEY = 'main';
 const SIDECHAIN_KEY_PREFIX = 'sidechain:';
+/**
+ * The most recent sidechain prompt seen in this file. Subagent transcripts
+ * are written one file per agent, so when the uuid chain cannot be walked
+ * (a record type we never saw, a parent written to another file) the last
+ * sidechain prompt of the file is the right owner far more often than none.
+ */
+const SIDECHAIN_LATEST_KEY = 'sidechain-latest';
 // pending prompts are serialized into scan_state.cursor_json on every
 // batch, so unbounded sidechain accumulation would bloat the cursor
 const MAX_SIDECHAIN_PROMPTS = 256;
+const PINNED_KEYS: ReadonlySet<string> = new Set([MAIN_BRANCH_KEY, SIDECHAIN_LATEST_KEY]);
 
 export type PendingPrompt = {
   readonly promptText: string;
@@ -14,6 +22,13 @@ export type PendingPrompt = {
 
 export type PendingPromptMap = { readonly [branchKey: string]: PendingPrompt };
 
+/** What a usage record was attributed to: the words and the prompt's own id. */
+export type ResolvedPrompt = {
+  readonly promptText: string;
+  /** The user record's uuid — the ledger's prompt_key — when it was known. */
+  readonly promptKey: string | null;
+};
+
 /**
  * Tracks the last eligible user prompt per conversation branch so usage
  * records can be attributed to the prompt that produced them. Main-branch
@@ -21,6 +36,10 @@ export type PendingPromptMap = { readonly [branchKey: string]: PendingPrompt };
  * uuid chain so a subagent's usage never steals the main prompt. A prompt
  * is intentionally not cleared after a hit: several assistant records can
  * answer one prompt.
+ *
+ * The chain runs through records that carry no usage themselves
+ * (attachments, tool results, system notes) — `link` copies the pending
+ * prompt across those hops so the next assistant record still finds it.
  */
 export class PromptTracker {
   readonly #prompts: Map<string, PendingPrompt>;
@@ -39,36 +58,65 @@ export class PromptTracker {
       this.#prompts.set(MAIN_BRANCH_KEY, pending);
       return;
     }
+    this.#prompts.set(SIDECHAIN_LATEST_KEY, pending);
     if (record.uuid === null) {
       return;
     }
-    this.#setSidechain(`${SIDECHAIN_KEY_PREFIX}${record.uuid}`, pending);
+    this.#setSidechain(sidechainKey(record.uuid), pending);
   }
 
-  resolvePrompt(record: ClaudeUsageRecord): string | null {
-    if (!record.isSidechain) {
-      return this.#prompts.get(MAIN_BRANCH_KEY)?.promptText ?? null;
+  /**
+   * A fork transcript starts with a copy of the parent's assistant record
+   * that spawned it — its Agent tool_use prompt is the fork's prompt.
+   * Registered under the record's own uuid (the fork's chain hangs off
+   * it) and as the latest sidechain prompt; the main slot is never
+   * touched, so a spawning parent keeps its real prompt.
+   */
+  recordSpawnedPrompt(record: ClaudeUsageRecord): void {
+    if (!record.isSidechain || record.spawnedPrompt === null) {
+      return;
     }
-    if (record.parentUuid === null) {
-      return null;
-    }
-    const pending = this.#prompts.get(`${SIDECHAIN_KEY_PREFIX}${record.parentUuid}`);
-    if (pending === undefined) {
-      return null;
-    }
+    const pending: PendingPrompt = {
+      promptText: record.spawnedPrompt,
+      userUuid: record.uuid,
+      parentUuid: record.parentUuid,
+    };
+    this.#prompts.set(SIDECHAIN_LATEST_KEY, pending);
     if (record.uuid !== null) {
-      this.#setSidechain(`${SIDECHAIN_KEY_PREFIX}${record.uuid}`, pending);
+      this.#setSidechain(sidechainKey(record.uuid), pending);
     }
-    return pending.promptText;
+  }
+
+  /** Carries the pending prompt over a usage-less hop of a sidechain. */
+  link(record: ClaudeLinkRecord): void {
+    if (!record.isSidechain || record.uuid === null || record.parentUuid === null) {
+      return;
+    }
+    const pending = this.#prompts.get(sidechainKey(record.parentUuid));
+    if (pending !== undefined) {
+      this.#setSidechain(sidechainKey(record.uuid), pending);
+    }
+  }
+
+  resolvePrompt(record: ClaudeUsageRecord): ResolvedPrompt | null {
+    if (!record.isSidechain) {
+      return toResolved(this.#prompts.get(MAIN_BRANCH_KEY));
+    }
+    const chained =
+      record.parentUuid === null ? undefined : this.#prompts.get(sidechainKey(record.parentUuid));
+    if (chained !== undefined && record.uuid !== null) {
+      this.#setSidechain(sidechainKey(record.uuid), chained);
+    }
+    return toResolved(chained ?? this.#prompts.get(SIDECHAIN_LATEST_KEY));
   }
 
   #setSidechain(branchKey: string, pending: PendingPrompt): void {
     this.#prompts.set(branchKey, pending);
-    if (this.#prompts.size <= MAX_SIDECHAIN_PROMPTS + 1) {
+    if (this.#prompts.size <= MAX_SIDECHAIN_PROMPTS + PINNED_KEYS.size) {
       return;
     }
     for (const key of this.#prompts.keys()) {
-      if (key !== MAIN_BRANCH_KEY && key !== branchKey) {
+      if (!PINNED_KEYS.has(key) && key !== branchKey) {
         this.#prompts.delete(key);
         break;
       }
@@ -92,6 +140,17 @@ export class PromptTracker {
     }
     return new PromptTracker(restored);
   }
+}
+
+function sidechainKey(uuid: string): string {
+  return `${SIDECHAIN_KEY_PREFIX}${uuid}`;
+}
+
+function toResolved(pending: PendingPrompt | undefined): ResolvedPrompt | null {
+  if (pending === undefined) {
+    return null;
+  }
+  return { promptText: pending.promptText, promptKey: pending.userUuid };
 }
 
 function asPendingPrompt(value: unknown): PendingPrompt | null {

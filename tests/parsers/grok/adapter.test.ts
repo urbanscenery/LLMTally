@@ -178,6 +178,7 @@ describe('GrokAdapter.scan', () => {
       model: 'grok-4.6-build',
       effort: 'high',
       promptText: 'hi',
+      promptKey: `${SESSION_ID}:p-1`,
       inputTokens: 60722,
       outputTokens: 128,
       cacheRead: 2944,

@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 
-import { extractCodexPrompt } from '@llmtally/core/parsers/codex/prompts.ts';
+import {
+  agentMessagePromptText,
+  ENCRYPTED_PAYLOAD_MARKER,
+  extractCodexPrompt,
+} from '@llmtally/core/parsers/codex/prompts.ts';
 
 describe('extractCodexPrompt', () => {
   test('keeps plain prompts untouched', () => {
@@ -58,5 +62,38 @@ describe('extractCodexPrompt', () => {
     expect(
       extractCodexPrompt(['# AGENTS.md instructions for /x', '<environment_context>x</environment_context>']),
     ).toEqual({ promptText: null, hasUnterminatedBlock: false });
+  });
+
+  test('drops a leading skill expansion block so the typed prompt survives', () => {
+    // Arrange — codex appends the expanded skill body as its own message
+    const expansion = '<skill>\n<name>omo:ulw-loop</name>\n<path>/Users/x/.codex/skills/ulw</path>\nULTRAWORK…\n</skill>';
+
+    // Act
+    const result = extractCodexPrompt([expansion]);
+
+    // Assert
+    expect(result.promptText).toBeNull();
+    expect(result.hasUnterminatedBlock).toBe(false);
+  });
+});
+
+describe('agentMessagePromptText', () => {
+  test('keeps the plaintext header and marks an encrypted body', () => {
+    // Arrange
+    const header = 'Message Type: NEW_TASK\nTask name: /root/audit\nSender: /root\nPayload:\n';
+
+    // Act
+    const text = agentMessagePromptText([header], true);
+
+    // Assert
+    expect(text).toBe(`${header.trim()} ${ENCRYPTED_PAYLOAD_MARKER}`);
+  });
+
+  test('returns a clear-text body unchanged and null for an empty one', () => {
+    // Act & Assert
+    expect(agentMessagePromptText(['Message Type: MESSAGE\nPayload:\nplease retry'], false)).toBe(
+      'Message Type: MESSAGE\nPayload:\nplease retry',
+    );
+    expect(agentMessagePromptText(['   '], true)).toBeNull();
   });
 });

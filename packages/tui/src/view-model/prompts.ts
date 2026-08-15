@@ -17,6 +17,10 @@ export interface PromptRowViewModel {
   readonly costUsd: number | null;
   /** Single line: prompts are multi-line and the list is one row each. */
   readonly text: string;
+  /** API calls folded into this prompt (tool round-trips included). */
+  readonly calls: number;
+  /** A subagent's prompt, not one the user typed. */
+  readonly isSidechain: boolean;
 }
 
 export interface PromptsViewModel {
@@ -52,6 +56,8 @@ export function toPromptsViewModel(result: PromptListResult, scope: string): Pro
       nature: row.nature,
       costUsd: row.costUsd,
       text: toSingleLine(row.text),
+      calls: row.calls,
+      isSidechain: row.isSidechain,
     })),
     truncated: result.truncated,
     warnings: result.warnings.map((warning) => sanitizeTerminalLine(warning)),

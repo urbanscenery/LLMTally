@@ -65,6 +65,7 @@ describe('CodexAdapter.scan', () => {
       model: 'gpt-5.5',
       effort: 'xhigh',
       promptText: 'optimize the parser',
+      promptKey: 'turn-b1',
       inputTokens: 100,
       cacheRead: 40,
       outputTokens: 20,
@@ -77,9 +78,64 @@ describe('CodexAdapter.scan', () => {
       model: 'gpt-5.6-luna',
       effort: 'high',
       promptText: 'second question',
+      promptKey: 'turn-b2',
       inputTokens: 50,
       cacheWrite: 10,
       reasoningTokens: 8,
+    });
+  });
+
+  test('a spawned subagent takes its NEW_TASK mail as the prompt and keeps it across a compaction re-emit', async () => {
+    // Act
+    const { entries } = await scanAll(fixturePath('codex', 'subagent-spawn.jsonl'));
+
+    // Assert — four usage events: three on turn-s1 (incl. one after the
+    // same-turn turn_context re-emit), one on turn-s2 driven by peer MESSAGE
+    expect(entries).toHaveLength(4);
+    const taskPrompt = 'Message Type: NEW_TASK\nTask name: /root/audit\nSender: /root\nPayload: [encrypted payload]';
+    for (const entry of entries.slice(0, 3)) {
+      expect(entry.promptText).toBe(taskPrompt);
+      expect(entry.promptKey).toBe('turn-s1');
+      expect(entry.isSidechain).toBe(true);
+    }
+    // outgoing mail and the child's FINAL_ANSWER never became prompts
+    expect(entries[1]?.promptText).not.toContain('helper');
+    expect(entries[3]).toMatchObject({
+      promptKey: 'turn-s2',
+      promptText: 'Message Type: MESSAGE\nTask name: /root/audit\nSender: /root/other\nPayload:\nplease also check X',
+    });
+  });
+
+  test('turnless usage carries no prompt key', async () => {
+    // Act
+    const { entries } = await scanAll(fixturePath('codex', 'turnless.jsonl'));
+
+    // Assert
+    expect(entries[0]?.promptKey).toBeNull();
+  });
+
+  test('the agent path survives a cursor round trip so later mail is still recognised', async () => {
+    // Arrange — scan up to the first usage, then resume with the stored cursor
+    const dir = makeTempDir();
+    const path = join(dir, 'rollout-spawn-resume.jsonl');
+    const lines = (await Bun.file(fixturePath('codex', 'subagent-spawn.jsonl')).text())
+      .split('\n')
+      .filter((line) => line.length > 0);
+    const firstUsageIndex = lines.findIndex((line) => line.includes('"token_count"'));
+    await Bun.write(path, `${lines.slice(0, firstUsageIndex + 1).join('\n')}\n`);
+    const first = await scanAll(path);
+    const state = stateFromLastBatch(path, first.batches);
+    expect(state.cursorJson.agentPath).toBe('/root/audit');
+    appendFileSync(path, `${lines.slice(firstUsageIndex + 1).join('\n')}\n`);
+
+    // Act
+    const second = await scanAll(path, state);
+
+    // Assert — the peer MESSAGE after the resume point still binds to turn-s2
+    expect(second.entries).toHaveLength(3);
+    expect(second.entries[2]).toMatchObject({
+      promptKey: 'turn-s2',
+      promptText: expect.stringContaining('please also check X'),
     });
   });
 

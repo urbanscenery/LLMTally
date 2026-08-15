@@ -72,6 +72,11 @@ cross-package import는 `@llmtally/*` 지정자를 쓰고 tsconfig `paths`로 �
   숫자) — 이름만 합치고 숫자 합산은 금지. 돈 맥락의 quota는 반드시 cost와 결합
   (bare "Quota"는 잔량 게이지 전용). 분류는 `(agent, provider)` 기본표 + `billing.overrides`
   (2026-08-14~15 개정, `local_docs/costs/2026-08-15-quota-cost-rename-plan.md`)
+- **원장 행 = API 호출 1회**(assistant 메시지·token_count·generation)이지 프롬프트 1개가 아니다.
+  프롬프트 1개는 툴 왕복마다 행이 늘어나므로, 프롬프트 단위 화면은 `prompt_key`(소스 자체의
+  프롬프트 식별자, 2026-08-16 도입)로 행을 접어서 보여준다 (`report/prompts.ts`). 파서를 고쳐
+  귀속을 바꿀 때는 **parser_version을 올려야** 기존 행의 prompt_text/prompt_key가 리스캔에서
+  갱신된다 (upsert가 버전 상승 시에만 귀속 컬럼을 덮어씀)
 - 수집은 각 에이전트가 스스로 남기는 로그·저장소만 읽는다. 서드파티 도구가 만든 캐시나
   레지스트리는 포맷이 비문서화이고 그 도구가 돌지 않으면 멈추므로 의존하지 않는다
   (Antigravity IDE 세션은 그래서 아직 미지원)

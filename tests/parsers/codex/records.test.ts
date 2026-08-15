@@ -70,6 +70,31 @@ describe('classifyCodexLine', () => {
       cwd: '/tmp/proj',
       isSidechain: false,
       parentThreadId: null,
+      agentPath: null,
+    });
+  });
+
+  test('reads the agent path of a spawned subagent from thread_spawn', () => {
+    // Arrange
+    const line = JSON.stringify({
+      type: 'session_meta',
+      payload: {
+        id: 'rollout-3',
+        session_id: 'root-session',
+        source: {
+          subagent: {
+            thread_spawn: { parent_thread_id: 'root-session', depth: 1, agent_path: '/root/audit' },
+          },
+        },
+        parent_thread_id: 'root-session',
+      },
+    });
+
+    // Act & Assert
+    expect(classifyCodexLine(line)).toMatchObject({
+      kind: 'session_meta',
+      isSidechain: true,
+      agentPath: '/root/audit',
     });
   });
 
@@ -172,6 +197,48 @@ describe('classifyCodexLine', () => {
       kind: 'user',
       rawTexts: ['first block', 'second block'],
     });
+  });
+
+  test('classifies inter-agent mail with author, recipient, and encryption flag', () => {
+    // Arrange — a NEW_TASK whose body travels encrypted
+    const line = JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'agent_message',
+        id: 'amsg-1',
+        author: '/root',
+        recipient: '/root/audit',
+        content: [
+          { type: 'input_text', text: 'Message Type: NEW_TASK\nTask name: /root/audit\nSender: /root\nPayload:\n' },
+          { type: 'encrypted_content', encrypted_content: 'gAAAAAB…' },
+        ],
+      },
+    });
+
+    // Act & Assert
+    expect(classifyCodexLine(line)).toEqual({
+      kind: 'agent_message',
+      author: '/root',
+      recipient: '/root/audit',
+      rawTexts: ['Message Type: NEW_TASK\nTask name: /root/audit\nSender: /root\nPayload:\n'],
+      hasEncryptedPayload: true,
+    });
+  });
+
+  test('skips agent mail without any plaintext block', () => {
+    // Arrange
+    const line = JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'agent_message',
+        author: '/root',
+        recipient: '/root/audit',
+        content: [{ type: 'encrypted_content', encrypted_content: 'gAAAAAB…' }],
+      },
+    });
+
+    // Act & Assert
+    expect(classifyCodexLine(line)).toEqual({ kind: 'skipped' });
   });
 
   test('skips developer and assistant response items', () => {

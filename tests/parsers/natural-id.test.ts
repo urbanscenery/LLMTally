@@ -11,6 +11,7 @@ function usageRecord(overrides: Partial<ClaudeUsageRecord>): ClaudeUsageRecord {
     messageId: null,
     parentUuid: null,
     isSidechain: false,
+    spawnedPrompt: null,
     tsUtc: 1_785_578_405,
     model: 'claude-fable-5',
     effort: null,

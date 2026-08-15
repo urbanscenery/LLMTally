@@ -1,5 +1,8 @@
 const AGENTS_BLOCK_PREFIX = '# AGENTS.md instructions';
 
+// `skill` is the expanded body codex appends as a SECOND user message
+// right after a `$skill-name …` prompt; without stripping it the expansion
+// overwrote the prompt the user actually typed
 const INJECTED_TAGS = [
   'permissions instructions',
   'apps_instructions',
@@ -7,7 +10,11 @@ const INJECTED_TAGS = [
   'skills_instructions',
   'recommended_plugins',
   'environment_context',
+  'skill',
 ] as const;
+
+/** Appended when an inter-agent message body travels encrypted. */
+export const ENCRYPTED_PAYLOAD_MARKER = '[encrypted payload]';
 
 export interface CodexPromptExtraction {
   readonly promptText: string | null;
@@ -38,6 +45,23 @@ export function extractCodexPrompt(rawTexts: readonly string[]): CodexPromptExtr
     promptText: joined.trim().length > 0 ? joined : null,
     hasUnterminatedBlock,
   };
+}
+
+/**
+ * The prompt text of an inter-agent message: its plaintext header lines
+ * (message type, task name, sender) plus whatever body was in the clear.
+ * Codex encrypts most bodies, so the marker tells a reader why the words
+ * end at `Payload:` instead of looking like a truncated log.
+ */
+export function agentMessagePromptText(
+  rawTexts: readonly string[],
+  hasEncryptedPayload: boolean,
+): string | null {
+  const header = rawTexts.join('\n').trim();
+  if (header.length === 0) {
+    return null;
+  }
+  return hasEncryptedPayload ? `${header} ${ENCRYPTED_PAYLOAD_MARKER}` : header;
 }
 
 function stripLeadingInjectedBlocks(text: string): { text: string; unterminated: boolean } {

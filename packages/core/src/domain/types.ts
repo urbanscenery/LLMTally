@@ -11,6 +11,12 @@ export interface LedgerEntry {
   readonly model: string;
   readonly effort: string | null;
   readonly promptText: string | null;
+  /**
+   * The source's own identity for the prompt this call answered (Claude
+   * user uuid, codex turn id, ...). Several calls share one key; reports
+   * group by it. Null when the source offers no stable identity.
+   */
+  readonly promptKey: string | null;
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheWrite: number;

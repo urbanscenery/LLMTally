@@ -252,6 +252,8 @@ describe('models drill-down and search', () => {
                 nature: 'quota' as const,
                 costUsd: 0.5,
                 text: 'hello prompt',
+                calls: 3,
+                isSidechain: false,
               },
             ],
             truncated: false,

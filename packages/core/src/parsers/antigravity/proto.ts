@@ -117,6 +117,29 @@ export function firstString(fields: readonly DecodedField[], fieldNumber: number
   }
 }
 
+/**
+ * Decodes a packed repeated varint field (wire type 2 payload holding
+ * back-to-back varints). Fails closed like decodeMessage: a truncated or
+ * oversized element makes the whole list null rather than a short list
+ * that would silently mis-attribute a generation to the wrong step.
+ */
+export function decodePackedVarints(bytes: Uint8Array): readonly number[] | null {
+  const values: number[] = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    if (values.length >= MAX_FIELDS) {
+      return null;
+    }
+    const element = readVarint(bytes, offset);
+    if (element === null || element.value === null) {
+      return null;
+    }
+    values.push(element.value);
+    offset = element.next;
+  }
+  return values;
+}
+
 /** value is null when the encoding is valid but exceeds a safe integer. */
 function readVarint(
   bytes: Uint8Array,

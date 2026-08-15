@@ -14,6 +14,7 @@ describe('domain contracts', () => {
       model: 'claude-fable-5',
       effort: null,
       promptText: 'hello',
+      promptKey: null,
       inputTokens: 10,
       outputTokens: 20,
       cacheWrite: 0,

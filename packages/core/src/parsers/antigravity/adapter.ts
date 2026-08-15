@@ -13,12 +13,17 @@ import type {
 } from '../../scan/types.ts';
 import type { SourceAdapter, SourceDiscovery, SourceDiscoveryContext } from '../types.ts';
 import { asString } from '../shared.ts';
+import { resolvePromptForGeneration } from './prompts.ts';
+import type { AntigravityPrompt } from './prompts.ts';
 import {
   ANTIGRAVITY_AGENT,
   ANTIGRAVITY_FIELD_MAP_VERSION,
   ANTIGRAVITY_PARSER_VERSION,
   ANTIGRAVITY_PROVIDER,
+  USER_INPUT_STEP_TYPE,
   parseGenMetadataBlob,
+  parseGenStepIndices,
+  parseStepPayloadPrompt,
 } from './records.ts';
 
 const CURSOR_VERSION = 1;
@@ -113,6 +118,8 @@ export class AntigravityCliAdapter implements SourceAdapter {
     let invalidRows = 0;
     let fallbackIds = 0;
     let duplicateResponses = 0;
+    let unresolvedPrompts = 0;
+    let promptSteps: LoadedPrompts = { prompts: [], invalidSteps: 0, unavailable: null };
     const seenResponseIds = new Set<string>();
     try {
       const db = new Database(target.path, { readonly: true, strict: true });
@@ -129,6 +136,7 @@ export class AntigravityCliAdapter implements SourceAdapter {
         if (trajectoryId === null) {
           missingTrajectory = true;
         } else {
+          promptSteps = loadPrompts(db);
           // one blob in memory at a time (audit D-04) — the entries this
           // loop keeps are small parsed numbers, never the blobs. No
           // yield happens while the source connection is open.
@@ -167,6 +175,14 @@ export class AntigravityCliAdapter implements SourceAdapter {
               fallbackIds += 1;
               naturalId = `${trajectoryId}:idx:${row.idx}`;
             }
+            const prompt = resolvePromptForGeneration(
+              promptSteps.prompts,
+              parseGenStepIndices(row.data),
+              parsed.tsUtc,
+            );
+            if (prompt === null) {
+              unresolvedPrompts += 1;
+            }
             entries.push({
               tsUtc: parsed.tsUtc,
               agent: this.agent,
@@ -174,7 +190,8 @@ export class AntigravityCliAdapter implements SourceAdapter {
               provider: ANTIGRAVITY_PROVIDER,
               model: parsed.model,
               effort: null,
-              promptText: null,
+              promptText: prompt?.text ?? null,
+              promptKey: prompt === null ? null : `${trajectoryId}:step:${prompt.idx}`,
               inputTokens: parsed.inputTokens,
               outputTokens: parsed.outputTokens,
               cacheWrite: 0,
@@ -220,6 +237,21 @@ export class AntigravityCliAdapter implements SourceAdapter {
         warning(this.agent, target.path, 'natural_id_collision', `${fallbackIds} generations without a usable response id used idx fallback keys`),
       );
     }
+    if (promptSteps.unavailable !== null) {
+      warnings.push(
+        warning(this.agent, target.path, 'invalid_record', `user-input steps unreadable, prompts left empty: ${promptSteps.unavailable}`),
+      );
+    }
+    if (promptSteps.invalidSteps > 0) {
+      warnings.push(
+        warning(this.agent, target.path, 'invalid_record', `${promptSteps.invalidSteps} user-input steps failed the pinned field map (v${ANTIGRAVITY_FIELD_MAP_VERSION})`),
+      );
+    }
+    if (unresolvedPrompts > 0) {
+      warnings.push(
+        warning(this.agent, target.path, 'prompt_unresolved', `${unresolvedPrompts} generations could not be attributed to a user-input step`),
+      );
+    }
 
     yield {
       entries,
@@ -231,6 +263,47 @@ export class AntigravityCliAdapter implements SourceAdapter {
       warnings,
     };
   }
+}
+
+interface LoadedPrompts {
+  /** Sorted by steps.idx ascending. */
+  readonly prompts: readonly AntigravityPrompt[];
+  readonly invalidSteps: number;
+  /** Why the steps table could not be read at all; null when it could. */
+  readonly unavailable: string | null;
+}
+
+/**
+ * Reads every user-input step once per conversation. A database whose
+ * steps table is missing or unreadable still yields its usage rows —
+ * only the prompt columns stay empty, and the caller says so once.
+ */
+function loadPrompts(db: Database): LoadedPrompts {
+  const prompts: AntigravityPrompt[] = [];
+  let invalidSteps = 0;
+  try {
+    for (const row of db
+      .query<{ idx: number; step_payload: Uint8Array | null }, [number]>(
+        'SELECT idx, step_payload FROM steps WHERE step_type = ? ORDER BY idx',
+      )
+      .iterate(USER_INPUT_STEP_TYPE)) {
+      if (row.step_payload === null || row.step_payload.byteLength > MAX_BLOB_BYTES) {
+        invalidSteps += 1;
+        continue;
+      }
+      const parsed = parseStepPayloadPrompt(row.step_payload);
+      if (parsed.kind === 'invalid') {
+        invalidSteps += 1;
+        continue;
+      }
+      if (parsed.kind === 'prompt') {
+        prompts.push({ idx: row.idx, tsUtc: parsed.tsUtc, text: parsed.text });
+      }
+    }
+  } catch (error) {
+    return { prompts, invalidSteps, unavailable: describe(error) };
+  }
+  return { prompts, invalidSteps, unavailable: null };
 }
 
 function fileFingerprint(path: string): JsonObject {

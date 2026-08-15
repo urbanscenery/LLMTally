@@ -159,6 +159,7 @@ export class GrokAdapter implements SourceAdapter {
               meta,
               sessionId,
               prompt?.text ?? null,
+              promptKeyFor(sessionId, record.promptId),
               naturalIdFor(sessionId, record.promptId, startOffset, usage.model),
               usage.model.length > 0 ? usage.model : (prompt?.modelId ?? GROK_UNKNOWN_MODEL),
               record.tsUtc,
@@ -187,6 +188,7 @@ export class GrokAdapter implements SourceAdapter {
     meta: GrokSessionMeta,
     sessionId: string | null,
     promptText: string | null,
+    promptKey: string | null,
     naturalId: string,
     model: string,
     tsUtc: number,
@@ -199,6 +201,7 @@ export class GrokAdapter implements SourceAdapter {
       model,
       effort: meta.effort,
       promptText,
+      promptKey,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       cacheWrite: usage.cacheWrite,
@@ -272,6 +275,17 @@ function naturalIdFor(
 ): string {
   const turn = promptId ?? `@${startOffset}`;
   return `${sessionId ?? 'unknown'}:${turn}:${model.length > 0 ? model : GROK_UNKNOWN_MODEL}`;
+}
+
+/**
+ * One prompt bills several usages (one per model), all under the same
+ * prompt_id — that id, namespaced by session, is the prompt's identity.
+ */
+function promptKeyFor(sessionId: string | null, promptId: string | null): string | null {
+  if (promptId === null) {
+    return null;
+  }
+  return `${sessionId ?? 'unknown'}:${promptId}`;
 }
 
 function buildCursor(

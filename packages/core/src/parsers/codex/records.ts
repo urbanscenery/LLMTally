@@ -17,6 +17,12 @@ export interface CodexSessionMetaRecord {
   readonly cwd: string | null;
   readonly isSidechain: boolean;
   readonly parentThreadId: string | null;
+  /**
+   * The rollout's own address in a multi-agent tree
+   * (`source.subagent.thread_spawn.agent_path`, e.g. `/root/audit`);
+   * null for root sessions and non-spawned subagents.
+   */
+  readonly agentPath: string | null;
 }
 
 export interface CodexTurnContextRecord {
@@ -31,6 +37,19 @@ export interface CodexUserMessageRecord {
   readonly kind: 'user';
   /** Raw input_text blocks; injected-block filtering happens in prompts.ts. */
   readonly rawTexts: readonly string[];
+}
+
+/**
+ * Inter-agent mail in a multi-agent rollout: a task or message delivered
+ * from one agent path to another. The plaintext header names the sender,
+ * recipient, and message type; the body usually travels encrypted.
+ */
+export interface CodexAgentMessageRecord {
+  readonly kind: 'agent_message';
+  readonly author: string | null;
+  readonly recipient: string | null;
+  readonly rawTexts: readonly string[];
+  readonly hasEncryptedPayload: boolean;
 }
 
 export interface CodexTokenCountRecord {
@@ -58,6 +77,7 @@ export type ClassifiedCodexLine =
   | CodexSessionMetaRecord
   | CodexTurnContextRecord
   | CodexUserMessageRecord
+  | CodexAgentMessageRecord
   | CodexTokenCountRecord
   | CodexSkippedRecord
   | CodexMalformedRecord
@@ -120,7 +140,14 @@ function classifySessionMeta(
     cwd: asString(payload.cwd),
     isSidechain: source !== null && source.subagent !== undefined,
     parentThreadId: asString(payload.parent_thread_id),
+    agentPath: agentPathOf(source),
   };
+}
+
+function agentPathOf(source: Record<string, unknown> | null): string | null {
+  const subagent = source === null ? null : asObject(source.subagent);
+  const spawn = subagent === null ? null : asObject(subagent.thread_spawn);
+  return spawn === null ? null : asString(spawn.agent_path);
 }
 
 function classifyTurnContext(
@@ -163,19 +190,46 @@ function classifyTokenCount(
 
 function classifyResponseItem(
   payload: Record<string, unknown>,
-): CodexUserMessageRecord | CodexSkippedRecord {
-  if (payload.type !== 'message' || payload.role !== 'user' || !Array.isArray(payload.content)) {
+): CodexUserMessageRecord | CodexAgentMessageRecord | CodexSkippedRecord {
+  if (!Array.isArray(payload.content)) {
     return SKIPPED;
   }
-  const rawTexts = payload.content
-    .map((block) => asObject(block))
-    .filter((block): block is Record<string, unknown> => block !== null)
-    .filter((block) => block.type === 'input_text' && typeof block.text === 'string')
-    .map((block) => block.text as string);
+  if (payload.type === 'agent_message') {
+    return classifyAgentMessage(payload, payload.content);
+  }
+  if (payload.type !== 'message' || payload.role !== 'user') {
+    return SKIPPED;
+  }
+  const rawTexts = inputTextBlocks(payload.content);
   if (rawTexts.length === 0) {
     return SKIPPED;
   }
   return { kind: 'user', rawTexts };
+}
+
+function classifyAgentMessage(
+  payload: Record<string, unknown>,
+  content: readonly unknown[],
+): CodexAgentMessageRecord | CodexSkippedRecord {
+  const rawTexts = inputTextBlocks(content);
+  if (rawTexts.length === 0) {
+    return SKIPPED;
+  }
+  return {
+    kind: 'agent_message',
+    author: asString(payload.author),
+    recipient: asString(payload.recipient),
+    rawTexts,
+    hasEncryptedPayload: content.some((block) => asObject(block)?.type === 'encrypted_content'),
+  };
+}
+
+function inputTextBlocks(content: readonly unknown[]): readonly string[] {
+  return content
+    .map((block) => asObject(block))
+    .filter((block): block is Record<string, unknown> => block !== null)
+    .filter((block) => block.type === 'input_text' && typeof block.text === 'string')
+    .map((block) => block.text as string);
 }
 
 function asUsage(value: unknown): CodexTokenUsage | null {

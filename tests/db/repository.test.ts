@@ -22,6 +22,7 @@ function entry(overrides: Partial<LedgerEntry>): LedgerEntry {
     model: 'claude-fable-5',
     effort: 'high',
     promptText: 'searchable prompt body',
+    promptKey: null,
     inputTokens: 10,
     outputTokens: 20,
     cacheWrite: 5,
@@ -130,6 +131,83 @@ describe('SqliteLedgerRepository.commitBatch', () => {
     // Assert
     expect(row?.output_tokens).toBe(250);
     expect(row?.prompt_text).toBeNull();
+    repository.close();
+  });
+
+  test('a newer parser version rewrites prompt attribution on a duplicate', () => {
+    // Arrange — v2 stored the row with a lost prompt (unresolved chain)
+    const { repository, db } = setup();
+    repository.commitBatch(
+      batchInput([entry({ parserVersion: 2, promptText: null, promptKey: null, isSidechain: false })]),
+    );
+
+    // Act — v3 resolves the prompt and its key for the same natural id
+    const rescan = repository.commitBatch(
+      batchInput([
+        entry({
+          parserVersion: 3,
+          promptText: 'now resolved',
+          promptKey: 'user-uuid-9',
+          isSidechain: true,
+          parentUuid: 'parent-1',
+        }),
+      ]),
+    );
+    const row = db
+      .query<
+        {
+          prompt_text: string | null;
+          prompt_key: string | null;
+          is_sidechain: number;
+          parent_uuid: string | null;
+          parser_version: number;
+          output_tokens: number;
+        },
+        []
+      >(
+        'SELECT prompt_text, prompt_key, is_sidechain, parent_uuid, parser_version, output_tokens FROM usage_ledger',
+      )
+      .get();
+
+    // Assert — attribution follows the newer parser, tokens are untouched
+    expect(rescan.insertedRows).toBe(1);
+    expect(row?.prompt_text).toBe('now resolved');
+    expect(row?.prompt_key).toBe('user-uuid-9');
+    expect(row?.is_sidechain).toBe(1);
+    expect(row?.parent_uuid).toBe('parent-1');
+    expect(row?.parser_version).toBe(3);
+    expect(row?.output_tokens).toBe(20);
+    const fts = db
+      .query<{ n: number }, []>(
+        "SELECT COUNT(*) AS n FROM prompt_fts WHERE prompt_fts MATCH '\"now resolved\"'",
+      )
+      .get();
+    expect(fts?.n).toBe(1);
+    repository.close();
+  });
+
+  test('an older or equal parser version never touches prompt attribution', () => {
+    // Arrange
+    const { repository, db } = setup();
+    repository.commitBatch(batchInput([entry({ parserVersion: 3, promptKey: 'key-3' })]));
+
+    // Act — a stale v2 replay and a same-version replay with other words
+    const stale = repository.commitBatch(
+      batchInput([entry({ parserVersion: 2, promptText: 'stale words', promptKey: 'key-2' })]),
+    );
+    const same = repository.commitBatch(
+      batchInput([entry({ parserVersion: 3, promptText: 'other words', promptKey: 'key-x' })]),
+    );
+    const row = db
+      .query<{ prompt_text: string; prompt_key: string; parser_version: number }, []>(
+        'SELECT prompt_text, prompt_key, parser_version FROM usage_ledger',
+      )
+      .get();
+
+    // Assert
+    expect(stale.ignoredRows).toBe(1);
+    expect(same.ignoredRows).toBe(1);
+    expect(row).toEqual({ prompt_text: 'searchable prompt body', prompt_key: 'key-3', parser_version: 3 });
     repository.close();
   });
 

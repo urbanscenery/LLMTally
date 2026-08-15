@@ -10,25 +10,51 @@ import type {
 import { migrate } from './migrate.ts';
 
 // Natural-key duplicates are normally skipped (any other constraint
-// violation aborts the batch), with one carve-out: a duplicate carrying a
-// LARGER output count refreshes the token columns. Claude Code duplicates
-// the usage block across the JSONL lines of one assistant message, and
-// while the message is still streaming those copies are cumulative
-// snapshots — the last one is what the API actually billed. Only token
-// columns are updated: prompt_text must stay untouched so agePrompts
-// redactions survive rescans. For sources whose duplicates are exact
-// copies the WHERE guard never fires, so this stays a plain skip.
+// violation aborts the batch), with two carve-outs.
+//
+// 1. A duplicate carrying a LARGER output count refreshes the token
+//    columns. Claude Code duplicates the usage block across the JSONL
+//    lines of one assistant message, and while the message is still
+//    streaming those copies are cumulative snapshots — the last one is
+//    what the API actually billed. prompt_text is untouched on this path
+//    so agePrompts redactions survive rescans.
+// 2. A duplicate written by a NEWER parser version rewrites the
+//    prompt-attribution columns (prompt_text, prompt_key, is_sidechain,
+//    parent_uuid) and records the version. That is how a parser fix
+//    reaches rows already in the ledger through the ordinary rescan,
+//    without deleting history whose source log may be gone by now. Text
+//    the retention pass had aged out can reappear on this path, but the
+//    same collection run ages it out again right after the scan
+//    (coordinator #applyPromptRetention), so it never outlives one run.
+//
+// For sources whose duplicates are exact copies neither WHERE guard
+// fires, so this stays a plain skip.
 const INSERT_ENTRY_SQL = `INSERT INTO usage_ledger
-  (ts_utc, agent, account, provider, model, effort, prompt_text,
+  (ts_utc, agent, account, provider, model, effort, prompt_text, prompt_key,
    input_tokens, output_tokens, cache_write, cache_read, reasoning_tokens,
    cost_usd, session_id, cwd, natural_id, parser_version, is_sidechain, parent_uuid)
- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
  ON CONFLICT (agent, natural_id) DO UPDATE SET
-   input_tokens = excluded.input_tokens,
-   output_tokens = excluded.output_tokens,
-   cache_write = excluded.cache_write,
-   cache_read = excluded.cache_read
+   input_tokens = CASE WHEN excluded.output_tokens > usage_ledger.output_tokens
+     THEN excluded.input_tokens ELSE usage_ledger.input_tokens END,
+   output_tokens = CASE WHEN excluded.output_tokens > usage_ledger.output_tokens
+     THEN excluded.output_tokens ELSE usage_ledger.output_tokens END,
+   cache_write = CASE WHEN excluded.output_tokens > usage_ledger.output_tokens
+     THEN excluded.cache_write ELSE usage_ledger.cache_write END,
+   cache_read = CASE WHEN excluded.output_tokens > usage_ledger.output_tokens
+     THEN excluded.cache_read ELSE usage_ledger.cache_read END,
+   prompt_text = CASE WHEN excluded.parser_version > usage_ledger.parser_version
+     THEN excluded.prompt_text ELSE usage_ledger.prompt_text END,
+   prompt_key = CASE WHEN excluded.parser_version > usage_ledger.parser_version
+     THEN excluded.prompt_key ELSE usage_ledger.prompt_key END,
+   is_sidechain = CASE WHEN excluded.parser_version > usage_ledger.parser_version
+     THEN excluded.is_sidechain ELSE usage_ledger.is_sidechain END,
+   parent_uuid = CASE WHEN excluded.parser_version > usage_ledger.parser_version
+     THEN excluded.parent_uuid ELSE usage_ledger.parent_uuid END,
+   parser_version = CASE WHEN excluded.parser_version > usage_ledger.parser_version
+     THEN excluded.parser_version ELSE usage_ledger.parser_version END
  WHERE excluded.output_tokens > usage_ledger.output_tokens
+    OR excluded.parser_version > usage_ledger.parser_version
  RETURNING id`;
 
 const UPSERT_SCAN_STATE_SQL = `INSERT INTO scan_state
@@ -70,8 +96,10 @@ export class SqliteLedgerRepository implements LedgerRepository {
    * Ages out prompt text observed before the cutoff. Only the words go:
    * `prompt_text` becomes NULL (the AU trigger removes the FTS entry in
    * the same statement) while tokens, model, cost, and timing stay
-   * forever. Re-scanning an old source cannot resurrect the text — the
-   * natural-key conflict clause never writes prompt_text on a duplicate.
+   * forever. Re-scanning an old source with the same parser cannot
+   * resurrect the text — the natural-key conflict clause only writes
+   * prompt_text for a newer parser version, and the retention pass runs
+   * again right after every scan.
    */
   agePrompts(cutoffUtc: number): number {
     // count first, in the same transaction: the changes counter is
@@ -109,8 +137,8 @@ export class SqliteLedgerRepository implements LedgerRepository {
       let inserted = 0;
       for (const entry of batch.entries) {
         // RETURNING id yields a row for real inserts and for the rare
-        // token-refresh update (both advanced the ledger); exact-duplicate
-        // skips return nothing. The changes counter is unreliable here
+        // token-refresh / parser-upgrade updates (all advanced the
+        // ledger); exact-duplicate skips return nothing. The changes counter is unreliable here
         // because the FTS triggers inflate it.
         inserted += insertEntry.get(...entryParams(entry)) === null ? 0 : 1;
       }
@@ -178,6 +206,7 @@ function entryParams(entry: LedgerEntry): readonly (string | number | null)[] {
     entry.model,
     entry.effort,
     entry.promptText,
+    entry.promptKey,
     entry.inputTokens,
     entry.outputTokens,
     entry.cacheWrite,

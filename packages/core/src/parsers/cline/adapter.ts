@@ -15,7 +15,7 @@ import type { SourceAdapter, SourceDiscovery, SourceDiscoveryContext } from '../
 import { asObject, asString, asTokenCount, isNonNegativeInteger } from '../shared.ts';
 
 export const CLINE_AGENT = 'cline';
-export const CLINE_PARSER_VERSION = 1;
+export const CLINE_PARSER_VERSION = 2;
 const CLINE_CURSOR_VERSION = 1;
 const MESSAGES_SUFFIX = '.messages.json';
 const MILLISECONDS_PER_SECOND = 1000;
@@ -237,7 +237,7 @@ function parseSession(
   const sessionId = asString(document.sessionId);
 
   const entries: LedgerEntry[] = [];
-  let pendingPrompt: string | null = null;
+  let pendingPrompt: PendingClinePrompt | null = null;
   let skippedInvalid = 0;
   for (const item of document.messages) {
     const message = asObject(item);
@@ -247,7 +247,9 @@ function parseSession(
     if (message.role === 'user') {
       const text = extractUserText(message.content);
       if (text !== null) {
-        pendingPrompt = text;
+        // the user message id (falling back to its position) is the
+        // prompt identity every following assistant step shares
+        pendingPrompt = { text, key: promptKeyFor(sessionId, message, entries.length) };
       }
       continue;
     }
@@ -290,12 +292,27 @@ function extractUserText(content: unknown): string | null {
   return texts.length > 0 ? texts.join('\n') : null;
 }
 
+interface PendingClinePrompt {
+  readonly text: string;
+  readonly key: string;
+}
+
+function promptKeyFor(
+  sessionId: string | null,
+  userMessage: Record<string, unknown>,
+  ordinal: number,
+): string {
+  const messageId = asString(userMessage.id);
+  const local = messageId !== null && messageId.trim().length > 0 ? messageId : `#${ordinal}`;
+  return `${sessionId ?? 'unknown'}:${local}`;
+}
+
 function toEntry(
   message: Record<string, unknown>,
   metrics: Record<string, unknown>,
   meta: ClineMeta,
   sessionId: string | null,
-  promptText: string | null,
+  prompt: PendingClinePrompt | null,
 ): LedgerEntry | null {
   const naturalId = asString(message.id);
   const ts = message.ts;
@@ -324,7 +341,8 @@ function toEntry(
     provider: (modelInfo === null ? null : asString(modelInfo.provider)) ?? meta.provider,
     model: (modelInfo === null ? null : asString(modelInfo.id)) ?? meta.model ?? 'unknown',
     effort: null,
-    promptText,
+    promptText: prompt?.text ?? null,
+    promptKey: prompt?.key ?? null,
     inputTokens,
     outputTokens,
     cacheWrite,
