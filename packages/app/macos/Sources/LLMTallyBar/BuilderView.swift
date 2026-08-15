@@ -16,6 +16,11 @@ struct BuilderView: View {
     @State private var buckets: [ReportBucketDTO] = []
     @State private var hourBuckets: [ReportBucketDTO] = []
     @State private var todayRows: [String: Int]?
+    /// Why the provider catalog could not be read this time. The Builder
+    /// keeps working from pinned providers; the note says the picker may
+    /// be short until the next successful read (2026-08-16: a silent
+    /// failure left Grok missing from the picker for a whole day).
+    @State private var catalogError: String?
     @State private var draggedId: String?
     /// Squeeze simulation (§6.5): reproduces a crowded menu bar.
     @State private var budget: Double = Double(StatusComposer.defaultBudget)
@@ -44,6 +49,12 @@ struct BuilderView: View {
                 .padding(6)
         }
         .onAppear(perform: loadQuota)
+        // the Settings window is created once and re-shown, so this view
+        // outlives its first appearance — a catalog captured while a
+        // source was mid-rewrite would otherwise stay stale until relaunch
+        .onReceive(NotificationCenter.default.publisher(for: .llmtallySettingsShown)) { _ in
+            loadQuota()
+        }
     }
 
     // MARK: header + preview
@@ -147,6 +158,11 @@ struct BuilderView: View {
                 if fold.hiddenCount > 0 {
                     Text("Compacted · \(fold.hiddenCount) folded · order kept")
                         .font(.caption2).foregroundStyle(.orange)
+                }
+                if let catalogError {
+                    Text("Provider catalog unavailable · pinned providers kept")
+                        .font(.caption2).foregroundStyle(.orange)
+                        .help(catalogError)
                 }
             }
             .padding(.horizontal, 12)
@@ -310,7 +326,7 @@ struct BuilderView: View {
                         current[index].secondNativeWindowId = nil
                     }
                 })) {
-                ForEach(catalogProviders(), id: \.self) { provider in
+                ForEach(pickerProviders(), id: \.self) { provider in
                     Text("\(agentShortCode(provider)) · \(agentDisplayName(provider))").tag(provider)
                 }
             }
@@ -583,10 +599,15 @@ struct BuilderView: View {
         // read-only: the Builder never burns refresh budget
         SidecarClient.shared.requestDecodable("overview", params: ["refresh": false], as: OverviewDTO.self) { result in
             DispatchQueue.main.async {
-                if case .success(let value) = result {
+                switch result {
+                case .success(let value):
                     quota = value.quota
                     buckets = value.report.buckets
+                    catalogError = nil
                     migrateLegacyBindings()
+                case .failure(let error):
+                    // keep whatever catalog we had; say that it may be short
+                    catalogError = error.localizedDescription
                 }
             }
         }
@@ -651,6 +672,22 @@ struct BuilderView: View {
             seen.append(snapshot.agent)
         }
         return seen.isEmpty ? ["claude-code"] : seen
+    }
+
+    /// What the provider picker offers: every provider the sources
+    /// returned, plus every provider an item already pins. A pin must
+    /// never fall out of its own picker because one read came back
+    /// short — the source-driven `catalogProviders()` stays as it is for
+    /// migration and defaults, so an unseen provider is still repointed
+    /// there, never here.
+    private func pickerProviders() -> [String] {
+        var seen = catalogProviders()
+        for item in items {
+            if let provider = pinProvider(item.binding), !seen.contains(provider) {
+                seen.append(provider)
+            }
+        }
+        return seen
     }
 
     private func windowIds(of provider: String) -> [String] {

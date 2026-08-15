@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
@@ -305,6 +305,74 @@ describe('loadAllQuota and the opencode credential file', () => {
     // endpoints stay untouched when they were not asked for
     expect(result.every((entry) => entry.agent === 'antigravity')).toBe(true);
     expect(urls.filter((url) => SUBSCRIPTION_HOSTS.some((host) => url.includes(host)))).toEqual([]);
+  });
+});
+
+describe('loadAllQuota and the grok credential file', () => {
+  const SIGNED_OUT = {
+    status: 'signed_out',
+    source: 'none',
+    activeAccountId: null,
+    identity: null,
+  } as const;
+
+  function harness(): { home: string; vault: AccountVault } {
+    const home = makeTempDir();
+    const vault = new AccountVault({ dir: join(home, 'vault'), keychain: createMemoryKeychain() });
+    return { home, vault };
+  }
+
+  async function grokRows(grokAuthPath: string, vault: AccountVault): Promise<QuotaSnapshot[]> {
+    const original = globalThis.fetch;
+    globalThis.fetch = ((): Promise<Response> =>
+      Promise.reject(new Error('no vendor call expected'))) as unknown as typeof fetch;
+    try {
+      return await loadAllQuota({
+        agent: 'grok',
+        nowUtc: NOW,
+        vault,
+        activeContext: SIGNED_OUT,
+        grokAuthPath,
+      });
+    } finally {
+      globalThis.fetch = original;
+    }
+  }
+
+  test('a machine without the grok CLI gets no grok row', async () => {
+    // Arrange — ~/.grok itself does not exist
+    const { home, vault } = harness();
+    resetQuotaThrottle();
+
+    // Act
+    const rows = await grokRows(join(home, '.grok', 'auth.json'), vault);
+
+    // Assert
+    expect(rows).toEqual([]);
+  });
+
+  test('a signed-out or mid-rewrite credential file keeps a placeholder grok row', async () => {
+    // Arrange — the CLI's directory exists but auth.json is missing, then torn
+    const { home, vault } = harness();
+    const dir = join(home, '.grok');
+    mkdirSync(dir);
+    const authPath = join(dir, 'auth.json');
+    resetQuotaThrottle();
+
+    // Act
+    const signedOut = await grokRows(authPath, vault);
+    writeFileSync(authPath, '{"https://auth.x.ai::c1": {"key": "abc"');
+    const torn = await grokRows(authPath, vault);
+
+    // Assert — the provider stays in the list; the row explains itself
+    // and never carries windows or an identity nothing readable named
+    expect(signedOut).toHaveLength(1);
+    expect(signedOut[0]?.agent).toBe('grok');
+    expect(signedOut[0]?.windows).toEqual([]);
+    expect(signedOut[0]?.failure?.kind).toBe('unavailable');
+    expect(signedOut[0]?.warnings.join(' ')).toContain('not signed in');
+    expect(torn).toHaveLength(1);
+    expect(torn[0]?.warnings.join(' ')).toContain('could not be read');
   });
 });
 

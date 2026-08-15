@@ -16,8 +16,10 @@
  * and the cross-process fetch-state store becomes the budget authority.
  */
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 import { resolveActiveClaudeContext } from '../accounts/active-claude.ts';
+import { defaultGrokAuthPath } from '../accounts/grok.ts';
 import { syncActiveCodexCredential } from '../accounts/codex-live-sync.ts';
 import { syncActiveClaudeCredential, verifyLiveCredentialOwner } from '../accounts/live-sync.ts';
 import type { ActiveClaudeContext } from '../accounts/active-claude.ts';
@@ -67,8 +69,9 @@ import type { QuotaSnapshot } from './providers.ts';
 import { openQuotaFetchStateStore } from './fetch-state.ts';
 import type { QuotaFetchStateStore, QuotaThrottleSubject } from './fetch-state.ts';
 import {
-  defaultGrokCredentials,
+  describeEmptyGrokCredentials,
   fetchGrokQuota,
+  grokPlaceholderSnapshot,
   grokQuotaSubject,
   readGrokCredentials,
 } from './grok.ts';
@@ -626,8 +629,17 @@ async function loadGrokQuota(
   stateStoreUnavailable: boolean,
   authPath: string | undefined,
 ): Promise<QuotaSnapshot[]> {
-  const credentials =
-    authPath === undefined ? defaultGrokCredentials() : readGrokCredentials(authPath);
+  const resolvedPath = authPath ?? defaultGrokAuthPath(homedir());
+  const credentials = readGrokCredentials(resolvedPath);
+  if (credentials.length === 0) {
+    // an empty read must not erase the provider: every catalog downstream
+    // (popover rows, Builder provider picker, TUI accounts) is built from
+    // this list, and a Grok that is merely signed out — or whose file the
+    // CLI is rewriting right now — vanished from all of them until the
+    // next successful read (2026-08-16 Builder regression)
+    const state = describeEmptyGrokCredentials(resolvedPath);
+    return state === 'not_installed' ? [] : [grokPlaceholderSnapshot(nowUtc, state)];
+  }
   return Promise.all(
     credentials.map((credential) =>
       throttledQuota(

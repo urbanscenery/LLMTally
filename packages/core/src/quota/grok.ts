@@ -26,8 +26,9 @@
  * last-good numbers on screen. `auth_invalid` is reserved for a token
  * the vendor actually refused, because it discards that history.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { dirname } from 'node:path';
 
 import { defaultGrokAuthPath } from '../accounts/grok.ts';
 import { asObject, asString } from '../parsers/shared.ts';
@@ -140,6 +141,60 @@ export function readGrokCredentials(authPath: string): readonly GrokCredential[]
 
 export function defaultGrokCredentials(home: string = homedir()): readonly GrokCredential[] {
   return readGrokCredentials(defaultGrokAuthPath(home));
+}
+
+/**
+ * Why `readGrokCredentials` came back empty. The distinction decides
+ * whether Grok gets a row at all: a machine that never installed the
+ * CLI has nothing to show, but a machine that is signed out (or whose
+ * `auth.json` is mid-rewrite by the CLI) still has a Grok account the
+ * dashboards must keep on screen — dropping the row silently makes
+ * the provider vanish from every catalog built from this list.
+ */
+export type GrokCredentialFileState = 'not_installed' | 'signed_out' | 'unreadable';
+
+export function describeEmptyGrokCredentials(authPath: string): GrokCredentialFileState {
+  if (!existsSync(dirname(authPath))) {
+    return 'not_installed';
+  }
+  if (!existsSync(authPath)) {
+    return 'signed_out';
+  }
+  try {
+    const document = asObject(JSON.parse(readFileSync(authPath, 'utf8')));
+    // parseable but carrying no usable entry — the CLI's signed-out shape
+    return document === null ? 'unreadable' : 'signed_out';
+  } catch {
+    return 'unreadable';
+  }
+}
+
+const EMPTY_CREDENTIAL_WARNINGS: Record<Exclude<GrokCredentialFileState, 'not_installed'>, string> = {
+  signed_out: 'grok is installed but not signed in (~/.grok/auth.json has no session); run "grok" to sign in again',
+  unreadable: 'grok credential file could not be read (mid-rewrite by the CLI?); retrying on the next refresh',
+};
+
+/**
+ * The row Grok keeps when its credential file yields no token: no
+ * windows, an `unavailable` failure, and the reason as a warning. It
+ * carries no account identity (nothing readable named one), so the
+ * stored-history fallback cannot attach numbers — the row exists to
+ * keep the provider visible, not to invent a reading.
+ */
+export function grokPlaceholderSnapshot(
+  nowUtc: number,
+  state: Exclude<GrokCredentialFileState, 'not_installed'>,
+): QuotaSnapshot {
+  return makeQuotaSnapshot({
+    agent: GROK_AGENT,
+    accountId: null,
+    account: null,
+    source: 'vendor_api',
+    observedAtUtc: nowUtc,
+    windows: [],
+    failure: { kind: 'unavailable', failedAtUtc: nowUtc, retryAtUtc: null },
+    warnings: [EMPTY_CREDENTIAL_WARNINGS[state]],
+  });
 }
 
 function parseIso(value: unknown): number | null {

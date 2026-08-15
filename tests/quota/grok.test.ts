@@ -3,8 +3,10 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  describeEmptyGrokCredentials,
   fetchGrokQuota,
   grokPeriodWindowId,
+  grokPlaceholderSnapshot,
   grokQuotaSubject,
   grokWindows,
   isGrokTokenExpired,
@@ -102,6 +104,38 @@ describe('readGrokCredentials', () => {
     expect(readGrokCredentials(join(makeTempDir(), 'absent.json'))).toEqual([]);
     expect(readGrokCredentials(torn)).toEqual([]);
     expect(readGrokCredentials(authFile({ 'https://auth.x.ai::c1': { email: 'x@y.z' } }))).toEqual([]);
+  });
+});
+
+describe('describeEmptyGrokCredentials', () => {
+  test('tells "never installed" apart from "signed out" and "mid-rewrite"', () => {
+    // Arrange — four shapes of an empty read
+    const missingDir = join(makeTempDir(), 'no-such-dir', 'auth.json');
+    const missingFile = join(makeTempDir(), 'auth.json');
+    const torn = join(makeTempDir(), 'auth.json');
+    writeFileSync(torn, '{"https://auth.x.ai::c1": {"key": "abc"');
+    const keyless = authFile({ 'https://auth.x.ai::c1': { email: 'x@y.z' } });
+
+    // Act & Assert
+    expect(describeEmptyGrokCredentials(missingDir)).toBe('not_installed');
+    expect(describeEmptyGrokCredentials(missingFile)).toBe('signed_out');
+    expect(describeEmptyGrokCredentials(torn)).toBe('unreadable');
+    expect(describeEmptyGrokCredentials(keyless)).toBe('signed_out');
+  });
+});
+
+describe('grokPlaceholderSnapshot', () => {
+  test('keeps the provider on screen without inventing a reading or an identity', () => {
+    // Act
+    const snapshot = grokPlaceholderSnapshot(NOW, 'signed_out');
+
+    // Assert — a windowless, unavailable Grok row that names the reason
+    expect(snapshot.agent).toBe('grok');
+    expect(snapshot.windows).toEqual([]);
+    expect(snapshot.accountId).toBeNull();
+    expect(snapshot.failure?.kind).toBe('unavailable');
+    expect(snapshot.warnings.join(' ')).toContain('run "grok"');
+    expect(grokPlaceholderSnapshot(NOW, 'unreadable').warnings.join(' ')).toContain('could not be read');
   });
 });
 

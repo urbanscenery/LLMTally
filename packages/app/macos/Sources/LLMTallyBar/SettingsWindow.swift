@@ -27,6 +27,10 @@ extension Notification.Name {
     /// the menu-bar convention (HIG sets no point cap; system menus grow
     /// to the work area and scroll past it).
     static let llmtallyPanelDesiredHeight = Notification.Name("llmtallyPanelDesiredHeight")
+    /// Posted every time the Settings window is brought forward. The
+    /// window (and its SwiftUI tree) is created once and re-shown, so
+    /// panes that read the sidecar on appear listen for this to re-read.
+    static let llmtallySettingsShown = Notification.Name("llmtallySettingsShown")
 }
 
 /// Single source for the privacy switch (03_design_spec §11).
@@ -130,6 +134,7 @@ final class SettingsWindowController {
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
         window?.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: .llmtallySettingsShown, object: nil)
     }
 }
 
@@ -489,6 +494,7 @@ private struct AccountsPane: View {
         }
         .padding(20)
         .onAppear(perform: load)
+        .onReceive(NotificationCenter.default.publisher(for: .llmtallySettingsShown)) { _ in load() }
         .alert("Detach the Codex login?", isPresented: $confirmDetach) {
             Button("Detach", role: .destructive) { detach() }
             Button("Cancel", role: .cancel) {}
