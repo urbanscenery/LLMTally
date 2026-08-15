@@ -90,6 +90,9 @@ function makeDataSource(scan: () => Promise<ScanSummary>): TuiDataSource {
     async loadPrompts(): Promise<PromptListResult> {
       return { rows: [], truncated: false, warnings: [] };
     },
+    async loadPromptDetail() {
+      return null;
+    },
     async installDaemon() {
       return 'installed';
     },
@@ -232,7 +235,7 @@ describe('models drill-down and search', () => {
     return { ...base, buckets: [bucket('model-a', 10), bucket('model-b', 5)] };
   }
 
-  async function start(promptCalls: string[] = []) {
+  async function start(promptCalls: string[] = [], detailCalls: number[] = []) {
     const screen = new FakeScreen();
     const source = makeDataSource(async () => scanSummary());
     const session = await createTuiSession({
@@ -240,6 +243,32 @@ describe('models drill-down and search', () => {
       dataSource: {
         ...source,
         loadReport: async (groupBy: ReportGroupBy) => reportWithModels(groupBy),
+        loadPromptDetail: async (id: number) => {
+          detailCalls.push(id);
+          const tokens = { inputTokens: 10, outputTokens: 2, cacheWrite: 0, cacheRead: 0, reasoningTokens: 0 };
+          const call = { id, tsUtc: NOW, model: 'model-b', effort: null, tokens, costUsd: 0.25 };
+          return {
+            prompt: {
+              id,
+              tsUtc: NOW,
+              agent: 'claude-code',
+              model: 'model-b',
+              effort: null,
+              tokens: { ...tokens, inputTokens: 20, outputTokens: 4 },
+              nature: 'quota' as const,
+              costUsd: 0.5,
+              text: 'hello prompt\nsecond line of the body',
+              calls: 2,
+              isSidechain: false,
+            },
+            provider: 'anthropic',
+            sessionId: 'sess-42',
+            cwd: '/tmp/proj',
+            lastTsUtc: NOW + 30,
+            calls: [call, { ...call, id: id + 1, tsUtc: NOW + 30 }],
+            warnings: [],
+          };
+        },
         loadPrompts: async (filter: { model: string | null; search: string | null }) => {
           promptCalls.push(`${filter.model ?? ''}|${filter.search ?? ''}`);
           return {
@@ -314,6 +343,40 @@ describe('models drill-down and search', () => {
     // Assert
     expect(frame).not.toContain('prompts for');
     expect(frame).toContain('model-a');
+  });
+
+  test('Enter on a listed prompt opens its detail page and Esc returns to the list', async () => {
+    // Arrange — open model-b's prompt list
+    const detailCalls: number[] = [];
+    const { screen, session, done } = await start([], detailCalls);
+    screen.pressKey('4');
+    await settle(80);
+    screen.pressKey('return');
+    await settle(120);
+
+    // Act — Enter on the highlighted prompt
+    screen.pressKey('return');
+    await settle(120);
+    const detailFrame = screen.frames.at(-1)?.join('\n') ?? '';
+    screen.pressKey('escape');
+    await settle(40);
+    const listFrame = screen.frames.at(-1)?.join('\n') ?? '';
+    session.stop();
+    await done;
+
+    // Assert — the detail carries the full body, totals, calls and context;
+    // Esc lands back on the same list, not the models table
+    expect(detailCalls).toEqual([1]);
+    expect(detailFrame).toContain('back to prompts');
+    expect(detailFrame).toContain('second line of the body');
+    expect(detailFrame).toContain('2 API calls');
+    expect(detailFrame).toContain('input 20');
+    expect(detailFrame).toContain('~$0.5000 quota cost');
+    expect(detailFrame).toContain('sess-42');
+    expect(detailFrame).toContain('/tmp/proj');
+    expect(detailFrame).toContain('calls (2)');
+    expect(listFrame).toContain('prompts for model-a');
+    expect(listFrame).not.toContain('back to prompts');
   });
 
   test('a normalized shift+d reaches the Doctor daemon action', async () => {

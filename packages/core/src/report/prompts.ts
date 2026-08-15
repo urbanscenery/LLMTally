@@ -90,7 +90,22 @@ interface PromptSqlRow {
   readonly reasoning_tokens: number;
   readonly cost_usd: number | null;
   readonly prompt_text: string | null;
+  readonly session_id: string | null;
+  readonly cwd: string | null;
   readonly group_key: string;
+}
+
+/**
+ * The columns a call row is read with. The list clips prompt text
+ * (`PROMPT_TEXT_LIMIT`) since it only needs the gist; the detail view
+ * asks for the whole body (`null`).
+ */
+function memberColumns(textLimit: number | null): string {
+  const text = textLimit === null ? 'u.prompt_text' : `substr(u.prompt_text, 1, ${textLimit})`;
+  return `u.id, u.ts_utc, u.agent, u.provider, u.model, u.effort, u.is_sidechain,
+     u.input_tokens, u.output_tokens, u.cache_write, u.cache_read, u.reasoning_tokens,
+     u.cost_usd, ${text} AS prompt_text, u.session_id, u.cwd,
+     ${GROUP_KEY_SQL} AS group_key`;
 }
 
 interface PromptGroupHead {
@@ -190,14 +205,28 @@ function selectGroupMembers(
   const where = clause.where.length === 0
     ? `WHERE u.ts_utc >= ? AND ${membership}`
     : `${clause.where} AND u.ts_utc >= ? AND ${membership}`;
-  const sql = `SELECT u.id, u.ts_utc, u.agent, u.provider, u.model, u.effort, u.is_sidechain,
-     u.input_tokens, u.output_tokens, u.cache_write, u.cache_read, u.reasoning_tokens,
-     u.cost_usd, substr(u.prompt_text, 1, ${PROMPT_TEXT_LIMIT}) AS prompt_text,
-     ${GROUP_KEY_SQL} AS group_key
+  const sql = `SELECT ${memberColumns(PROMPT_TEXT_LIMIT)}
      FROM ${clause.from} ${where}
      ORDER BY u.ts_utc ASC, u.id ASC`;
   const keys = JSON.stringify(heads.map((head) => head.group_key));
   return runQuery<PromptSqlRow>(db, sql, [...clause.binds, oldestFirstTs, keys]);
+}
+
+/** Every call of the prompt that call `id` belongs to, oldest first, with full text. */
+function selectPromptCalls(db: Database, id: number): PromptSqlRow[] {
+  const keyRow = db
+    .query<{ group_key: string }, [number]>(
+      `SELECT ${GROUP_KEY_SQL} AS group_key FROM usage_ledger u WHERE u.id = ?`,
+    )
+    .get(id);
+  if (keyRow === null) {
+    return [];
+  }
+  const sql = `SELECT ${memberColumns(null)}
+     FROM usage_ledger u
+     WHERE ${GROUP_KEY_SQL} = ?
+     ORDER BY u.ts_utc ASC, u.id ASC`;
+  return runQuery<PromptSqlRow>(db, sql, [keyRow.group_key]);
 }
 
 export interface PromptListRequest extends PromptFilter {
@@ -230,16 +259,8 @@ export async function listPrompts(
     db.close();
   }
 
-  const neededByKey = new Map<string, NeededModel>();
-  for (const row of members) {
-    neededByKey.set(pricingKey(row.agent, row.provider, row.model), {
-      agent: row.agent,
-      provider: row.provider,
-      model: row.model,
-    });
-  }
   const pricing = await loadPricing({
-    needed: [...neededByKey.values()],
+    needed: uniqueModels(members),
     allowRefresh: request.noRefresh !== true,
     fetchFn: deps.fetchFn,
     cacheDir: deps.cacheDir,
@@ -259,6 +280,97 @@ export async function listPrompts(
     truncated,
     warnings: [...pricing.warnings, ...billing.warnings],
   };
+}
+
+/** One API call inside a prompt, as the detail view lists them. */
+export interface PromptCall {
+  readonly id: number;
+  readonly tsUtc: number;
+  readonly model: string;
+  readonly effort: string | null;
+  readonly tokens: TokenTotals;
+  readonly costUsd: number | null;
+}
+
+export interface PromptDetail {
+  /** The prompt with its full text and totals over every call. */
+  readonly prompt: PromptRow;
+  readonly provider: string | null;
+  readonly sessionId: string | null;
+  readonly cwd: string | null;
+  /** When the last call happened; equals prompt.tsUtc for a single call. */
+  readonly lastTsUtc: number;
+  readonly calls: readonly PromptCall[];
+  readonly warnings: readonly string[];
+}
+
+export interface PromptDetailRequest {
+  readonly databasePath: string;
+  /** Ledger id of any call of the prompt (the list hands out the first). */
+  readonly id: number;
+  readonly noRefresh?: boolean;
+}
+
+/**
+ * Everything about one prompt: the full body (the list clips it) and
+ * every call it produced, priced one by one. Null when the id is gone —
+ * a compaction or a retention pass can remove a row between the list
+ * and the detail.
+ */
+export async function loadPromptDetail(
+  request: PromptDetailRequest,
+  deps: PromptListDeps = {},
+): Promise<PromptDetail | null> {
+  const db = openReadOnlyDatabase(request.databasePath, LATEST_SCHEMA_VERSION);
+  let members: PromptSqlRow[];
+  try {
+    members = selectPromptCalls(db, request.id);
+  } finally {
+    db.close();
+  }
+  const first = members[0];
+  if (first === undefined) {
+    return null;
+  }
+  const pricing = await loadPricing({
+    needed: uniqueModels(members),
+    allowRefresh: request.noRefresh !== true,
+    fetchFn: deps.fetchFn,
+    cacheDir: deps.cacheDir,
+    configPath: deps.configPath,
+    nowUtc: deps.nowUtc,
+  });
+  const billing = loadBillingOverrides(deps.configPath ?? defaultConfigPath());
+  const calls = members.map((row) => toCallRow(row, pricing, billing.overrides));
+  const prompt = calls.slice(1).reduce(mergeCall, calls[0]!);
+  return {
+    prompt,
+    provider: first.provider,
+    sessionId: first.session_id,
+    cwd: first.cwd,
+    lastTsUtc: members[members.length - 1]?.ts_utc ?? first.ts_utc,
+    calls: calls.map((call) => ({
+      id: call.id,
+      tsUtc: call.tsUtc,
+      model: call.model,
+      effort: call.effort,
+      tokens: call.tokens,
+      costUsd: call.costUsd,
+    })),
+    warnings: [...pricing.warnings, ...billing.warnings],
+  };
+}
+
+function uniqueModels(rows: readonly PromptSqlRow[]): NeededModel[] {
+  const byKey = new Map<string, NeededModel>();
+  for (const row of rows) {
+    byKey.set(pricingKey(row.agent, row.provider, row.model), {
+      agent: row.agent,
+      provider: row.provider,
+      model: row.model,
+    });
+  }
+  return [...byKey.values()];
 }
 
 function toCallRow(row: PromptSqlRow, pricing: LoadedPricing, overrides: BillingOverrides): PromptRow {

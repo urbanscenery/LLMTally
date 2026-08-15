@@ -102,6 +102,9 @@ function makeFakes(options: FakeDataSourceOptions = {}) {
     async loadPrompts(): Promise<PromptListResult> {
       return { rows: [], truncated: false, warnings: [] };
     },
+    async loadPromptDetail() {
+      return null;
+    },
     async installDaemon(): Promise<string> {
       return 'installed';
     },

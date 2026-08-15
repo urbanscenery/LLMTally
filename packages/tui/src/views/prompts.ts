@@ -137,6 +137,7 @@ export function renderPromptList(options: PromptsRenderOptions): {
     ' ',
     span(model.scope, 'tableHeader'),
     span(`  ${model.rows.length} prompt(s)${model.truncated ? '+' : ''}`, 'muted'),
+    span('  · Enter opens details', 'dim'),
   );
   const lines: TabViewLine[] = [header, ''];
   if (model.rows.length === 0) {

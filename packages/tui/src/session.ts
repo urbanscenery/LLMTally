@@ -21,12 +21,19 @@ import {
   withModelDrillDown,
   withModelPromptsCursor,
   withOverviewSelectedDate,
+  withPromptDetail,
+  withPromptDetailScroll,
   withSearchCursor,
   withModelsCursor,
   withSearchQuery,
   withTabResource,
   sortSpecFor,
 } from './state.ts';
+import type { PromptDetailState } from './state.ts';
+import { toPromptDetailViewModel } from './view-model/prompt-detail.ts';
+import type { PromptDetailViewModel } from './view-model/prompt-detail.ts';
+import { PROMPT_DETAIL_HEADER_LINES, clampDetailScroll, promptDetailLines } from './views/prompt-detail.ts';
+import { shellBodyHeight } from './views/shell.ts';
 import { MONO_THEME, THEMES, canonicalThemeName, findTheme, resolveTheme, shouldPaintSurface } from './theme.ts';
 import type { ResolvedTheme } from './theme.ts';
 import { CHART_STYLES, CHART_STYLE_LABELS, isChartStyle } from './components/chart-style.ts';
@@ -508,6 +515,9 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
 
   function handleSearchKey(key: TuiKeyEvent): boolean {
     const state = controller.getState();
+    if (state.promptDetail?.origin === 'search') {
+      return handlePromptDetailKey(key);
+    }
     if (key.name === '/') {
       controller.setOverlay({
         kind: 'input',
@@ -524,6 +534,13 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
     }
     if (key.name === 'up' || key.name === 'k') {
       controller.commit(withSearchCursor(state, listCursor(rows, state.searchCursor, -1)));
+      return true;
+    }
+    if (key.name === 'return' || key.name === 'enter') {
+      const selected = state.search.data?.rows[Math.min(state.searchCursor, rows - 1)];
+      if (selected !== undefined) {
+        openPromptDetail('search', selected.id);
+      }
       return true;
     }
     return false;
@@ -574,6 +591,9 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       }
       return false;
     }
+    if (state.promptDetail?.origin === 'models') {
+      return handlePromptDetailKey(key);
+    }
     if (key.name === 'escape') {
       controller.commit(withModelDrillDown(state, null));
       return true;
@@ -587,7 +607,118 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       controller.commit(withModelPromptsCursor(state, listCursor(rows, state.modelPromptsCursor, -1)));
       return true;
     }
+    if (key.name === 'return' || key.name === 'enter') {
+      const selected = state.modelPrompts.data?.rows[Math.min(state.modelPromptsCursor, rows - 1)];
+      if (selected !== undefined) {
+        openPromptDetail('models', selected.id);
+      }
+      return true;
+    }
     return false;
+  }
+
+  /**
+   * The detail is a scrollable page over the list it came from: Esc goes
+   * back, ↑↓/jk move a line, PgUp/PgDn a page, g/G jump to either end.
+   * The scroll is clamped here against the rendered line count so the
+   * offset never runs past the last page.
+   */
+  function handlePromptDetailKey(key: TuiKeyEvent): boolean {
+    const state = controller.getState();
+    const detail = state.promptDetail;
+    if (detail === null) {
+      return false;
+    }
+    if (key.name === 'escape') {
+      controller.commit(withPromptDetail(state, null));
+      return true;
+    }
+    const model = detail.resource.data;
+    if (model === null) {
+      return false;
+    }
+    const bodyHeight = Math.max(1, shellBodyHeight(screen.height) - PROMPT_DETAIL_HEADER_LINES);
+    const total = promptDetailLines(model, Math.max(20, screen.width)).length;
+    const scrollTo = (target: number): boolean => {
+      controller.commit(withPromptDetailScroll(state, clampDetailScroll(total, target, bodyHeight)));
+      return true;
+    };
+    if (key.name === 'down' || key.name === 'j') {
+      return scrollTo(detail.scroll + 1);
+    }
+    if (key.name === 'up' || key.name === 'k') {
+      return scrollTo(detail.scroll - 1);
+    }
+    if (key.name === 'pagedown' || key.name === 'space') {
+      return scrollTo(detail.scroll + bodyHeight);
+    }
+    if (key.name === 'pageup') {
+      return scrollTo(detail.scroll - bodyHeight);
+    }
+    if (key.name === 'g' || key.name === 'home') {
+      return scrollTo(0);
+    }
+    if (key.name === 'G' || key.name === 'end') {
+      return scrollTo(total);
+    }
+    return false;
+  }
+
+  /**
+   * Opens the detail for the highlighted prompt. Loaded outside the tab
+   * loader like the lists are; a result is dropped when the user has
+   * already closed the page or opened another prompt.
+   */
+  function openPromptDetail(origin: PromptDetailState['origin'], id: number): void {
+    const stillWanted = (): boolean => {
+      const detail = controller.getState().promptDetail;
+      return detail !== null && detail.origin === origin && detail.id === id;
+    };
+    const put = (resource: ResourceState<PromptDetailViewModel>): void => {
+      const state = controller.getState();
+      if (state.promptDetail === null || !stillWanted()) {
+        return;
+      }
+      controller.commit(withPromptDetail(state, { ...state.promptDetail, resource }));
+    };
+    controller.commit(
+      withPromptDetail(controller.getState(), {
+        origin,
+        id,
+        resource: { phase: 'loading', data: null, error: null, updatedAtUtc: null, invalidated: false },
+        scroll: 0,
+      }),
+    );
+    void (async () => {
+      try {
+        const detail = await options.dataSource.loadPromptDetail(id);
+        put(
+          detail === null
+            ? {
+                phase: 'error',
+                data: null,
+                error: 'this prompt is no longer in the ledger',
+                updatedAtUtc: null,
+                invalidated: false,
+              }
+            : {
+                phase: 'ready',
+                data: toPromptDetailViewModel(detail),
+                error: null,
+                updatedAtUtc: null,
+                invalidated: false,
+              },
+        );
+      } catch (error) {
+        put({
+          phase: 'error',
+          data: null,
+          error: sanitizeTerminalLine(error instanceof Error ? error.message : String(error)),
+          updatedAtUtc: null,
+          invalidated: false,
+        });
+      }
+    })();
   }
 
   function openModel(model: string): void {
@@ -769,6 +900,10 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         bodyRow,
         rowCount,
       );
+    // a detail page has no clickable rows; the list under it must not move
+    if (state.promptDetail?.origin === state.activeTab) {
+      return false;
+    }
     if (state.activeTab === 'search') {
       const rows = state.search.data?.rows.length ?? 0;
       // the query line and its blank sit above the list header

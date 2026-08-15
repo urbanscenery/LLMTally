@@ -7,6 +7,7 @@ function bucket(key: string, overrides: Partial<ReportBucket> = {}): ReportBucke
   return {
     key,
     rowCount: 1204,
+    promptCount: 87,
     tokens: {
       inputTokens: 12_345_678,
       outputTokens: 423_100,

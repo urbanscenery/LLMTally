@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { openDatabase } from '@llmtally/core/db/connection.ts';
 import { migrate } from '@llmtally/core/db/migrate.ts';
-import { listPrompts } from '@llmtally/core/report/prompts.ts';
+import { listPrompts, loadPromptDetail, PROMPT_TEXT_LIMIT } from '@llmtally/core/report/prompts.ts';
 import type { PromptListRequest } from '@llmtally/core/report/prompts.ts';
 import { makeTempDir } from '../helpers.ts';
 
@@ -30,6 +30,7 @@ interface SeedRow {
   readonly promptText?: string | null;
   readonly promptKey?: string | null;
   readonly isSidechain?: boolean;
+  readonly cwd?: string | null;
   readonly input?: number;
   readonly output?: number;
   readonly cost?: number | null;
@@ -45,8 +46,8 @@ function seedLedger(rows: readonly SeedRow[]): string {
     `INSERT INTO usage_ledger
       (ts_utc, agent, provider, model, session_id, prompt_text, prompt_key, is_sidechain,
        natural_id, parser_version, input_tokens, output_tokens, cache_write, cache_read,
-       reasoning_tokens, cost_usd)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, 0, 0, ?)`,
+       reasoning_tokens, cost_usd, cwd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, 0, 0, ?, ?)`,
   );
   rows.forEach((row, index) => {
     insert.run(
@@ -62,6 +63,7 @@ function seedLedger(rows: readonly SeedRow[]): string {
       row.input ?? 100,
       row.output ?? 10,
       row.cost === undefined ? null : row.cost,
+      row.cwd === undefined ? null : row.cwd,
     );
   });
   db.close();
@@ -226,5 +228,50 @@ describe('listPrompts grouping', () => {
     expect(mystery?.costUsd).toBeNull();
     expect(sidechain?.isSidechain).toBe(true);
     expect(sidechain?.costUsd).not.toBeNull();
+  });
+});
+
+describe('loadPromptDetail', () => {
+  test('returns the full prompt body and every call, priced one by one', async () => {
+    // Arrange — a body longer than the list clip, answered by three calls
+    const body = 'x'.repeat(PROMPT_TEXT_LIMIT + 50);
+    const path = seedLedger([
+      { tsUtc: T0, promptKey: 'u-1', promptText: body, input: 100, output: 10, cwd: '/proj' },
+      { tsUtc: T0 + 5, promptKey: 'u-1', promptText: body, input: 200, output: 20 },
+      { tsUtc: T0 + 9, promptKey: 'u-1', promptText: body, model: 'claude-haiku-4-5', input: 1, output: 1 },
+      { tsUtc: T0 + 20, promptKey: 'u-2', promptText: 'unrelated' },
+    ]);
+    const listed = await listPrompts(request(path, { model: 'claude-fable-5' }), deps());
+    const listedPrompt = listed.rows.find((row) => row.text.startsWith('x'))!;
+    const firstId = listedPrompt.id;
+
+    // Act — the list hands over the first call's id
+    const detail = await loadPromptDetail({ databasePath: path, id: firstId }, deps());
+
+    // Assert — the whole body, the group is per model, calls oldest first
+    expect(listedPrompt.text).toHaveLength(PROMPT_TEXT_LIMIT);
+    expect(detail?.prompt.text).toBe(body);
+    expect(detail?.prompt.calls).toBe(2);
+    expect(detail?.calls.map((call) => [call.tsUtc, call.tokens.inputTokens])).toEqual([
+      [T0, 100],
+      [T0 + 5, 200],
+    ]);
+    expect(detail?.prompt.tokens.inputTokens).toBe(300);
+    expect(detail?.prompt.costUsd).toBeCloseTo(300 * 1e-5 + 30 * 5e-5, 10);
+    expect(detail?.lastTsUtc).toBe(T0 + 5);
+    expect(detail?.cwd).toBe('/proj');
+    expect(detail?.sessionId).toBe('sess-1');
+    expect(detail?.provider).toBe('anthropic');
+  });
+
+  test('a vanished id yields null instead of an empty prompt', async () => {
+    // Arrange
+    const path = seedLedger([{ tsUtc: T0, promptKey: 'u-1' }]);
+
+    // Act
+    const detail = await loadPromptDetail({ databasePath: path, id: 999 }, deps());
+
+    // Assert
+    expect(detail).toBeNull();
   });
 });

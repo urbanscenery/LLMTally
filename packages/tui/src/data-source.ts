@@ -32,8 +32,8 @@ import { defaultAntigravityStoreDir, resolveActiveAccount } from '@llmtally/core
 import { readCodexAuth } from '@llmtally/core/quota/codex-live.ts';
 import { loadAllQuota } from '@llmtally/core/quota/service.ts';
 import { softResetQuotaThrottle } from '@llmtally/core/quota/throttle.ts';
-import { PROMPTS_DEFAULT_LIMIT, listPrompts } from '@llmtally/core/report/prompts.ts';
-import type { PromptListResult } from '@llmtally/core/report/prompts.ts';
+import { PROMPTS_DEFAULT_LIMIT, listPrompts, loadPromptDetail } from '@llmtally/core/report/prompts.ts';
+import type { PromptDetail, PromptListResult } from '@llmtally/core/report/prompts.ts';
 import { generateReport } from '@llmtally/core/report/service.ts';
 import type { ReportGroupBy, ReportSummary } from '@llmtally/core/report/types.ts';
 import { createDefaultCoordinator } from '@llmtally/core/scan/coordinator.ts';
@@ -59,6 +59,8 @@ export interface TuiDataSource {
   ): Promise<{ agents: ReportSummary; modelsByAgent: Record<string, ReportSummary> }>;
   loadDoctorChecks(): Promise<readonly DoctorCheck[]>;
   loadPrompts(filter: { model: string | null; search: string | null }): Promise<PromptListResult>;
+  /** Full body and every call of one prompt; null when the id is gone. */
+  loadPromptDetail(id: number): Promise<PromptDetail | null>;
   installDaemon(): Promise<string>;
   uninstallDaemon(): Promise<string>;
   /** VACUUMs the ledger under the scan lock; resolves to a size report. */
@@ -242,6 +244,10 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
         search: filter.search,
         limit: PROMPTS_DEFAULT_LIMIT,
       });
+    },
+
+    async loadPromptDetail(id: number): Promise<PromptDetail | null> {
+      return loadPromptDetail({ databasePath: options.databasePath, id });
     },
 
     async loadDoctorChecks(): Promise<readonly DoctorCheck[]> {

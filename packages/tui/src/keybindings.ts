@@ -163,6 +163,15 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
     priority: 60,
   },
   {
+    matches: [{ name: 'return' }],
+    action: 'noop',
+    scope: ['models', 'search'],
+    group: 'Data',
+    label: 'open the highlighted model / prompt (Esc goes back)',
+    keysLabel: 'Enter',
+    priority: 31,
+  },
+  {
     matches: [{ name: 'n' }],
     action: 'noop',
     scope: ['accounts'],

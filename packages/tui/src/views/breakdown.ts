@@ -7,10 +7,14 @@ import type { ResourceState } from '../types.ts';
 import { sortBreakdownRows } from '../view-model/breakdown.ts';
 import type { BreakdownTabViewModel } from '../view-model/breakdown.ts';
 import { renderPromptList } from './prompts.ts';
+import { promptDetailView } from './prompt-detail.ts';
 import type { TabView, TabViewLine } from './shell.ts';
 
 /** Prompts for the model the user opened from the Models table. */
 function modelPromptsView(state: TuiState, width: number, height: number): readonly TabViewLine[] {
+  if (state.promptDetail?.origin === 'models') {
+    return promptDetailView(state.promptDetail, width, height, 'back to prompts');
+  }
   const resource = state.modelPrompts;
   const header: TabViewLine[] = [
     joinLine(' ', span('Esc', 'key'), span(' back to models', 'muted')),

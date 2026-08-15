@@ -115,6 +115,14 @@ function buildTabBar(state: TuiState, width: number): RichLine {
   return fitRichLine(tabBarSegments(state.activeTab).spans, width);
 }
 
+/** Rows the tab bar, two separators and the footer take from the frame. */
+const SHELL_CHROME_ROWS = 4;
+
+/** Body rows available at a given frame height (the shell's own rule). */
+export function shellBodyHeight(height: number): number {
+  return Math.max(6, height) - SHELL_CHROME_ROWS;
+}
+
 /**
  * Composes the full frame: tab bar, separator, body, separator, footer.
  * Pure — the renderer adapter resolves roles and prints the frame.
@@ -129,7 +137,7 @@ export function renderShell(
   const safeWidth = Math.max(20, width);
   const safeHeight = Math.max(6, height);
   const separator: RichLine = [{ text: '─'.repeat(safeWidth), role: 'border' }];
-  const bodyHeight = safeHeight - 4;
+  const bodyHeight = shellBodyHeight(safeHeight);
 
   const bodySource = renderBody(state, safeWidth, bodyHeight, nowUtc, views);
   const body = bodySource

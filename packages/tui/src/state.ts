@@ -6,6 +6,7 @@ import type { OverviewViewModel } from './view-model/overview.ts';
 import type { AccountsTabViewModel } from './view-model/accounts.ts';
 import type { DoctorTabViewModel } from './view-model/doctor.ts';
 import type { PromptsViewModel } from './view-model/prompts.ts';
+import type { PromptDetailViewModel } from './view-model/prompt-detail.ts';
 import type { TuiOverlay } from './overlay.ts';
 
 export type BreakdownSortColumn = 'rows' | 'cost' | 'input';
@@ -16,6 +17,18 @@ export interface SortSpec {
 }
 
 export const DEFAULT_SORT: SortSpec = { column: 'rows', direction: 'desc' };
+
+/**
+ * A prompt opened from a list with Enter. `origin` says which list it
+ * came from (and returns to on Esc); `id` is the ledger id of the
+ * prompt's first call, which is what the detail query is keyed by.
+ */
+export interface PromptDetailState {
+  readonly origin: 'models' | 'search';
+  readonly id: number;
+  readonly resource: ResourceState<PromptDetailViewModel>;
+  readonly scroll: number;
+}
 
 
 export interface TuiState {
@@ -42,6 +55,8 @@ export interface TuiState {
   readonly modelPrompts: ResourceState<PromptsViewModel>;
   readonly modelPromptsCursor: number;
   readonly modelsCursor: number;
+  /** Prompt detail open over a prompt list; null shows the list. */
+  readonly promptDetail: PromptDetailState | null;
 }
 
 export function withTabResource<T extends TuiTab>(
@@ -101,7 +116,12 @@ export function withSearchCursor(state: TuiState, cursor: number): TuiState {
 }
 
 export function withSearchQuery(state: TuiState, query: string): TuiState {
-  return { ...state, searchQuery: query, searchCursor: 0 };
+  return {
+    ...state,
+    searchQuery: query,
+    searchCursor: 0,
+    promptDetail: state.promptDetail?.origin === 'search' ? null : state.promptDetail,
+  };
 }
 
 /**
@@ -124,6 +144,7 @@ export function withOverviewSelectedDate(state: TuiState, date: string | null): 
 export function withModelDrillDown(state: TuiState, model: string | null): TuiState {
   return {
     ...state,
+    promptDetail: state.promptDetail?.origin === 'models' ? null : state.promptDetail,
     modelDrillDown: model,
     modelPromptsCursor: 0,
     modelsCursor: 0,
@@ -140,6 +161,18 @@ export function withModelPromptsCursor(state: TuiState, cursor: number): TuiStat
 
 export function withModelsCursor(state: TuiState, cursor: number): TuiState {
   return { ...state, modelsCursor: Math.max(0, cursor) };
+}
+
+export function withPromptDetail(state: TuiState, detail: PromptDetailState | null): TuiState {
+  return { ...state, promptDetail: detail };
+}
+
+/** Scroll is clamped by the view against the rendered line count. */
+export function withPromptDetailScroll(state: TuiState, scroll: number): TuiState {
+  if (state.promptDetail === null) {
+    return state;
+  }
+  return { ...state, promptDetail: { ...state.promptDetail, scroll: Math.max(0, scroll) } };
 }
 
 export function emptyResource<T>(): ResourceState<T> {
@@ -160,6 +193,7 @@ export function createInitialState(): TuiState {
     modelPrompts: emptyResource(),
     modelPromptsCursor: 0,
     modelsCursor: 0,
+    promptDetail: null,
     overview: emptyResource(),
     accounts: emptyResource(),
     agents: emptyResource(),

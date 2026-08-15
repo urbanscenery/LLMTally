@@ -2,6 +2,7 @@ import { joinLine, span } from '../rich-text.ts';
 import type { TuiState } from '../state.ts';
 import { fitLine } from '../text.ts';
 import { renderPromptList } from './prompts.ts';
+import { promptDetailView } from './prompt-detail.ts';
 import type { TabView, TabViewLine } from './shell.ts';
 
 /** The query line doubles as the input field; `/` starts editing. */
@@ -20,6 +21,9 @@ export const searchTabView: TabView = (
   width: number,
   height: number,
 ): readonly TabViewLine[] => {
+  if (state.promptDetail?.origin === 'search') {
+    return promptDetailView(state.promptDetail, width, height, 'back to results');
+  }
   const editing = state.overlay?.kind === 'input';
   const lines: TabViewLine[] = [queryLine(state, editing), ''];
   const resource = state.search;
