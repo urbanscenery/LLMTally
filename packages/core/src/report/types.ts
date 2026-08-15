@@ -55,7 +55,15 @@ export interface ReportUsageRow {
 
 export interface ReportBucket {
   readonly key: string;
+  /** Ledger rows, i.e. API calls (a prompt fans out into many). */
   readonly rowCount: number;
+  /**
+   * Distinct prompts behind those rows — what a "Prompts" column shows.
+   * Counted per bucket by the source's prompt identity (`prompt_key`,
+   * a keyless row counting as its own prompt), so a prompt whose calls
+   * span several models is one prompt in a day bucket.
+   */
+  readonly promptCount: number;
   readonly tokens: TokenTotals;
   /** Real money (card / prepaid credit). Summing the two costs is forbidden. */
   readonly spendCost: CostResult;

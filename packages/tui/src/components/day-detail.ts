@@ -46,7 +46,7 @@ function modelRow(row: BreakdownRowViewModel): RichLine {
   const cost = primaryCostViewModel(row.spendCost, row.quotaCost);
   return joinLine(
     span(padEndWidth(truncateToWidth(row.key, NAME_WIDTH), NAME_WIDTH)),
-    span(padStartWidth(row.rowCount.toLocaleString('en-US'), COUNT_WIDTH)),
+    span(padStartWidth(row.promptCount.toLocaleString('en-US'), COUNT_WIDTH)),
     span(padStartWidth(formatCompact(row.tokens.inputTokens), TOKEN_WIDTH), 'muted'),
     span(padStartWidth(formatCompact(row.tokens.outputTokens), TOKEN_WIDTH), 'muted'),
     span(padStartWidth(formatCostCell(cost), COST_WIDTH), costRole(cost)),
@@ -55,7 +55,7 @@ function modelRow(row: BreakdownRowViewModel): RichLine {
 
 function agentTitle(entry: DayAgentDetailViewModel): string {
   const agent = entry.agent;
-  const prompts = `${agent.rowCount.toLocaleString('en-US')} prompt${agent.rowCount === 1 ? '' : 's'}`;
+  const prompts = `${agent.promptCount.toLocaleString('en-US')} prompt${agent.promptCount === 1 ? '' : 's'}`;
   return `${agent.key} · ${prompts} · ${formatCostCell(primaryCostViewModel(agent.spendCost, agent.quotaCost))}`;
 }
 
@@ -91,7 +91,7 @@ export function renderDayDetail(
   maxLines: number,
 ): RichLine[] {
   const lines: RichLine[] = [];
-  const prompts = `${point.rowCount.toLocaleString('en-US')} prompt${point.rowCount === 1 ? '' : 's'}`;
+  const prompts = `${point.promptCount.toLocaleString('en-US')} prompt${point.promptCount === 1 ? '' : 's'}`;
   // quota cost is always shown; spend earns its slot only when the day has
   // billed rows (the two never share a number)
   const headSpans = [

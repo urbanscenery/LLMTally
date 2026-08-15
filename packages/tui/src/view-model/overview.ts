@@ -9,6 +9,8 @@ export interface DailyPointViewModel {
   readonly value: number;
   /** The day's full bucket, so selecting a date needs no extra query. */
   readonly rowCount: number;
+  /** Distinct prompts that day (what the day detail calls "prompts"). */
+  readonly promptCount: number;
   readonly tokens: TokenTotals;
   readonly spendCost: CostViewModel;
   readonly quotaCost: CostViewModel;
@@ -25,6 +27,7 @@ export interface OverviewViewModel {
   };
   readonly totals: {
     readonly rowCount: number;
+    readonly promptCount: number;
     readonly tokens: TokenTotals;
     readonly spendCost: CostViewModel;
     readonly quotaCost: CostViewModel;
@@ -46,6 +49,7 @@ export function toOverviewViewModel(summary: ReportSummary): OverviewViewModel {
     date: sanitizeTerminalLine(bucket.key),
     value: Math.max(0, bucket.tokens.inputTokens),
     rowCount: bucket.rowCount,
+    promptCount: bucket.promptCount,
     tokens: bucket.tokens,
     spendCost: toCostViewModel('spend', bucket.spendCost),
     quotaCost: toCostViewModel('quota', bucket.quotaCost),
@@ -60,6 +64,7 @@ export function toOverviewViewModel(summary: ReportSummary): OverviewViewModel {
     },
     totals: {
       rowCount: summary.totals.rowCount,
+      promptCount: summary.totals.promptCount,
       tokens: summary.totals.tokens,
       spendCost: toCostViewModel('spend', summary.totals.spendCost),
       quotaCost: toCostViewModel('quota', summary.totals.quotaCost),

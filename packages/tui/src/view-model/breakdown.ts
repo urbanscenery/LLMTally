@@ -6,7 +6,10 @@ import type { CostViewModel } from './cost.ts';
 
 export interface BreakdownRowViewModel {
   readonly key: string;
+  /** Ledger rows (API calls) — the footer's "usage rows". */
   readonly rowCount: number;
+  /** Distinct prompts — the "Prompts" column and default sort key. */
+  readonly promptCount: number;
   readonly tokens: TokenTotals;
   readonly spendCost: CostViewModel;
   readonly quotaCost: CostViewModel;
@@ -29,6 +32,7 @@ function toRow(bucket: ReportBucket): BreakdownRowViewModel {
   return {
     key: sanitizeTerminalLine(bucket.key),
     rowCount: bucket.rowCount,
+    promptCount: bucket.promptCount,
     tokens: bucket.tokens,
     spendCost: toCostViewModel('spend', bucket.spendCost),
     quotaCost: toCostViewModel('quota', bucket.quotaCost),
@@ -53,7 +57,7 @@ export function sortBreakdownRows(
     if (spec.column === 'input') {
       return row.tokens.inputTokens;
     }
-    return row.rowCount;
+    return row.promptCount;
   };
   const sign = spec.direction === 'desc' ? -1 : 1;
   return rows.toSorted((a, b) => {
@@ -71,8 +75,8 @@ export function toBreakdownViewModel(
   summary: ReportSummary,
 ): BreakdownTabViewModel {
   const rows = summary.buckets.map(toRow).toSorted((a, b) => {
-    if (b.rowCount !== a.rowCount) {
-      return b.rowCount - a.rowCount;
+    if (b.promptCount !== a.promptCount) {
+      return b.promptCount - a.promptCount;
     }
     return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
   });

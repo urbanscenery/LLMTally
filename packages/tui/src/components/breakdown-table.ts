@@ -25,10 +25,10 @@ const COLUMNS: readonly Column[] = [
   },
   {
     id: 'rows',
-    header: 'Rows',
+    header: 'Prompts',
     align: 'right',
-    minWidth: 6,
-    render: (row) => row.rowCount.toLocaleString('en-US'),
+    minWidth: 7,
+    render: (row) => row.promptCount.toLocaleString('en-US'),
   },
   {
     id: 'in',
@@ -270,7 +270,7 @@ export function buildTableSummary(
   const arrow = sort.direction === 'asc' ? '↑' : '↓';
   return [
     { text: ` ${noun} [${model.rows.length}]`, role: 'accent', attributes: { bold: true } },
-    { text: ` · usage rows ${model.totals.rowCount.toLocaleString('en-US')}`, role: 'muted' },
+    { text: ` · prompts ${model.totals.promptCount.toLocaleString('en-US')} · calls ${model.totals.rowCount.toLocaleString('en-US')}`, role: 'muted' },
     { text: ` · sort ${SORT_LABELS[sort.column]}${arrow}`, role: 'sortIndicator' },
   ];
 }

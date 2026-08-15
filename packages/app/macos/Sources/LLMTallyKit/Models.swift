@@ -111,7 +111,11 @@ public struct CostResultDTO: Decodable {
 
 public struct ReportBucketDTO: Decodable {
     public let key: String
+    /// Ledger rows, i.e. API calls; a prompt fans out into many.
     public let rowCount: Int
+    /// Distinct prompts behind those rows — what every "Prompts" label
+    /// shows. Falls back to rowCount for sidecars that predate the field.
+    public let promptCount: Int
     public let tokens: TokenTotalsDTO
     /// Spend cost — real money (card / prepaid credit). Never summed
     /// with quota cost ("cost" unites the names, never the numbers).
@@ -125,9 +129,11 @@ public struct ReportBucketDTO: Decodable {
 
     public init(key: String, rowCount: Int, tokens: TokenTotalsDTO,
                 spendCost: CostResultDTO, quotaCost: CostResultDTO,
-                unknownRows: Int = 0, unknownUsd: Double = 0, unpricedRows: Int = 0) {
+                unknownRows: Int = 0, unknownUsd: Double = 0, unpricedRows: Int = 0,
+                promptCount: Int? = nil) {
         self.key = key
         self.rowCount = rowCount
+        self.promptCount = promptCount ?? rowCount
         self.tokens = tokens
         self.spendCost = spendCost
         self.quotaCost = quotaCost
@@ -137,7 +143,7 @@ public struct ReportBucketDTO: Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case key, rowCount, tokens, unpricedRows, unknownRows, unknownUsd
+        case key, rowCount, promptCount, tokens, unpricedRows, unknownRows, unknownUsd
         case spendCost, quotaCost
         // older sidecars: spend/usage (billing-nature round 1), and
         // before that actual/nominal (provenance axes)
@@ -148,6 +154,7 @@ public struct ReportBucketDTO: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         key = try container.decode(String.self, forKey: .key)
         rowCount = try container.decode(Int.self, forKey: .rowCount)
+        promptCount = try container.decodeIfPresent(Int.self, forKey: .promptCount) ?? rowCount
         tokens = try container.decode(TokenTotalsDTO.self, forKey: .tokens)
         unpricedRows = try container.decodeIfPresent(Int.self, forKey: .unpricedRows) ?? 0
         unknownRows = try container.decodeIfPresent(Int.self, forKey: .unknownRows) ?? 0

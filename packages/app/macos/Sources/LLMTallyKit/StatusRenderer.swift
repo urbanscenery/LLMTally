@@ -442,8 +442,8 @@ public func renderStatusSegments(
             }
             let active = todayAgentRows.filter { $0.value > 0 }
             append(.text("\(active.count) act"), descriptor.metric)
-            for (agent, rowCount) in active.sorted(by: { $0.key < $1.key }) {
-                tooltip.append("\(names.display(agent)): \(rowCount) prompts today")
+            for (agent, promptCount) in active.sorted(by: { $0.key < $1.key }) {
+                tooltip.append("\(names.display(agent)): \(promptCount) prompts today")
             }
         case .quotaUsagePercentage where wantsGlyph(descriptor):
             // glyph identity: drawable glyph + the text renderer's own

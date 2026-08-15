@@ -81,7 +81,8 @@ export function unclassifiedNote(model: OverviewViewModel): string | null {
 export function renderTokenSummary(model: OverviewViewModel): string {
   const tokens = model.totals.tokens;
   return [
-    ` rows ${model.totals.rowCount.toLocaleString('en-US')}`,
+    ` prompts ${model.totals.promptCount.toLocaleString('en-US')}`,
+    `calls ${model.totals.rowCount.toLocaleString('en-US')}`,
     `in ${formatCompact(tokens.inputTokens)}`,
     `out ${formatCompact(tokens.outputTokens)}`,
     `cacheR ${formatCompact(tokens.cacheRead)}`,

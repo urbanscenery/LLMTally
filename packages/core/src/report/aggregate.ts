@@ -12,6 +12,7 @@ import type {
   PriceResolution,
   TokenTotals,
 } from '../pricing/types.ts';
+import type { PromptCounts } from './repository.ts';
 import type { ReportBucket, ReportGroupBy, ReportRow, ReportUsageRow } from './types.ts';
 
 /**
@@ -213,6 +214,7 @@ export function bucketKeyFor(groupBy: ReportGroupBy, row: ReportRow): string {
 export function foldBuckets(
   groupBy: ReportGroupBy,
   entries: readonly { row: ReportRow; cost: GroupCost }[],
+  promptCounts: PromptCounts,
 ): { buckets: readonly ReportBucket[]; totals: ReportBucket } {
   const buckets = new Map<string, MutableBucket>();
   const totals = emptyBucket('TOTAL');
@@ -224,9 +226,13 @@ export function foldBuckets(
       accumulate(target, row, cost);
     }
   }
+  // prompt counts are not additive over the grain, so they arrive
+  // pre-counted per bucket instead of through accumulate()
   return {
-    buckets: [...buckets.values()].map(freezeBucket),
-    totals: freezeBucket(totals),
+    buckets: [...buckets.values()].map((bucket) =>
+      freezeBucket(bucket, promptCounts.byBucket.get(bucket.key) ?? 0),
+    ),
+    totals: freezeBucket(totals, promptCounts.total),
   };
 }
 
@@ -282,10 +288,11 @@ function emptyBucket(key: string): MutableBucket {
   };
 }
 
-function freezeBucket(bucket: MutableBucket): ReportBucket {
+function freezeBucket(bucket: MutableBucket, promptCount: number): ReportBucket {
   return {
     key: bucket.key,
     rowCount: bucket.rowCount,
+    promptCount,
     tokens: { ...bucket.tokens } as TokenTotals,
     spendCost: costResult(
       'spend',

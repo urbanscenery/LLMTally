@@ -44,6 +44,7 @@ function reportSummary(groupBy: ReportGroupBy): ReportSummary {
     totals: {
       key: 'total',
       rowCount: 0,
+      promptCount: 0,
       tokens: { inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0, reasoningTokens: 0 },
       spendCost: { basis: 'spend', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
       quotaCost: { basis: 'quota', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },

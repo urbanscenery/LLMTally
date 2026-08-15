@@ -41,6 +41,7 @@ function emptyReport(groupBy: ReportGroupBy): ReportSummary {
     totals: {
       key: 'total',
       rowCount: 0,
+      promptCount: 0,
       tokens: { inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0, reasoningTokens: 0 },
       spendCost: { basis: 'spend', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
       quotaCost: { basis: 'quota', usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
@@ -219,6 +220,7 @@ describe('models drill-down and search', () => {
     const bucket = (key: string, rows: number) => ({
       key,
       rowCount: rows,
+      promptCount: rows,
       tokens: { inputTokens: rows, outputTokens: 0, cacheWrite: 0, cacheRead: 0, reasoningTokens: 0 },
       spendCost: { basis: 'spend' as const, usd: null, pricedSubtotalUsd: 0, pricedRows: 0, unpricedRows: 0, warnings: [] },
       quotaCost: { basis: 'quota' as const, usd: 1, pricedSubtotalUsd: 1, pricedRows: rows, unpricedRows: 0, warnings: [] },
@@ -650,6 +652,7 @@ describe('overview day selection', () => {
     return {
       key,
       rowCount: 5,
+      promptCount: 5,
       tokens: { inputTokens, outputTokens: 100, cacheWrite: 0, cacheRead: 50, reasoningTokens: 7 },
       spendCost: { basis: 'spend' as const, usd: 1.25, pricedSubtotalUsd: 1.25, pricedRows: 5, unpricedRows: 0, warnings: [] },
       quotaCost: { basis: 'quota' as const, usd: 4.5, pricedSubtotalUsd: 4.5, pricedRows: 5, unpricedRows: 0, warnings: [] },

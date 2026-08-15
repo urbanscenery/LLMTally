@@ -80,7 +80,7 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
     action: 'sort-rows',
     scope: ['agents', 'models'],
     group: 'Data',
-    label: 'sort by rows (again: flip direction)',
+    label: 'sort by prompts (again: flip direction)',
     keysLabel: 'd',
     footer: { keys: '[d/c/t]', text: ' sort' },
     priority: 70,

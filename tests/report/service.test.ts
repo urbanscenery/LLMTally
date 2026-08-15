@@ -58,6 +58,7 @@ interface SeedRow {
   readonly cacheWrite?: number;
   readonly cacheRead?: number;
   readonly cost?: number | null;
+  readonly promptKey?: string | null;
 }
 
 function seedLedger(rows: readonly SeedRow[]): string {
@@ -67,8 +68,8 @@ function seedLedger(rows: readonly SeedRow[]): string {
   const insert = db.prepare(
     `INSERT INTO usage_ledger
       (ts_utc, agent, provider, model, natural_id, parser_version,
-       input_tokens, output_tokens, cache_write, cache_read, reasoning_tokens, cost_usd)
-     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, ?)`,
+       input_tokens, output_tokens, cache_write, cache_read, reasoning_tokens, cost_usd, prompt_key)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, ?, ?)`,
   );
   rows.forEach((row, index) => {
     insert.run(
@@ -82,6 +83,7 @@ function seedLedger(rows: readonly SeedRow[]): string {
       row.cacheWrite ?? 0,
       row.cacheRead ?? 0,
       row.cost ?? null,
+      row.promptKey ?? null,
     );
   });
   db.close();
@@ -297,6 +299,42 @@ describe('generateReport', () => {
     // Assert
     expect(ranged.buckets.map((bucket) => bucket.key)).toEqual(['2026-08-10']);
     expect(filtered.totals.rowCount).toBe(1);
+  });
+
+  test('promptCount counts distinct prompts per bucket while rowCount keeps counting calls', async () => {
+    // Arrange — one prompt answered by two models over three calls, one
+    // keyless legacy call, and a second prompt the next local day
+    const path = seedLedger([
+      { tsUtc: AUG9_LATE, agent: 'claude-code', provider: 'anthropic', model: 'claude-fable-5', input: 1, output: 1, promptKey: 'u-1' },
+      { tsUtc: AUG9_LATE + 1, agent: 'claude-code', provider: 'anthropic', model: 'claude-fable-5', input: 1, output: 1, promptKey: 'u-1' },
+      { tsUtc: AUG9_LATE + 2, agent: 'claude-code', provider: 'anthropic', model: 'claude-haiku-4-5', input: 1, output: 1, promptKey: 'u-1' },
+      { tsUtc: AUG9_LATE + 3, agent: 'claude-code', provider: 'anthropic', model: 'claude-fable-5', input: 1, output: 1, promptKey: null },
+      { tsUtc: AUG10_EARLY, agent: 'codex', provider: 'openai', model: 'gpt-5.5', input: 1, output: 1, promptKey: 't-1' },
+    ]);
+
+    // Act
+    const byDay = await generateReport(request(path), deps());
+    const byModel = await generateReport(request(path, { groupBy: 'model' }), deps());
+    const byAgent = await generateReport(request(path, { groupBy: 'agent' }), deps());
+
+    // Assert — a multi-model prompt is one prompt in its day, the
+    // keyless call stands for itself; calls stay separate
+    expect(byDay.buckets.map((bucket) => [bucket.key, bucket.promptCount, bucket.rowCount])).toEqual([
+      ['2026-08-09', 2, 4],
+      ['2026-08-10', 1, 1],
+    ]);
+    expect(byDay.totals.promptCount).toBe(3);
+    expect(byDay.totals.rowCount).toBe(5);
+    // per model the same prompt is counted for each model that answered it
+    expect(byModel.buckets.map((bucket) => [bucket.key, bucket.promptCount])).toEqual([
+      ['claude-fable-5', 2],
+      ['claude-haiku-4-5', 1],
+      ['gpt-5.5', 1],
+    ]);
+    expect(byAgent.buckets.map((bucket) => [bucket.key, bucket.promptCount])).toEqual([
+      ['claude-code', 2],
+      ['codex', 1],
+    ]);
   });
 
   test('sql-injection-shaped agent filters are treated as plain values', async () => {

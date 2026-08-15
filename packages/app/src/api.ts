@@ -258,7 +258,8 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
       range,
       noRefresh: true,
     });
-    return Object.fromEntries(summary.buckets.map((bucket) => [bucket.key, bucket.rowCount]));
+    // distinct prompts, not API calls — the tooltip says "N prompts today"
+    return Object.fromEntries(summary.buckets.map((bucket) => [bucket.key, bucket.promptCount]));
   });
 
   server.register('dayReport', async (params) => {

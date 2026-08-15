@@ -37,6 +37,7 @@ function bucket(key: string, inputTokens: number, overrides: Partial<ReportBucke
   return {
     key,
     rowCount: 5,
+    promptCount: 5,
     tokens: { inputTokens, outputTokens: 100, cacheWrite: 0, cacheRead: 50, reasoningTokens: 7 },
     spendCost: cost({ basis: 'spend', usd: 1.25 }),
     quotaCost: cost(),
@@ -58,6 +59,7 @@ function summaryFixture(buckets: ReportBucket[], groupBy: 'day' | 'agent' | 'mod
     buckets,
     totals: bucket('total', buckets.reduce((acc, b) => acc + b.tokens.inputTokens, 0), {
       rowCount: buckets.length * 5,
+      promptCount: buckets.length * 5,
     }),
     pricing: { status: 'fresh', asOfUtc: NOW, sources: [], warnings: [] },
   };
@@ -68,6 +70,7 @@ function point(date: string, value: number): DailyPointViewModel {
     date,
     value,
     rowCount: 5,
+    promptCount: 5,
     tokens: { inputTokens: value, outputTokens: 100, cacheWrite: 0, cacheRead: 50, reasoningTokens: 7 },
     spendCost: toCostViewModel('spend', cost({ basis: 'spend', usd: 1.25 })),
     quotaCost: toCostViewModel('quota', cost()),

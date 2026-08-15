@@ -669,7 +669,7 @@ struct TodaySection: View {
             // the old two-card confusion; spend earns its slot only
             // when the day billed real money (never summed with quota cost)
             HStack(spacing: 8) {
-                card("Prompts", bucket.map { "\($0.rowCount)" } ?? "0", nil)
+                card("Prompts", bucket.map { "\($0.promptCount)" } ?? "0", nil)
                 card("Tokens", bucket.map { formatTokens($0.tokens.inputTokens + $0.tokens.outputTokens) } ?? "0", "in + out")
                 card("Quota cost", costText(bucket?.quotaCost, quota: true), quotaNote)
                 if hasSpend {
@@ -978,7 +978,7 @@ struct ModelTable: View {
 
     private var sorted: [ReportBucketDTO] {
         models.sorted { lhs, rhs in
-            lhs.rowCount != rhs.rowCount ? lhs.rowCount > rhs.rowCount : lhs.key < rhs.key
+            lhs.promptCount != rhs.promptCount ? lhs.promptCount > rhs.promptCount : lhs.key < rhs.key
         }
     }
 
@@ -996,7 +996,7 @@ struct ModelTable: View {
                     // model names identify the provider — neutralized
                     // like accounts (§11)
                     name: Text(privacy ? "Model hidden" : model.key),
-                    prompts: Text("\(model.rowCount)"),
+                    prompts: Text("\(model.promptCount)"),
                     tokens: Text(formatTokens(model.tokens.inputTokens + model.tokens.outputTokens)),
                     cost: Text(privacy ? "hidden" : formatPrimaryCost(model)))
                     .font(.caption2).monospacedDigit()
@@ -1031,7 +1031,7 @@ struct DayDetailSection: View {
 
     private var agentBuckets: [ReportBucketDTO] {
         (report?.agents.buckets ?? []).sorted { lhs, rhs in
-            lhs.rowCount != rhs.rowCount ? lhs.rowCount > rhs.rowCount : lhs.key < rhs.key
+            lhs.promptCount != rhs.promptCount ? lhs.promptCount > rhs.promptCount : lhs.key < rhs.key
         }
     }
 
@@ -1041,7 +1041,7 @@ struct DayDetailSection: View {
                 Text("▾ \(bucket.key)")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Theme.current().accent)
-                Text("· \(bucket.rowCount) prompts")
+                Text("· \(bucket.promptCount) prompts")
                     .font(.caption)
                 Spacer()
                 Button { onClose() } label: { Image(systemName: "xmark") }
@@ -1085,7 +1085,7 @@ struct DayDetailSection: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(agentDisplayName(agent.key)).font(.caption.weight(.semibold))
-                Text("· \(agent.rowCount) prompts").font(.caption2).foregroundStyle(.secondary)
+                Text("· \(agent.promptCount) prompts").font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 Text(privacy ? "hidden" : formatPrimaryCost(agent))
                     .font(.caption2.weight(.semibold)).monospacedDigit()
@@ -1122,7 +1122,7 @@ struct ProviderDaySection: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Theme.current().accent)
                 if let bucket {
-                    Text("· \(bucket.rowCount) prompts").font(.caption)
+                    Text("· \(bucket.promptCount) prompts").font(.caption)
                 }
                 Spacer()
                 if let bucket {

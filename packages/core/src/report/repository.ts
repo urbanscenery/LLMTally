@@ -24,6 +24,20 @@ const GROUP_EXPRESSIONS: Readonly<Record<ReportGroupBy, string>> = {
  */
 export const MAX_REPORT_GROUPS = 5000;
 
+/**
+ * One prompt across the ledger: the source's own key, namespaced by
+ * agent; a row without a key stands for itself. Mirrors the grouping in
+ * prompts.ts so counts and the prompt list agree.
+ */
+const PROMPT_IDENTITY_SQL = "agent || '|' || COALESCE(prompt_key, 'row:' || id)";
+
+export interface PromptCounts {
+  /** Distinct prompts per bucket key (same expression as the aggregate). */
+  readonly byBucket: ReadonlyMap<string, number>;
+  /** Distinct prompts over the whole query. */
+  readonly total: number;
+}
+
 export class ReportCardinalityError extends Error {
   override readonly name = 'ReportCardinalityError';
 
@@ -81,6 +95,37 @@ export class SqliteReportRepository {
         LIMIT ${MAX_REPORT_GROUPS + 1}
       )`;
     return this.#db.query<{ n: number }, (string | number | null)[]>(sql).get(...binds)?.n ?? 0;
+  }
+
+  /**
+   * Distinct prompts per display bucket and overall. Kept apart from
+   * `aggregate` because prompt identity must not be summed across the
+   * (agent, provider, model) grain: one prompt answered by two models is
+   * still one prompt in its day. Keys of the returned map follow the
+   * same bucket expression as `aggregate`, so they line up with
+   * `bucketKeyFor`.
+   */
+  countPrompts(query: ReportQuery): PromptCounts {
+    const { conditions, binds } = this.#whereParts(query);
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const byBucketSql = `SELECT ${GROUP_EXPRESSIONS[query.groupBy]} AS bucket,
+        COUNT(DISTINCT ${PROMPT_IDENTITY_SQL}) AS prompt_count
+      FROM usage_ledger
+      ${where}
+      GROUP BY bucket`;
+    const totalSql = `SELECT COUNT(DISTINCT ${PROMPT_IDENTITY_SQL}) AS prompt_count
+      FROM usage_ledger
+      ${where}`;
+    const byBucket = new Map<string, number>();
+    for (const row of this.#db
+      .query<{ bucket: string; prompt_count: number }, (string | number | null)[]>(byBucketSql)
+      .all(...binds)) {
+      byBucket.set(row.bucket, row.prompt_count);
+    }
+    const total = this.#db
+      .query<{ prompt_count: number }, (string | number | null)[]>(totalSql)
+      .get(...binds)?.prompt_count ?? 0;
+    return { byBucket, total };
   }
 
   aggregate(query: ReportQuery): readonly ReportRow[] {

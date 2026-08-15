@@ -27,6 +27,7 @@ function bucket(key: string, rowCount: number): ReportBucket {
   return {
     key,
     rowCount,
+    promptCount: rowCount,
     tokens: {
       inputTokens: rowCount * 1000,
       outputTokens: rowCount * 10,
@@ -57,7 +58,7 @@ function summaryFixture(buckets: ReportBucket[]): ReportSummary {
 }
 
 describe('toBreakdownViewModel', () => {
-  test('sorts by rowCount desc then key asc deterministically', () => {
+  test('sorts by promptCount desc then key asc deterministically', () => {
     // Arrange
     const summary = summaryFixture([bucket('cline', 5), bucket('codex', 90), bucket('claude-code', 90)]);
 

@@ -11,6 +11,7 @@ import {
   ReportCardinalityError,
   SqliteReportRepository,
 } from './repository.ts';
+import type { PromptCounts } from './repository.ts';
 import type { ReportRequest, ReportSummary } from './types.ts';
 
 export interface ReportDeps {
@@ -62,6 +63,7 @@ export async function generateReport(
     // the tier repricing would count rows the aggregate never saw
     db.exec('BEGIN');
     let entries;
+    let promptCounts: PromptCounts;
     try {
       // re-check the cap inside the snapshot: rows inserted while
       // pricing was on the network could push past it, and the early
@@ -71,6 +73,7 @@ export async function generateReport(
         throw new ReportCardinalityError(finalCount);
       }
       const rows = repository.aggregate(request);
+      promptCounts = repository.countPrompts(request);
       entries = rows.map((row) => ({
         row,
         cost: computeGroupCost(
@@ -83,7 +86,7 @@ export async function generateReport(
     } finally {
       db.exec('COMMIT');
     }
-    const { buckets, totals } = foldBuckets(request.groupBy, entries);
+    const { buckets, totals } = foldBuckets(request.groupBy, entries, promptCounts);
 
     return {
       command: 'report',
