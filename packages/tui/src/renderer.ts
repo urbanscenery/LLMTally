@@ -143,6 +143,20 @@ export function wrapRenderer(
         handler({ name: key.name ?? '', ctrl: key.ctrl === true, shift: key.shift === true });
       });
     },
+    onPaste(handler: (text: string) => void): void {
+      // bracketed paste arrives as ONE event with raw bytes, never as
+      // keypresses — without this subscription a paste is silently lost
+      (renderer.keyInput as { on(event: 'paste', fn: (event: { bytes: Uint8Array }) => void): unknown }).on(
+        'paste',
+        (event) => {
+          try {
+            handler(new TextDecoder('utf-8', { fatal: false }).decode(event.bytes));
+          } catch {
+            // undecodable clipboard bytes: drop the paste, never crash the app
+          }
+        },
+      );
+    },
     onMouse(handler: (event: TuiMouseEvent) => void): void {
       // one full-screen renderable receives every event, so its
       // coordinates are already frame coordinates

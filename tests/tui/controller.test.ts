@@ -156,3 +156,70 @@ describe('help vs standing overlays (GK-23)', () => {
     expect(controller.getState().overlay).toBeNull();
   });
 });
+
+describe('paste into the search input', () => {
+  function openInput(controller: TuiController): void {
+    controller.setOverlay({ kind: 'input', title: 'Search prompts', prompt: 'p', value: 'quota' });
+  }
+
+  test('appends the pasted text to the input value as one edit', () => {
+    // Arrange
+    const screen = new FakeScreen();
+    const controller = makeController(screen);
+    controller.start();
+    openInput(controller);
+
+    // Act
+    screen.paste(' cost rename');
+
+    // Assert
+    const overlay = controller.getState().overlay;
+    expect(overlay?.kind).toBe('input');
+    expect((overlay as { value?: string }).value).toBe('quota cost rename');
+  });
+
+  test('flattens newlines and strips control sequences from the clipboard', () => {
+    // Arrange
+    const screen = new FakeScreen();
+    const controller = makeController(screen);
+    controller.start();
+    openInput(controller);
+
+    // Act — a multi-line paste carrying an ANSI escape
+    screen.paste(` one\r\ntwo\tthree${String.fromCharCode(27)}[31m `);
+
+    // Assert — one line, single spaces, the escape byte gone (its
+    // now-inert "[31m" tail stays, matching the app-wide sanitizer)
+    const overlay = controller.getState().overlay;
+    expect((overlay as { value?: string }).value).toBe('quota one two three[31m ');
+    expect((overlay as { value?: string }).value).not.toContain(String.fromCharCode(27));
+  });
+
+  test('a paste with no input overlay open is dropped, not typed', () => {
+    // Arrange
+    const screen = new FakeScreen();
+    const controller = makeController(screen);
+    controller.start();
+
+    // Act
+    screen.paste('rm -rf /');
+
+    // Assert — no overlay appeared and the app did not act on the text
+    expect(controller.getState().overlay).toBeNull();
+    expect(controller.getState().activeTab).toBe('overview');
+  });
+
+  test('a paste cannot edit a confirm dialog', () => {
+    // Arrange
+    const screen = new FakeScreen();
+    const controller = makeController(screen);
+    controller.start();
+    controller.setOverlay({ kind: 'confirm', topic: 'account-remove', title: 't', message: 'm', payload: 'x' });
+
+    // Act
+    screen.paste('y');
+
+    // Assert — still waiting for an explicit key
+    expect(controller.getState().overlay?.kind).toBe('confirm');
+  });
+});

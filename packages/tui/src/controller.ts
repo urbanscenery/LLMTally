@@ -1,6 +1,8 @@
 import { resolveBinding } from './keybindings.ts';
 import type { TuiAction } from './keybindings.ts';
-import { HELP_OVERLAY, editInput, movePicker, selectedOption } from './overlay.ts';
+import { sanitizeTerminalLine } from '@llmtally/core/terminal/sanitize.ts';
+
+import { HELP_OVERLAY, editInput, movePicker, pasteInput, selectedOption } from './overlay.ts';
 import type { ConfirmTopic, PickerTopic, TuiOverlay } from './overlay.ts';
 import {
   createInitialState,
@@ -106,10 +108,36 @@ export class TuiController {
     this.screen.onMouse?.((event) => {
       this.handleMouse(event);
     });
+    this.screen.onPaste?.((text) => {
+      this.handlePaste(text);
+    });
     this.screen.onResize(() => {
       this.render();
     });
     this.render();
+  }
+
+  /**
+   * A paste is meaningful only while a text input is open; anywhere
+   * else the pasted text would be interpreted as keystrokes, so it is
+   * dropped. The text is sanitized here — clipboard content is as
+   * untrusted as prompt bodies.
+   */
+  handlePaste(text: string): void {
+    if (this.stopped) {
+      return;
+    }
+    const overlay = this.state.overlay;
+    if (overlay === null || overlay.kind !== 'input') {
+      return;
+    }
+    // flatten BEFORE sanitizing: the sanitizer deletes \r\n\t outright,
+    // which would glue pasted lines together instead of spacing them
+    const flattened = text.replace(/[\r\n\t]+/gu, ' ');
+    const edited = pasteInput(overlay, sanitizeTerminalLine(flattened));
+    if (edited !== overlay) {
+      this.setOverlay(edited);
+    }
   }
 
   /**

@@ -13,6 +13,7 @@ export class FakeScreen implements TuiScreen {
   destroyCount = 0;
   private keyHandler: ((key: TuiKeyEvent) => void) | null = null;
   private mouseHandler: ((event: TuiMouseEvent) => void) | null = null;
+  private pasteHandler: ((text: string) => void) | null = null;
   private resizeHandler: ((width: number, height: number) => void) | null = null;
 
   constructor(width = 80, height = 24) {
@@ -43,6 +44,14 @@ export class FakeScreen implements TuiScreen {
 
   onMouse(handler: (event: TuiMouseEvent) => void): void {
     this.mouseHandler = handler;
+  }
+
+  onPaste(handler: (text: string) => void): void {
+    this.pasteHandler = handler;
+  }
+
+  paste(text: string): void {
+    this.pasteHandler?.(text);
   }
 
   click(x: number, y: number): void {

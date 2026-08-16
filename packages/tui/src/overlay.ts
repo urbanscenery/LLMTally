@@ -78,6 +78,20 @@ export function editInput(overlay: InputOverlay, key: { name: string }): InputOv
   return null;
 }
 
+/**
+ * Pasted text enters the input as ONE edit. The value stays a single
+ * line — newlines and tabs collapse to spaces — because the only input
+ * this overlay backs is the one-line search query; control characters
+ * are the caller's job (the session sanitizes before calling).
+ */
+export function pasteInput(overlay: InputOverlay, text: string): InputOverlay {
+  const flattened = text.replace(/[\r\n\t]+/gu, ' ').replace(/ {2,}/gu, ' ');
+  if (flattened.length === 0) {
+    return overlay;
+  }
+  return { ...overlay, value: overlay.value + flattened };
+}
+
 export const HELP_OVERLAY = { kind: 'help' } as const;
 
 /** Wraps around, skipping options that cannot be chosen. */

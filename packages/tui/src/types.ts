@@ -66,6 +66,8 @@ export interface TuiScreen {
   setFrame(frame: RichFrame): void;
   onKey(handler: (key: TuiKeyEvent) => void): void;
   onMouse?(handler: (event: TuiMouseEvent) => void): void;
+  /** Bracketed paste — the whole pasted text in one call, not keypresses. */
+  onPaste?(handler: (text: string) => void): void;
   onResize(handler: (width: number, height: number) => void): void;
   destroy(): void;
 }
