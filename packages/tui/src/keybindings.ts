@@ -118,7 +118,7 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
     action: 'noop', // handled by the Overview tab before dispatch
     scope: ['overview'],
     group: 'Data',
-    label: 'select a chart day (←/→ move, ↑/Esc close, click works too)',
+    label: 'select a chart day (←/→ move, ↓/↑ scroll its cards, Esc close)',
     keysLabel: '↓ then ←/→',
     priority: 25,
   },

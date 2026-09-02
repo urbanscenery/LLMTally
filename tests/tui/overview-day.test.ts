@@ -10,12 +10,21 @@ import {
   contributionIndexAtCell,
   renderContributionGraph,
 } from '@llmtally/tui/components/contribution-graph.ts';
-import { createInitialState, withOverviewSelectedDate, withTabResource } from '@llmtally/tui/state.ts';
+import {
+  createInitialState,
+  withOverviewDetailScroll,
+  withOverviewSelectedDate,
+  withTabResource,
+} from '@llmtally/tui/state.ts';
 import { formatCostCell, primaryCostViewModel, toCostViewModel } from '@llmtally/tui/view-model/cost.ts';
 import { toDayDetailViewModel } from '@llmtally/tui/view-model/day-detail.ts';
 import { toOverviewViewModel } from '@llmtally/tui/view-model/overview.ts';
 import type { DailyPointViewModel } from '@llmtally/tui/view-model/overview.ts';
-import { makeOverviewTabView, overviewDateAtClick } from '@llmtally/tui/views/overview.ts';
+import {
+  makeOverviewTabView,
+  overviewDateAtClick,
+  overviewDetailScrollInfo,
+} from '@llmtally/tui/views/overview.ts';
 import type { TabViewLine } from '@llmtally/tui/views/shell.ts';
 import { viewText } from './helpers.ts';
 
@@ -319,14 +328,96 @@ describe('overview view with a selected day', () => {
     expect(overviewDateAtClick(model, 'block', 100, 30, 2, 0)).toBeNull();
   });
 
-  test('click mapping tracks the shrunken chart while a day is selected', () => {
-    // Arrange
+  test('the plot rows never move with the day selection', () => {
+    // Arrange — 100x30 comfortable: 10 plot rows on body rows 2..11
     const { model } = stateWithSelection();
 
-    // Act & Assert — selected: the bar chart drops to its minimum
-    // height, so rows below it belong to the detail cards, not the plot
-    expect(overviewDateAtClick(model, 'block', 100, 30, 2, 7, '2026-08-02')).toBe('2026-08-01');
-    expect(overviewDateAtClick(model, 'block', 100, 30, 6, 7, '2026-08-02')).toBeNull();
-    expect(overviewDateAtClick(model, 'block', 100, 30, 6, 7, null)).toBe('2026-08-01');
+    // Act & Assert — the chart keeps its height while a day is
+    // selected, so the same click always lands on the same day
+    expect(overviewDateAtClick(model, 'block', 100, 30, 6, 7)).toBe('2026-08-01');
+    expect(overviewDateAtClick(model, 'block', 100, 30, 11, 7)).toBe('2026-08-01');
+    // the axis row below the plot selects nothing
+    expect(overviewDateAtClick(model, 'block', 100, 30, 12, 7)).toBeNull();
+  });
+});
+
+describe('overview day detail scrolling', () => {
+  function stateWithManyModels() {
+    const model = toOverviewViewModel(
+      summaryFixture([bucket('2026-08-01', 1000), bucket('2026-08-02', 5000)]),
+    );
+    let state = withTabResource(createInitialState(), 'overview', {
+      phase: 'ready' as const,
+      data: model,
+      error: null,
+      updatedAtUtc: NOW,
+      invalidated: false,
+    });
+    state = withOverviewSelectedDate(state, '2026-08-02');
+    const models = Array.from({ length: 30 }, (_, index) =>
+      bucket(`model-${String(index).padStart(2, '0')}`, 900 - index),
+    );
+    return {
+      model,
+      state: {
+        ...state,
+        overviewDayDetail: {
+          phase: 'ready' as const,
+          data: toDayDetailViewModel(
+            '2026-08-02',
+            summaryFixture([bucket('claude-code', 900)], 'agent'),
+            { 'claude-code': summaryFixture(models, 'model') },
+          ),
+          error: null,
+          updatedAtUtc: NOW,
+          invalidated: false,
+        },
+      },
+    };
+  }
+
+  test('the chart keeps its height and the cards scroll below it', () => {
+    // Arrange
+    const { state } = stateWithManyModels();
+    const view = makeOverviewTabView('block');
+
+    // Act
+    const top = viewText(view(state, 100, 30, NOW)).join('\n');
+    const scrolled = viewText(
+      view({ ...state, overviewDetailScroll: 999 }, 100, 30, NOW),
+    ).join('\n');
+
+    // Assert — full-height chart with a scroll window, not a squeeze
+    expect(top).toContain('Daily input tokens');
+    expect(top).toContain('↑↓ scroll');
+    expect(top).toContain('model-00');
+    expect(top).not.toContain('model-29');
+    // an over-shoot clamps to the last page
+    expect(scrolled).toContain('model-29');
+    expect(scrolled).not.toContain('model-00');
+  });
+
+  test('scroll info agrees with the rendered card count', () => {
+    // Arrange — one agent card: 3 chrome lines + 30 model rows
+    const { model, state } = stateWithManyModels();
+
+    // Act
+    const info = overviewDetailScrollInfo(model, state.overviewDayDetail, 'block', 100, 30);
+
+    // Assert
+    expect(info.maxScroll).toBe(33 - info.cardRows);
+    expect(info.maxScroll).toBeGreaterThan(0);
+  });
+
+  test('scroll resets when the selected day changes', () => {
+    // Arrange
+    let state = withOverviewSelectedDate(createInitialState(), '2026-08-01');
+    state = withOverviewDetailScroll(state, 5);
+
+    // Act & Assert
+    expect(state.overviewDetailScroll).toBe(5);
+    expect(withOverviewDetailScroll(state, -3).overviewDetailScroll).toBe(0);
+    expect(withOverviewSelectedDate(state, '2026-08-02').overviewDetailScroll).toBe(0);
+    expect(withOverviewSelectedDate(state, null).overviewDetailScroll).toBe(0);
   });
 });

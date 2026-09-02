@@ -50,6 +50,8 @@ export interface TuiState {
   /** Chart day the Overview drilled into; null shows the totals. */
   readonly overviewSelectedDate: string | null;
   readonly overviewDayDetail: ResourceState<DayDetailViewModel>;
+  /** Scroll offset into the selected day's cards; clamped by the view. */
+  readonly overviewDetailScroll: number;
   /** Model the Models tab drilled into; null shows the aggregate table. */
   readonly modelDrillDown: string | null;
   readonly modelPrompts: ResourceState<PromptsViewModel>;
@@ -127,7 +129,9 @@ export function withSearchQuery(state: TuiState, query: string): TuiState {
 /**
  * Selecting a chart day resets its detail resource: the old day's
  * agent/model rows must never render under the new day's header.
- * Clearing the selection also clears the detail.
+ * Clearing the selection also clears the detail; either way the
+ * scroll returns to the top — an offset into the old day's cards
+ * would land mid-card in the new one.
  */
 export function withOverviewSelectedDate(state: TuiState, date: string | null): TuiState {
   if (state.overviewSelectedDate === date) {
@@ -137,7 +141,14 @@ export function withOverviewSelectedDate(state: TuiState, date: string | null): 
     ...state,
     overviewSelectedDate: date,
     overviewDayDetail: emptyResource(),
+    overviewDetailScroll: 0,
   };
+}
+
+/** Scroll for the selected day's cards; the key handler clamps the top end. */
+export function withOverviewDetailScroll(state: TuiState, scroll: number): TuiState {
+  const next = Math.max(0, scroll);
+  return state.overviewDetailScroll === next ? state : { ...state, overviewDetailScroll: next };
 }
 
 /** Entering a model resets its prompt cursor; leaving clears the list. */
@@ -189,6 +200,7 @@ export function createInitialState(): TuiState {
     searchQuery: '',
     overviewSelectedDate: null,
     overviewDayDetail: emptyResource(),
+    overviewDetailScroll: 0,
     modelDrillDown: null,
     modelPrompts: emptyResource(),
     modelPromptsCursor: 0,

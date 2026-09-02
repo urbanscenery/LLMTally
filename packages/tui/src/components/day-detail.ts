@@ -22,8 +22,9 @@ const COUNT_WIDTH = 8;
 const TOKEN_WIDTH = 8;
 const COST_WIDTH = 11;
 const CARD_WIDTH = 60;
-/** Borders and the column header before the first model row. */
-const CARD_CHROME_LINES = 3;
+
+/** Day header + token line, always rendered above the scrollable cards. */
+export const DAY_DETAIL_HEADER_LINES = 2;
 
 /** The role matching a cost's basis, so `$` and `~$` keep their colors. */
 function costRole(cost: CostViewModel): 'spendCost' | 'quotaCost' {
@@ -59,18 +60,13 @@ function agentTitle(entry: DayAgentDetailViewModel): string {
   return `${agent.key} · ${prompts} · ${formatCostCell(primaryCostViewModel(agent.spendCost, agent.quotaCost))}`;
 }
 
-/** One agent card; `contentRows` is the model-row budget (≥ 1). */
-function agentCard(entry: DayAgentDetailViewModel, width: number, contentRows: number): RichLine[] {
+/** One agent card with every model row; the view scrolls, so nothing folds. */
+function agentCard(entry: DayAgentDetailViewModel, width: number): RichLine[] {
   const content: RichLine[] = [columnHeader()];
   if (entry.models.length === 0) {
     content.push(joinLine(span('no model rows recorded', 'muted')));
-  } else if (entry.models.length <= contentRows) {
-    content.push(...entry.models.map(modelRow));
   } else {
-    // the "more" marker takes one of the budgeted rows
-    const shown = Math.max(1, contentRows - 1);
-    content.push(...entry.models.slice(0, shown).map(modelRow));
-    content.push(joinLine(span(`… +${entry.models.length - shown} more models`, 'dim')));
+    content.push(...entry.models.map(modelRow));
   }
   return renderCard({
     title: agentTitle(entry),
@@ -79,17 +75,37 @@ function agentCard(entry: DayAgentDetailViewModel, width: number, contentRows: n
   }).map((line) => joinLine(' ', line));
 }
 
+/** Every agent-card line for the day, unclipped; the caller scrolls. */
+export function dayDetailCardLines(
+  detail: ResourceState<DayDetailViewModel>,
+  width: number,
+): RichLine[] {
+  if (detail.data === null) {
+    return [];
+  }
+  return detail.data.agents.flatMap((entry) => agentCard(entry, width));
+}
+
+/** Scroll offset clamped so the last page is always full when possible. */
+export function clampDayDetailScroll(totalLines: number, scroll: number, windowRows: number): number {
+  return Math.max(0, Math.min(scroll, totalLines - Math.max(1, windowRows)));
+}
+
 /**
- * Renders at most `maxLines` lines. The day header always fits first;
- * agent cards follow busiest-first until the budget runs out, and a
- * card only renders when at least one of its model rows fits.
+ * The day header and token line always render; below them a window of
+ * `cardRows` lines over the full card list, offset by `scroll`. The
+ * chart above keeps its height — overflow scrolls instead of squeezing.
  */
 export function renderDayDetail(
   point: DailyPointViewModel,
   detail: ResourceState<DayDetailViewModel>,
   width: number,
-  maxLines: number,
+  cardRows: number,
+  scroll = 0,
 ): RichLine[] {
+  const cards = dayDetailCardLines(detail, width);
+  const windowRows = Math.max(1, cardRows);
+  const clamped = clampDayDetailScroll(cards.length, scroll, windowRows);
   const lines: RichLine[] = [];
   const prompts = `${point.promptCount.toLocaleString('en-US')} prompt${point.promptCount === 1 ? '' : 's'}`;
   // quota cost is always shown; spend earns its slot only when the day has
@@ -106,7 +122,14 @@ export function renderDayDetail(
   if (point.unknownRows > 0) {
     headSpans.push(span(` · ?${point.unknownRows.toLocaleString('en-US')} unclassified`, 'warning'));
   }
-  headSpans.push(span('   ←/→ day · Esc close', 'dim'));
+  headSpans.push(
+    span(
+      cards.length > windowRows
+        ? `   ${clamped + 1}-${Math.min(cards.length, clamped + windowRows)}/${cards.length} · ↑↓ scroll · ←/→ day · Esc close`
+        : '   ←/→ day · Esc close',
+      'dim',
+    ),
+  );
   lines.push(joinLine(...headSpans));
   const tokens = point.tokens;
   lines.push(
@@ -120,10 +143,6 @@ export function renderDayDetail(
     ),
   );
 
-  let remaining = maxLines - lines.length;
-  if (remaining <= 0) {
-    return lines.slice(0, Math.max(0, maxLines));
-  }
   if (detail.data === null) {
     if (detail.phase === 'error') {
       lines.push(joinLine(span(` ! day breakdown failed: ${detail.error ?? 'unknown'}`, 'danger')));
@@ -132,31 +151,10 @@ export function renderDayDetail(
     }
     return lines;
   }
-
-  const agents = detail.data.agents;
-  if (agents.length === 0) {
+  if (detail.data.agents.length === 0) {
     lines.push(joinLine(span(' no usage recorded for this day', 'muted')));
     return lines;
   }
-  for (const [index, entry] of agents.entries()) {
-    const minCard = CARD_CHROME_LINES + 1;
-    if (remaining < minCard) {
-      const hidden = agents.length - index;
-      if (remaining >= 1 && hidden > 0) {
-        lines.push(joinLine(span(` … +${hidden} more agent${hidden === 1 ? '' : 's'}`, 'dim')));
-      }
-      break;
-    }
-    // fair share of the remaining lines, so a model-heavy first agent
-    // cannot push the ones after it off the screen entirely
-    const budget = Math.max(minCard, Math.floor(remaining / (agents.length - index)));
-    const contentRows = Math.min(
-      Math.max(1, budget - CARD_CHROME_LINES),
-      Math.max(1, entry.models.length),
-    );
-    const card = agentCard(entry, width, contentRows);
-    lines.push(...card);
-    remaining -= card.length;
-  }
-  return lines.slice(0, maxLines);
+  lines.push(...cards.slice(clamped, clamped + windowRows));
+  return lines;
 }

@@ -726,9 +726,15 @@ describe('overview day selection', () => {
     };
   }
 
-  function dayDataSource() {
+  function dayDataSource(modelCount = 1) {
     const dayReports: string[] = [];
     const source = makeDataSource(async () => scanSummary());
+    const modelBuckets =
+      modelCount === 1
+        ? [dayBucket('claude-fable-5', 900)]
+        : Array.from({ length: modelCount }, (_, index) =>
+            dayBucket(`model-${String(index).padStart(2, '0')}`, 900 - index),
+          );
     const dataSource: TuiDataSource = {
       ...source,
       async loadReport(groupBy: ReportGroupBy): Promise<ReportSummary> {
@@ -752,7 +758,7 @@ describe('overview day selection', () => {
           modelsByAgent: {
             'claude-code': {
               ...emptyReport('model'),
-              buckets: [dayBucket('claude-fable-5', 900)],
+              buckets: modelBuckets,
             },
           },
         };
@@ -761,9 +767,9 @@ describe('overview day selection', () => {
     return { dataSource, dayReports };
   }
 
-  async function daySession() {
+  async function daySession(modelCount = 1) {
     const screen = new FakeScreen(100, 30);
-    const { dataSource, dayReports } = dayDataSource();
+    const { dataSource, dayReports } = dayDataSource(modelCount);
     const saved: Record<string, unknown>[] = [];
     const session = await createTuiSession({
       createScreen: async () => screen,
@@ -819,6 +825,39 @@ describe('overview day selection', () => {
     expect(walkedFrame).toContain('▾ 2026-08-01');
     expect(closedFrame).toContain('QUOTA COST (list-price)');
     expect(dayReports).toEqual(['2026-08-02', '2026-08-01']);
+  });
+
+  test('↓ scrolls the day cards below the fixed chart; ↑ at the top closes', async () => {
+    // Arrange — 30 model rows overflow the detail window at 100x30
+    const { screen, session } = await daySession(30);
+    const done = session.run();
+    await settle();
+
+    // Act — select the newest day, scroll one line, return, close
+    screen.pressKey('down');
+    await settle();
+    const selectedFrame = screen.lastFrame().join('\n');
+    screen.pressKey('down');
+    await settle();
+    const scrolledFrame = screen.lastFrame().join('\n');
+    screen.pressKey('up');
+    await settle();
+    screen.pressKey('up');
+    await settle();
+    const closedFrame = screen.lastFrame().join('\n');
+    session.stop();
+    await done;
+
+    // Assert — the chart title stays; the cards move under it
+    expect(selectedFrame).toContain('↑↓ scroll');
+    expect(selectedFrame).toContain('model-00');
+    expect(selectedFrame).not.toContain('model-29');
+    // one line down scrolls the card's top border (agent title) away
+    expect(scrolledFrame).toContain('▾ 2026-08-02');
+    expect(scrolledFrame).not.toContain('claude-code · 5 prompts ·');
+    // ↑ back at the top closes the selection entirely
+    expect(closedFrame).not.toContain('▾ 2026-08-02');
+    expect(closedFrame).toContain('QUOTA COST (list-price)');
   });
 
   test('a chart click selects the day under the pointer', async () => {

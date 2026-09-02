@@ -8,7 +8,13 @@ import {
   contributionIndexAtCell,
   renderContributionGraph,
 } from '../components/contribution-graph.ts';
-import { renderDayDetail } from '../components/day-detail.ts';
+import {
+  DAY_DETAIL_HEADER_LINES,
+  dayDetailCardLines,
+  renderDayDetail,
+} from '../components/day-detail.ts';
+import type { ResourceState } from '../types.ts';
+import type { DayDetailViewModel } from '../view-model/day-detail.ts';
 import type { ChartStyle } from '../components/chart-style.ts';
 import { densityFor } from '../layout.ts';
 import { joinLine, span } from '../rich-text.ts';
@@ -40,16 +46,11 @@ interface ChartGeometry {
  * One geometry for rendering and click mapping: the reserved-space
  * budget below the chart decides how tall it gets, and the click
  * handler must agree on where the plot rows sit or a click would
- * select a different day than the one under the pointer. While a day
- * is selected the bar chart drops to its minimum height — the detail
- * cards below are what the user is looking at.
+ * select a different day than the one under the pointer. The height
+ * never depends on the day selection — a selected day's detail cards
+ * scroll below the chart instead of squeezing it.
  */
-function chartGeometry(
-  width: number,
-  height: number,
-  style: ChartStyle,
-  daySelected: boolean,
-): ChartGeometry {
+function chartGeometry(width: number, height: number, style: ChartStyle): ChartGeometry {
   const compact = densityFor(width, height) === 'compact';
   const cardLines = width < COST_STACK_BREAKPOINT ? 8 : 4;
   const blanks = compact ? 1 : 3;
@@ -62,11 +63,41 @@ function chartGeometry(
   const chartHeight =
     effective === 'heatmap'
       ? CONTRIBUTION_ROWS
-      : daySelected
-        ? MIN_CHART_HEIGHT
-        : Math.min(MAX_CHART_HEIGHT, Math.max(MIN_CHART_HEIGHT, chartBudget));
+      : Math.min(MAX_CHART_HEIGHT, Math.max(MIN_CHART_HEIGHT, chartBudget));
   // leading blank (comfortable only) + title line sit above the plot
   return { style: effective, top: (compact ? 0 : 1) + 1, height: chartHeight, compact };
+}
+
+/** Lines the chart section occupies above the day detail. */
+function linesAboveDetail(geometry: ChartGeometry): number {
+  const blank = geometry.compact ? 0 : 1;
+  // leading blank + title + plot rows + axis + trailing blank
+  return geometry.top === null ? blank : blank + 1 + geometry.height + 1 + blank;
+}
+
+/** Disclaimer line pinned below the detail window. */
+const DETAIL_TRAILING_LINES = 1;
+
+function detailCardRows(model: OverviewViewModel, geometry: ChartGeometry, height: number): number {
+  const trailing = DETAIL_TRAILING_LINES + (unclassifiedNote(model) === null ? 0 : 1);
+  return Math.max(1, height - linesAboveDetail(geometry) - trailing - DAY_DETAIL_HEADER_LINES);
+}
+
+/**
+ * Scroll window over the selected day's cards, shared by the view and
+ * the key handler so the clamp can never disagree with the render.
+ */
+export function overviewDetailScrollInfo(
+  model: OverviewViewModel,
+  detail: ResourceState<DayDetailViewModel>,
+  style: ChartStyle,
+  width: number,
+  height: number,
+): { readonly cardRows: number; readonly maxScroll: number } {
+  const geometry = chartGeometry(width, height, style);
+  const cardRows = detailCardRows(model, geometry, height);
+  const total = dayDetailCardLines(detail, width).length;
+  return { cardRows, maxScroll: Math.max(0, total - cardRows) };
 }
 
 function renderChart(
@@ -82,16 +113,10 @@ function renderChart(
   return renderDailyBlockChart(points, width, geometry.height, geometry.style, selectedIndex);
 }
 
-/** True when the view will render the day-detail cards for this state. */
-export function overviewHasDaySelection(model: OverviewViewModel, selectedDate: string | null): boolean {
-  return selectedDate !== null && model.chart.points.some((point) => point.date === selectedDate);
-}
-
 /**
  * The chart day a body click lands on, or null outside the plot. Row
- * and column are 0-based within the tab body. `selectedDate` must be
- * the state's current selection — the chart shrinks while a day is
- * selected, which moves the plot rows.
+ * and column are 0-based within the tab body. The plot rows never move
+ * with the day selection — the chart keeps its height either way.
  */
 export function overviewDateAtClick(
   model: OverviewViewModel,
@@ -100,9 +125,8 @@ export function overviewDateAtClick(
   height: number,
   bodyRow: number,
   column: number,
-  selectedDate: string | null = null,
 ): string | null {
-  const geometry = chartGeometry(width, height, style, overviewHasDaySelection(model, selectedDate));
+  const geometry = chartGeometry(width, height, style);
   if (geometry.top === null) {
     return null;
   }
@@ -147,7 +171,7 @@ export function makeOverviewTabView(
         ? null
         : model.chart.points.findIndex((point) => point.date === state.overviewSelectedDate);
     const selectedPoint = selectedIndex === null ? undefined : model.chart.points[selectedIndex];
-    const geometry = chartGeometry(width, height, styleNow(), selectedPoint !== undefined);
+    const geometry = chartGeometry(width, height, styleNow());
     const lines: TabViewLine[] = geometry.compact ? [] : [''];
     if (geometry.top !== null) {
       lines.push(joinLine(span(CHART_TITLES[geometry.style], 'tableHeader')));
@@ -165,9 +189,17 @@ export function makeOverviewTabView(
     }
     if (selectedPoint !== undefined) {
       // a selected day replaces the all-time cards with that day's
-      // totals and breakdowns; the disclaimer keeps its last line
-      const detailBudget = height - lines.length - 1;
-      lines.push(...renderDayDetail(selectedPoint, state.overviewDayDetail, width, detailBudget));
+      // totals and breakdowns; the cards scroll inside a fixed window
+      // so the chart above never shrinks and the disclaimer stays
+      lines.push(
+        ...renderDayDetail(
+          selectedPoint,
+          state.overviewDayDetail,
+          width,
+          detailCardRows(model, geometry, height),
+          state.overviewDetailScroll,
+        ),
+      );
     } else {
       lines.push(...renderCostSummary(model, width));
       if (!geometry.compact) {

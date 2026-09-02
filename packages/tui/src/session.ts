@@ -20,6 +20,7 @@ import {
   withInvalidatedTabs,
   withModelDrillDown,
   withModelPromptsCursor,
+  withOverviewDetailScroll,
   withOverviewSelectedDate,
   withPromptDetail,
   withPromptDetailScroll,
@@ -56,7 +57,11 @@ const MODELS_TABLE_HEADER_LINES = 4;
 import { doctorTabView } from './views/doctor.ts';
 import { searchTabView } from './views/search.ts';
 import { toPromptsViewModel } from './view-model/prompts.ts';
-import { makeOverviewTabView, overviewDateAtClick } from './views/overview.ts';
+import {
+  makeOverviewTabView,
+  overviewDateAtClick,
+  overviewDetailScrollInfo,
+} from './views/overview.ts';
 
 export const MONO_THEME_NAME = 'mono';
 /** Matches the core quota cache TTL, so a poll is at most one vendor call. */
@@ -379,12 +384,14 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
         // would double-wrap on narrow terminals and pin the height on
         // short ones
         message:
-          'Stores the logins Claude Code, Codex, and OpenCode are using right now.\n' +
+          'Stores the logins Claude Code, Codex, OpenCode, Grok, and Cursor are using right now.\n' +
           '\n' +
           'To add a different account, sign in with it first:\n' +
           '  · claude-code: run "claude" and use /login\n' +
           '  · codex: press d here FIRST, then run "codex login"\n' +
           '  · opencode: run "opencode auth login"\n' +
+          '  · grok: run "grok" and /login (its re-login revokes nothing, so the stored copy stays valid)\n' +
+          '  · cursor-cli: run "cursor agent login" (or "cursor-agent login")\n' +
           'then come back here and press n.\n' +
           '\n' +
           'Codex is the odd one out: "codex login" revokes whatever login auth.json still holds, which kills the account you just stored. Pressing d first stores it and moves the file out of the way, so there is nothing left to revoke.\n' +
@@ -418,7 +425,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
     const row = selectedRow();
     if ((key.name === 's' || key.name === 'return' || key.name === 'enter') && row !== undefined) {
       // gate on switchable agents: opening a switch confirm on a
-      // grok/cline/antigravity row would fall through to the Claude
+      // cline/antigravity row would fall through to the Claude
       // switch path and could move the WRONG product's login
       // (audit GK-26)
       // the hint line already refuses these; the key handler must
@@ -729,13 +736,16 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
   /**
    * Overview chart day selection: ↓ enters on the newest day, ←/→ walk
    * the data days (calendar gaps are skipped — an empty day has nothing
-   * to show), ↑/Esc leave. While a day is selected ←/→ are consumed, so
+   * to show), Esc leaves. The chart keeps its height while a day is
+   * selected, so ↓/↑ scroll the detail cards below it; ↑ at the top
+   * closes the selection. While a day is selected ←/→ are consumed, so
    * tab switching falls back to Tab and the digits.
    */
   function handleOverviewKey(key: TuiKeyEvent): boolean {
     const state = controller.getState();
-    const points = state.overview.data?.chart.points ?? [];
-    if (points.length === 0) {
+    const model = state.overview.data;
+    const points = model?.chart.points ?? [];
+    if (model === null || points.length === 0) {
       return false;
     }
     const selected = state.overviewSelectedDate;
@@ -746,7 +756,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       }
       return false;
     }
-    if (key.name === 'escape' || key.name === 'up' || key.name === 'k') {
+    if (key.name === 'escape') {
       controller.commit(withOverviewSelectedDate(state, null));
       return true;
     }
@@ -762,9 +772,42 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       selectOverviewDate(points[Math.min(points.length - 1, current + 1)]?.date ?? null);
       return true;
     }
-    // ↓ entered the selection; a repeat should not fall through to a
-    // global binding and must not move anything either
-    return key.name === 'down' || key.name === 'j';
+    const info = overviewDetailScrollInfo(
+      model,
+      state.overviewDayDetail,
+      chartStyle,
+      Math.max(20, screen.width),
+      shellBodyHeight(screen.height),
+    );
+    const scrollTo = (target: number): boolean => {
+      controller.commit(
+        withOverviewDetailScroll(state, Math.min(info.maxScroll, Math.max(0, target))),
+      );
+      return true;
+    };
+    if (key.name === 'down' || key.name === 'j') {
+      return scrollTo(state.overviewDetailScroll + 1);
+    }
+    if (key.name === 'up' || key.name === 'k') {
+      if (state.overviewDetailScroll > 0) {
+        return scrollTo(state.overviewDetailScroll - 1);
+      }
+      controller.commit(withOverviewSelectedDate(state, null));
+      return true;
+    }
+    if (key.name === 'pagedown') {
+      return scrollTo(state.overviewDetailScroll + info.cardRows);
+    }
+    if (key.name === 'pageup') {
+      return scrollTo(state.overviewDetailScroll - info.cardRows);
+    }
+    if (key.name === 'home') {
+      return scrollTo(0);
+    }
+    if (key.name === 'end') {
+      return scrollTo(info.maxScroll);
+    }
+    return false;
   }
 
   function selectOverviewDate(date: string | null): void {
@@ -877,15 +920,7 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       if (model === null) {
         return false;
       }
-      const date = overviewDateAtClick(
-        model,
-        chartStyle,
-        screen.width,
-        bodyHeight,
-        bodyRow,
-        column,
-        state.overviewSelectedDate,
-      );
+      const date = overviewDateAtClick(model, chartStyle, screen.width, bodyHeight, bodyRow, column);
       if (date !== null) {
         selectOverviewDate(date);
         return true;
