@@ -506,6 +506,37 @@ let GROK_24: [BrandPathCommand] = [
     .line(7.62, 16.73),
 ]
 
+/// Cursor — the isometric cube mark (traced from the official
+/// monochrome logo via Simple Icons; arcs flattened to cubics).
+/// Even-odd punches the inner wedge out of the silhouette, leaving the
+/// top and left faces filled — the cube's monochrome reading.
+let CURSOR_24: [BrandPathCommand] = [
+    .move(11.503, 0.131),
+    .line(1.891, 5.678),
+    .curve(1.632, 5.828, 1.472, 6.104, 1.471, 6.404),
+    .line(1.471, 17.592),
+    .curve(1.471, 17.892, 1.633, 18.167, 1.891, 18.316),
+    .line(11.5, 23.866),
+    .curve(11.809, 24.044, 12.189, 24.044, 12.498, 23.866),
+    .line(22.108, 18.316),
+    .curve(22.367, 18.167, 22.527, 17.891, 22.528, 17.592),
+    .line(22.528, 6.404),
+    .curve(22.527, 6.104, 22.367, 5.828, 22.108, 5.678),
+    .line(12.497, 0.131),
+    .curve(12.188, -0.044, 11.81, -0.044, 11.501, 0.131),
+    .close,
+    .move(2.657, 6.338),
+    .line(21.207, 6.338),
+    .curve(21.47, 6.338, 21.637, 6.625, 21.504, 6.853),
+    .line(12.23, 22.918),
+    .curve(12.168, 23.025, 12.001, 22.982, 12.001, 22.858),
+    .line(12.001, 12.335),
+    .curve(12.001, 12.125, 11.888, 11.93, 11.706, 11.825),
+    .line(2.596, 6.568),
+    .curve(2.487, 6.505, 2.532, 6.338, 2.657, 6.338),
+    .close,
+]
+
 func brandGlyphCommands(agent: String) -> [BrandPathCommand]? {
     switch agent {
     case "claude-code": return CLAUDE_SPARK_24
@@ -514,6 +545,7 @@ func brandGlyphCommands(agent: String) -> [BrandPathCommand]? {
     case "codex": return CODEX_24
     case "cline": return CLINE_24
     case "grok": return GROK_24
+    case "cursor-cli": return CURSOR_24
     default: return nil
     }
 }

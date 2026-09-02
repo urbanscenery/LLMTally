@@ -15,7 +15,12 @@ public enum AttentionRank: Int, Comparable {
     case critical = 4
     case warning = 5
     case resetSoon = 6
-    case quiet = 7
+    /// The account's plan is free: a normal, deliberate state of the
+    /// world (2026-08-17), not a defect — it must never outrank a real
+    /// problem or color anything as a warning. It still sits above
+    /// quiet so the row keeps saying WHY it has no gauges.
+    case noSubscription = 7
+    case quiet = 8
 
     public static func < (lhs: AttentionRank, rhs: AttentionRank) -> Bool {
         lhs.rawValue < rhs.rawValue
@@ -56,6 +61,12 @@ public func attention(for snapshot: QuotaSnapshotDTO, now: Date = Date()) -> Age
     }
     if snapshot.failure?.kind == "rate_limited" {
         return AgentAttention(snapshot: snapshot, rank: .rateLimited, topWindow: topWindow)
+    }
+    // checked BEFORE the age gate: a free account's probe result ages
+    // like anything else, but "stale" would misread a normal state as
+    // a freshness problem — no fresh gauge will ever arrive here
+    if snapshot.failure?.kind == "no_subscription" {
+        return AgentAttention(snapshot: snapshot, rank: .noSubscription, topWindow: topWindow)
     }
     // Age gates every source that mirrors a live gauge — a 2-hour-old
     // stored_history reading posing as fresh is exactly the trust bug

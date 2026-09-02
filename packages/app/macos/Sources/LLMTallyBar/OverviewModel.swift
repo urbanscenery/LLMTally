@@ -76,12 +76,14 @@ final class OverviewModel: ObservableObject {
         load(refresh: false)
     }
 
-    /// Seed from the status item's background fetch so the very first
-    /// panel open after launch has something to paint. Only fills an
-    /// empty model — it must never clobber newer panel-driven data.
-    func seed(overview: OverviewDTO, activeAccounts: [String: String?]?,
-              hourBuckets: [ReportBucketDTO]?) {
-        guard self.overview == nil else { return }
+    /// Absorb the status item's background fetch so the next panel
+    /// open paints data from the last background tick, not from the
+    /// last time the panel itself was open. Skipped while a
+    /// panel-driven load is in flight — that response is newer and
+    /// must not be clobbered by a tick that raced it.
+    func absorb(overview: OverviewDTO, activeAccounts: [String: String?]?,
+                hourBuckets: [ReportBucketDTO]?) {
+        guard !loading else { return }
         self.overview = overview
         if let activeAccounts { self.activeAccounts = activeAccounts }
         if let hourBuckets { self.hourBuckets = hourBuckets }

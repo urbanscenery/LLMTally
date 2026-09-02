@@ -34,6 +34,7 @@ public struct NotificationState: Codable, Equatable {
     public var staleNotified: Set<String>
     public var mismatchNotified: Set<String>
     public var rateLimitedNotified: Set<String>
+    public var noSubscriptionNotified: Set<String>
     /// Keys carry resetsAtUtc, so entries self-expire into new episodes.
     public var resetSoonNotified: Set<String>
 
@@ -42,12 +43,14 @@ public struct NotificationState: Codable, Equatable {
                 staleNotified: Set<String> = [],
                 mismatchNotified: Set<String> = [],
                 rateLimitedNotified: Set<String> = [],
+                noSubscriptionNotified: Set<String> = [],
                 resetSoonNotified: Set<String> = []) {
         self.crossedThresholds = crossedThresholds
         self.authNotified = authNotified
         self.staleNotified = staleNotified
         self.mismatchNotified = mismatchNotified
         self.rateLimitedNotified = rateLimitedNotified
+        self.noSubscriptionNotified = noSubscriptionNotified
         self.resetSoonNotified = resetSoonNotified
     }
 
@@ -60,6 +63,7 @@ public struct NotificationState: Codable, Equatable {
         staleNotified = try container.decodeIfPresent(Set<String>.self, forKey: .staleNotified) ?? []
         mismatchNotified = try container.decodeIfPresent(Set<String>.self, forKey: .mismatchNotified) ?? []
         rateLimitedNotified = try container.decodeIfPresent(Set<String>.self, forKey: .rateLimitedNotified) ?? []
+        noSubscriptionNotified = try container.decodeIfPresent(Set<String>.self, forKey: .noSubscriptionNotified) ?? []
         resetSoonNotified = try container.decodeIfPresent(Set<String>.self, forKey: .resetSoonNotified) ?? []
     }
 
@@ -72,6 +76,7 @@ public struct NotificationState: Codable, Equatable {
         for k in staleNotified { keys.insert("stale|\(k)") }
         for k in mismatchNotified { keys.insert("mismatch|\(k)") }
         for k in rateLimitedNotified { keys.insert("rate|\(k)") }
+        for k in noSubscriptionNotified { keys.insert("nosub|\(k)") }
         for k in resetSoonNotified { keys.insert("resetsoon|\(k)") }
         for k in crossedThresholds {
             keys.insert("crit|\(k)")
@@ -146,12 +151,33 @@ public func planNotifications(
             next.rateLimitedNotified.remove(accountKey)
         }
 
+        // no subscription — a normal state the app otherwise renders as
+        // healthy (2026-08-17), so the ONE banner on first detection is
+        // the entire acknowledgement surface; after it, the row's
+        // neutral "free plan" chip is all that remains
+        if snapshot.failure?.kind == "no_subscription" {
+            if !next.noSubscriptionNotified.contains(accountKey) {
+                next.noSubscriptionNotified.insert(accountKey)
+                planned.append(PlannedNotification(
+                    key: "nosub|\(accountKey)",
+                    agent: snapshot.agent,
+                    severity: .notice,
+                    systemBanner: true,
+                    title: "\(name) — free plan",
+                    body: "This account has no active subscription, so there is no usage quota to read. The app treats this as normal."))
+            }
+        } else {
+            next.noSubscriptionNotified.remove(accountKey)
+        }
+
         // stale — once per episode, for every source that mirrors a
         // live gauge (local_logs is exempt: idle agents' logs are old
-        // by definition)
+        // by definition; free-plan rows are exempt too — no fresh gauge
+        // will ever arrive for them, so aging is their normal state)
         let age = now.timeIntervalSince1970 - epochSeconds(snapshot.observedAtUtc)
         let agedSources: Set<String> = ["vendor_api", "stored_history", "third_party_cache"]
-        if agedSources.contains(snapshot.source) && age > STALE_AFTER_SECONDS {
+        if snapshot.failure?.kind != "no_subscription"
+            && agedSources.contains(snapshot.source) && age > STALE_AFTER_SECONDS {
             if !next.staleNotified.contains(accountKey) {
                 next.staleNotified.insert(accountKey)
                 planned.append(PlannedNotification(

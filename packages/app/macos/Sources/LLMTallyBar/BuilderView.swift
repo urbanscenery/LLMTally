@@ -22,8 +22,9 @@ struct BuilderView: View {
     /// failure left Grok missing from the picker for a whole day).
     @State private var catalogError: String?
     @State private var draggedId: String?
-    /// Squeeze simulation (§6.5): reproduces a crowded menu bar.
-    @State private var budget: Double = Double(StatusComposer.defaultBudget)
+    /// Width budget (§6.5). Squeezing simulates a crowded menu bar;
+    /// the value persists and the real status item folds with it too.
+    @State private var budget: Double = AppConfig.menuBarBudget
     private let store = DescriptorStore()
 
     init(onBack: (() -> Void)? = nil) {
@@ -149,7 +150,15 @@ struct BuilderView: View {
             HStack(spacing: 10) {
                 Text("\(Int(fullWidth)) / \(Int(budget)) pt")
                     .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
-                Slider(value: $budget, in: 200...Double(StatusComposer.defaultBudget)) {
+                Slider(value: Binding(
+                    get: { budget },
+                    set: { value in
+                        budget = value
+                        AppConfig.setMenuBarBudget(value)
+                        // the real bar folds with the same budget
+                        NotificationCenter.default.post(
+                            name: .llmtallyDescriptorsChanged, object: nil)
+                    }), in: Double(StatusComposer.minBudget)...Double(StatusComposer.maxBudget)) {
                     Text("Squeeze")
                 }
                 .controlSize(.small)
@@ -405,7 +414,7 @@ struct BuilderView: View {
                     Text("7 days").tag("last_7d")
                 }
                 .pickerStyle(.segmented).labelsHidden()
-                Text("5h and 1 day ride hour buckets; 7 days rides hour buckets too when enough exist, else daily.")
+                Text("5h and 1 day ride hour buckets and fill quiet hours so a short session does not look like a shorter range. 7 days folds those hours into 6-hour bins (midnight-aligned) and fills quiet slots; falls back to daily when there is no hour history.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             section("Chart") {

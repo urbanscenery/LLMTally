@@ -9,7 +9,7 @@ import SwiftUI
 /// outside or by losing key.
 final class StatusItemController: NSObject, NSWindowDelegate {
     /// Background cadence for the status text when the popover is
-    /// closed (Settings → Refresh; default 15 min). Sidecar/core
+    /// closed (Settings → Refresh; default 5 min). Sidecar/core
     /// throttles still gate actual vendor calls.
     private static var refreshIntervalSeconds: TimeInterval {
         TimeInterval(AppConfig.cadenceMinutes * 60)
@@ -51,8 +51,6 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var lastActive: [String: String?] = [:]
     /// nil = no successful reading yet; an empty map is a real zero.
     private var lastTodayRows: [String: Int]?
-    /// One-shot: re-read after the first scan lands on an empty cache.
-    private var didRetryAfterFirstScan = false
     /// True once any overview answered — empty quota is then real.
     private var hasOverview = false
     /// Last overview failure — the AX label's honest reason.
@@ -303,16 +301,45 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     // MARK: - status rendering
 
-    /// Pulls quota + report + active accounts and renders the
-    /// descriptor array into the button. Failures keep the previous
-    /// image — last-good stays visible, matching the popover's rule.
+    /// One background tick: a read batch against the current state,
+    /// then a scan, then a second lightweight read so the scan's rows
+    /// reach the button and the panel's warm cache this tick, not the
+    /// next one.
     private func refreshStatusText() {
+        performReads(refresh: true)
+
+        // hybrid collection is the product premise: the menu bar alone
+        // must keep the ledger moving (audit GK-41). The sidecar answers
+        // serially, so the scan is queued AFTER the reads above —
+        // sending it first parked every read behind a multi-second scan
+        // until the 20s deadline killed them (audit C1-01).
+        SidecarClient.shared.request("scan") { [weak self] result in
+            switch result {
+            case .failure(let error):
+                NSLog("llmtally scan tick failed: %@", error.localizedDescription)
+            case .success:
+                // the batch above ran against a pre-scan ledger whether
+                // or not quota was already cached (audit grok C3-02):
+                // re-read the stored state so this tick renders the
+                // scan's rows now instead of one tick later.
+                // refresh:false — the vendor throttle was consulted
+                // seconds ago; this pass only re-reads the ledger.
+                DispatchQueue.main.async { self?.performReads(refresh: false) }
+            }
+        }
+    }
+
+    /// One read batch — quota + report + active accounts — applied
+    /// together to the status button, the panel's warm cache, and the
+    /// notification planner. Failures keep the previous image —
+    /// last-good stays visible, matching the popover's rule.
+    private func performReads(refresh: Bool) {
         var overview: OverviewDTO?
         var active: [String: String?]?
         let group = DispatchGroup()
 
         group.enter()
-        SidecarClient.shared.requestDecodable("overview", params: ["refresh": true], as: OverviewDTO.self) { [weak self] result in
+        SidecarClient.shared.requestDecodable("overview", params: ["refresh": refresh], as: OverviewDTO.self) { [weak self] result in
             switch result {
             case .success(let value): overview = value
             case .failure(let error):
@@ -338,28 +365,6 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             group.leave()
         }
 
-        // hybrid collection is the product premise: the menu bar alone
-        // must keep the ledger moving (audit GK-41). The sidecar answers
-        // serially, so the scan is queued AFTER the four reads above —
-        // sending it first parked every read behind a multi-second scan
-        // until the 20s deadline killed them (audit C1-01).
-        SidecarClient.shared.request("scan") { [weak self] result in
-            switch result {
-            case .failure(let error):
-                NSLog("llmtally scan tick failed: %@", error.localizedDescription)
-            case .success:
-                // one follow-up read after the FIRST successful scan of
-                // this process: the batch above ran against a pre-scan
-                // ledger whether or not quota was already cached
-                // (audit grok C3-02)
-                DispatchQueue.main.async {
-                    guard let self, !self.didRetryAfterFirstScan else { return }
-                    self.didRetryAfterFirstScan = true
-                    self.refreshStatusText()
-                }
-            }
-        }
-
         group.notify(queue: .main) { [weak self] in
             guard let self else { return }
             guard let overview else {
@@ -383,11 +388,12 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             self.lastHourBuckets = hourBuckets ?? self.lastHourBuckets
             self.lastActive = active ?? self.lastActive
             self.lastTodayRows = todayRows ?? self.lastTodayRows
-            // launch fetch doubles as the panel's warm cache: the first
-            // open then paints instantly instead of waiting a live pass
+            // every background fetch doubles as the panel's warm cache:
+            // the next open paints this tick's data instantly instead of
+            // last-open data plus a visible live-fetch swap
             // (this closure runs on the main queue via group.notify)
             MainActor.assumeIsolated {
-                OverviewModel.shared.seed(
+                OverviewModel.shared.absorb(
                     overview: overview, activeAccounts: active, hourBuckets: hourBuckets)
             }
             self.renderFromCache()
@@ -418,7 +424,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         button.image = StatusComposer.compose(
             segments: rendering.segments,
             metrics: rendering.metrics,
-            budget: StatusComposer.defaultBudget,
+            budget: CGFloat(AppConfig.menuBarBudget),
             leadingTally: rendering.segments.isEmpty)
         button.imagePosition = .imageOnly
         button.attributedTitle = NSAttributedString(string: "")

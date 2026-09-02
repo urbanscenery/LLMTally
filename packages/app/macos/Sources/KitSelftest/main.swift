@@ -74,6 +74,21 @@ do {
     let logs = attention(for: snapshot(agent: "codex", source: "local_logs", observedAgo: 7200,
         windows: [QuotaWindowDTO(id: "primary (300m)", usedPercent: 5, resetsAtUtc: nil)]))
     expectEqual(logs.rank, AttentionRank.quiet, "old local_logs stays quiet — idle agents' logs age naturally")
+
+    // a free plan is a normal state (2026-08-17): its own rank so the
+    // row can say why it has no gauges, but below every real problem,
+    // and an aged free row never reads as stale
+    let lapsed = attention(for: snapshot(agent: "claude-code", failureKind: "no_subscription"))
+    expectEqual(lapsed.rank, AttentionRank.noSubscription, "a lapsed plan gets its own rank")
+    expectEqual(isActNowRank(lapsed.rank), false, "a lapsed plan never pins the headline")
+    expect(AttentionRank.critical < AttentionRank.noSubscription,
+           "a free plan never outranks a real problem")
+    expect(AttentionRank.stale < AttentionRank.noSubscription,
+           "a free plan never outranks staleness either")
+    let agedFree = attention(for: snapshot(agent: "claude-code", observedAgo: 7200,
+        failureKind: "no_subscription"))
+    expectEqual(agedFree.rank, AttentionRank.noSubscription,
+                "an aged free row is normal, not stale")
 }
 
 // MARK: status renderer
@@ -574,9 +589,31 @@ do {
     if case .spark(let values, _, let isLine)? = dayRange.segments.first {
         expectEqual(values.count, 24, "last_24h consumes 24 hour buckets")
         expect(isLine, "line presentation renders a line")
+        expect(dayRange.tooltip.contains("24 slots, 24 with usage"),
+               "dense 24h tooltip reports every slot used")
     } else {
         failures += 1
         print("FAIL - 24h history did not render a spark")
+    }
+    let sparseDay = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .consumedTokenHistory,
+                                         presentation: "bar", timeRange: "last_24h",
+                                         providerIdentityPresentation: nil)],
+        quota: quota, buckets: buckets, activeAccounts: [:],
+        hourBuckets: [
+            bucket("2026-08-13 10:00", tokens: 10, usd: nil),
+            bucket("2026-08-13 22:00", tokens: 4, usd: nil),
+        ], now: fixtureNow)
+    if case .spark(let values, _, _)? = sparseDay.segments.first {
+        expectEqual(values.count, 24, "sparse 24h still draws 24 clock-hour slots")
+        expectEqual(values[10], 10, "10:00 lands in its own hour slot")
+        expectEqual(values[22], 4, "22:00 lands in its own hour slot")
+        expectEqual(values.filter { $0 > 0 }.count, 2, "quiet hours stay zero, not dropped")
+        expect(sparseDay.tooltip.contains("24 slots, 2 with usage"),
+               "sparse 24h tooltip names filled slots separately")
+    } else {
+        failures += 1
+        print("FAIL - sparse 24h history did not render a spark")
     }
     let fiveHour = renderStatusSegments(
         descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .consumedTokenHistory,
@@ -590,11 +627,52 @@ do {
         failures += 1
         print("FAIL - 5h history did not render a spark")
     }
+    // 7d folds hours into midnight-aligned 6h bins and zero-fills the week
+    let week = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .consumedTokenHistory,
+                                         presentation: "bar", timeRange: "last_7d",
+                                         providerIdentityPresentation: nil)],
+        quota: quota, buckets: buckets, activeAccounts: [:], hourBuckets: hourly, now: fixtureNow)
+    if case .spark(let values, _, _)? = week.segments.first {
+        expectEqual(values.count, 28, "last_7d zero-fills 28 six-hour slots through 23:30")
+        expectEqual(values[24], 21, "00–06 is the sum of hours 0…5")
+        expectEqual(values[25], 57, "06–12 is the sum of hours 6…11")
+        expectEqual(values[26], 93, "12–18 is the sum of hours 12…17")
+        expectEqual(values[27], 129, "18–24 is the sum of hours 18…23")
+        expect(week.tooltip.contains("28 slots, 4 with usage"),
+               "7d tooltip names slots separately from hours that fired")
+    } else {
+        failures += 1
+        print("FAIL - 7d six-hour history did not render a spark")
+    }
+    let sparseWeek = renderStatusSegments(
+        descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .consumedTokenHistory,
+                                         presentation: "bar", timeRange: "last_7d",
+                                         providerIdentityPresentation: nil)],
+        quota: quota, buckets: buckets, activeAccounts: [:],
+        hourBuckets: [
+            bucket("2026-08-13 10:00", tokens: 10, usd: nil),
+            bucket("2026-08-13 11:00", tokens: 5, usd: nil),
+        ], now: fixtureNow)
+    if case .spark(let values, _, _)? = sparseWeek.segments.first {
+        expectEqual(values.count, 28, "one 6h bin of usage still draws the full week")
+        expectEqual(values[25], 15, "10:00 and 11:00 fold into the 06–12 bin")
+        expectEqual(values.filter { $0 > 0 }.count, 1, "quiet 6h bins stay zero, not dropped")
+    } else {
+        failures += 1
+        print("FAIL - sparse 7d six-hour history did not render a spark")
+    }
     let hidden = renderStatusSegments(descriptors: [money], quota: quota,
                                       buckets: buckets, activeAccounts: [:], privacy: true)
     expectEqual(hidden.segments.first, StatusSegment.placeholder, "privacy neutralizes the cost spark")
     expect(hidden.tooltip.contains("Private metric hidden"), "privacy tooltip explains the hidden metric")
 }
+
+expect(SWITCHABLE_AGENTS.contains("grok"), "SWITCHABLE includes grok")
+expect(SWITCHABLE_AGENTS.contains("cursor-cli"), "SWITCHABLE includes cursor-cli")
+expectEqual(agentDisplayName("cursor-cli"), "Cursor", "cursor-cli display name")
+expect(agentHasBrandGlyph("cursor-cli"), "cursor-cli has a brand glyph")
+expect(agentHasBrandGlyph("grok"), "grok has a brand glyph")
 
 if failures > 0 {
     print("\(failures) failure(s)")

@@ -59,15 +59,31 @@ enum AppConfig {
         QuotaThresholds.critical = max(critical, warning + 1)
     }
 
+    /// Default 5 min matches core's subscription quota cadence (300s):
+    /// faster ticks would mostly hit the shared throttle anyway, and
+    /// slower ones make the popover's warm cache visibly outdated.
     static var cadenceMinutes: Int {
         let value = UserDefaults.standard.integer(forKey: cadenceKey)
-        return value > 0 ? value : 15
+        return value > 0 ? value : 5
     }
 
     /// Legacy values ("actual"/"nominal"/"usage") all collapse to quota: they
     /// each named the quota-valued spark of their era. Spend is opt-in.
     static var spendMode: Bool {
         UserDefaults.standard.string(forKey: costModeKey) == "spend"
+    }
+
+    /// Menu bar width budget (pt). Set from the Builder's squeeze
+    /// slider; the real status item and the preview share this value.
+    static let menuBarBudgetKey = "menuBarBudget"
+    static var menuBarBudget: Double {
+        let stored = UserDefaults.standard.double(forKey: menuBarBudgetKey)
+        guard stored > 0 else { return Double(StatusComposer.defaultBudget) }
+        return min(max(stored, Double(StatusComposer.minBudget)),
+                   Double(StatusComposer.maxBudget))
+    }
+    static func setMenuBarBudget(_ value: Double) {
+        UserDefaults.standard.set(value, forKey: menuBarBudgetKey)
     }
 }
 
@@ -304,7 +320,7 @@ private struct ThresholdsPane: View {
 }
 
 private struct RefreshPane: View {
-    @AppStorage(AppConfig.cadenceKey) private var cadence = 15
+    @AppStorage(AppConfig.cadenceKey) private var cadence = 5
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

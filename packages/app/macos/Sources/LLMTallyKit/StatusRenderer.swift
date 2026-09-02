@@ -147,6 +147,9 @@ private func renderFreshness(
     switch worst?.rank {
     case .authInvalid, .accountMismatch: glyph = "!"
     case .rateLimited, .stale: glyph = "◷"
+    // a lapsed plan is not "all good": the hollow dot says a row has no
+    // gauge to offer, without borrowing the freshness clock
+    case .noSubscription: glyph = "○"
     default: glyph = "●"
     }
     segments.append("\(glyph) \(shortAge(sinceEpoch: oldest, now: now))")
@@ -389,24 +392,37 @@ public func renderStatusSegments(
                 continue
             }
             // the range picks its bucket grain: 5h/24h ride hour
-            // buckets, 7d rides day buckets — never resampled guesses
+            // buckets and zero-fill quiet clock hours so 1 day does not
+            // collapse into "however many hours fired". 7d folds those
+            // hours into midnight-aligned 6h bins (a sum, not an
+            // interpolated guess) and zero-fills the same way.
             let source: [ReportBucketDTO]
             let rangeLabel: String
+            let filledSlots: Bool
             // buckets exist only for hours WITH usage, so a plain
             // suffix(N) on a sparse ledger reaches days back while
             // claiming a short range (audit C2-13/C2-10): cut by the
             // bucket's own local-time key instead
             switch descriptor.timeRange {
             case "last_5h":
-                source = bucketsWithin(hourBuckets, hours: 5, now: now); rangeLabel = "5h"
+                let raw = bucketsWithin(hourBuckets, hours: 5, now: now)
+                source = raw.isEmpty ? raw : zeroFillHourSlots(raw, count: 5, now: now)
+                rangeLabel = "5h"
+                filledSlots = !raw.isEmpty
             case "last_24h":
-                source = bucketsWithin(hourBuckets, hours: 24, now: now); rangeLabel = "24h"
+                let raw = bucketsWithin(hourBuckets, hours: 24, now: now)
+                source = raw.isEmpty ? raw : zeroFillHourSlots(raw, count: 24, now: now)
+                rangeLabel = "24h"
+                filledSlots = !raw.isEmpty
             default:
-                // 7d prefers hour grain (~168 points) so a longer range
-                // reads denser in the same fixed track width
-                source = hourBuckets.count >= 8
-                    ? bucketsWithin(hourBuckets, hours: 7 * 24, now: now)
-                    : dayBucketsWithin(recentBuckets, days: 7, now: now)
+                let weekHours = hourBucketsInLocalWeek(hourBuckets, now: now)
+                if !weekHours.isEmpty {
+                    source = foldHourBucketsIntoSixHours(weekHours, now: now)
+                    filledSlots = true
+                } else {
+                    source = dayBucketsWithin(recentBuckets, days: 7, now: now)
+                    filledSlots = false
+                }
                 rangeLabel = "7d"
             }
             // spend mode only means something when billed rows exist;
@@ -429,9 +445,13 @@ public func renderStatusSegments(
             }
             append(.spark(values: values, money: money,
                           line: descriptor.presentation == "line"), descriptor.metric)
+            let usedSlots = source.filter { $0.rowCount > 0 }.count
+            let countText = filledSlots
+                ? "\(values.count) slots, \(usedSlots) with usage"
+                : "\(values.count) buckets"
             tooltip.append(money
-                ? "\(plotSpend ? "Spend" : "Quota") cost, last \(rangeLabel) (\(values.count) buckets)"
-                : "Consumed tokens, last \(rangeLabel) (\(values.count) buckets)")
+                ? "\(plotSpend ? "Spend" : "Quota") cost, last \(rangeLabel) (\(countText))"
+                : "Consumed tokens, last \(rangeLabel) (\(countText))")
         case .agentActive:
             // ledger activity, not quota. nil = no reading yet
             // (placeholder); an empty map is a real "0 act".
@@ -503,14 +523,158 @@ func dayBucketsWithin(_ buckets: [ReportBucketDTO], days: Int, now: Date) -> [Re
 /// Keys are `yyyy-MM-dd HH:00` in the machine's timezone (report layer
 /// buckets via SQLite localtime).
 func bucketsWithin(_ buckets: [ReportBucketDTO], hours: Int, now: Date) -> [ReportBucketDTO] {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.dateFormat = "yyyy-MM-dd HH:mm"
+    let formatter = hourBucketFormatter()
     let cutoff = now.addingTimeInterval(-Double(hours) * 3600)
     return buckets.filter { bucket in
         guard let date = formatter.date(from: bucket.key) else { return false }
         return date >= cutoff
     }
+}
+
+/// Last `count` local clock hours, including the current one, with
+/// quiet hours as zero. Callers must pass a non-empty `hours` — an
+/// empty ledger stays empty so the spark can still say "not enough".
+func zeroFillHourSlots(
+    _ hours: [ReportBucketDTO],
+    count: Int,
+    now: Date
+) -> [ReportBucketDTO] {
+    let formatter = hourBucketFormatter()
+    let byKey = Dictionary(hours.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+    return hourSlots(count: count, endingAt: now).map { slot in
+        let key = formatter.string(from: slot)
+        return byKey[key] ?? emptyDayBucket(key: key)
+    }
+}
+
+private func hourSlots(count: Int, endingAt now: Date, calendar: Calendar = .current) -> [Date] {
+    var components = calendar.dateComponents([.year, .month, .day, .hour], from: now)
+    components.minute = 0
+    components.second = 0
+    components.nanosecond = 0
+    guard let currentHour = calendar.date(from: components), count > 0 else { return [] }
+    return (0..<count).reversed().compactMap { offset in
+        calendar.date(byAdding: .hour, value: -offset, to: currentHour)
+    }
+}
+
+/// Hour rows from local midnight of (today − 6) through `now` — the
+/// same calendar week the 6h fold zero-fills, not a trailing 168×3600s
+/// span (that would drop the first morning on a just-past-midnight now).
+func hourBucketsInLocalWeek(_ buckets: [ReportBucketDTO], now: Date) -> [ReportBucketDTO] {
+    let calendar = Calendar.current
+    guard let weekStart = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: now)) else {
+        return []
+    }
+    let formatter = hourBucketFormatter()
+    return buckets.filter { bucket in
+        guard let date = formatter.date(from: bucket.key) else { return false }
+        return date >= weekStart && date <= now
+    }
+}
+
+/// Sums hour buckets into midnight-aligned 6h bins (`00/06/12/18`) and
+/// zero-fills quiet slots from the week's first midnight through the
+/// current bin. One used hour still produces a full week of slots —
+/// the caller decides whether that is enough history to draw.
+func foldHourBucketsIntoSixHours(
+    _ hours: [ReportBucketDTO],
+    now: Date
+) -> [ReportBucketDTO] {
+    let formatter = hourBucketFormatter()
+    var totals: [String: ReportBucketDTO] = [:]
+    for hour in hours {
+        guard let date = formatter.date(from: hour.key) else { continue }
+        let key = formatter.string(from: sixHourBinStart(date))
+        if let existing = totals[key] {
+            totals[key] = mergedBucket(existing, hour, key: key)
+        } else if hour.key == key {
+            totals[key] = hour
+        } else {
+            totals[key] = rekeyedBucket(hour, key: key)
+        }
+    }
+    return sixHourSlots(endingAt: now).map { slot in
+        let key = formatter.string(from: slot)
+        return totals[key] ?? emptyDayBucket(key: key)
+    }
+}
+
+private func hourBucketFormatter() -> DateFormatter {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = Calendar.current.timeZone
+    formatter.dateFormat = "yyyy-MM-dd HH:mm"
+    return formatter
+}
+
+private func sixHourBinStart(_ date: Date, calendar: Calendar = .current) -> Date {
+    let hour = calendar.component(.hour, from: date)
+    var components = calendar.dateComponents([.year, .month, .day], from: date)
+    components.hour = (hour / 6) * 6
+    components.minute = 0
+    components.second = 0
+    components.nanosecond = 0
+    return calendar.date(from: components) ?? date
+}
+
+private func sixHourSlots(endingAt now: Date, calendar: Calendar = .current) -> [Date] {
+    guard let weekStart = calendar.date(
+        byAdding: .day, value: -6, to: calendar.startOfDay(for: now))
+    else {
+        return []
+    }
+    let last = sixHourBinStart(now, calendar: calendar)
+    var slots: [Date] = []
+    var cursor = weekStart
+    while cursor <= last {
+        slots.append(cursor)
+        guard let next = calendar.date(byAdding: .hour, value: 6, to: cursor) else { break }
+        cursor = next
+    }
+    return slots
+}
+
+private func rekeyedBucket(_ bucket: ReportBucketDTO, key: String) -> ReportBucketDTO {
+    ReportBucketDTO(
+        key: key,
+        rowCount: bucket.rowCount,
+        tokens: bucket.tokens,
+        spendCost: bucket.spendCost,
+        quotaCost: bucket.quotaCost,
+        unknownRows: bucket.unknownRows,
+        unknownUsd: bucket.unknownUsd,
+        unpricedRows: bucket.unpricedRows,
+        promptCount: bucket.promptCount)
+}
+
+private func mergedBucket(_ left: ReportBucketDTO, _ right: ReportBucketDTO, key: String) -> ReportBucketDTO {
+    ReportBucketDTO(
+        key: key,
+        rowCount: left.rowCount + right.rowCount,
+        tokens: TokenTotalsDTO(
+            inputTokens: left.tokens.inputTokens + right.tokens.inputTokens,
+            outputTokens: left.tokens.outputTokens + right.tokens.outputTokens,
+            cacheWrite: left.tokens.cacheWrite + right.tokens.cacheWrite,
+            cacheRead: left.tokens.cacheRead + right.tokens.cacheRead,
+            reasoningTokens: left.tokens.reasoningTokens + right.tokens.reasoningTokens),
+        spendCost: mergedCost(left.spendCost, right.spendCost),
+        quotaCost: mergedCost(left.quotaCost, right.quotaCost),
+        unknownRows: left.unknownRows + right.unknownRows,
+        unknownUsd: left.unknownUsd + right.unknownUsd,
+        unpricedRows: left.unpricedRows + right.unpricedRows,
+        promptCount: left.promptCount + right.promptCount)
+}
+
+private func mergedCost(_ left: CostResultDTO, _ right: CostResultDTO) -> CostResultDTO {
+    let usd: Double? = (left.usd == nil && right.usd == nil)
+        ? nil
+        : (left.usd ?? 0) + (right.usd ?? 0)
+    return CostResultDTO(
+        usd: usd,
+        pricedSubtotalUsd: left.pricedSubtotalUsd + right.pricedSubtotalUsd,
+        pricedRows: left.pricedRows + right.pricedRows,
+        unpricedRows: left.unpricedRows + right.unpricedRows)
 }
 
 /// 1st window (required) + optional 2nd window. The legacy fixed pair

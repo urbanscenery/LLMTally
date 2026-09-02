@@ -9,6 +9,11 @@ import LLMTallyKit
 enum StatusComposer {
     static let barHeight: CGFloat = 16
     static let defaultBudget: CGFloat = 336
+    /// Bounds for the user-adjustable budget (Builder squeeze slider).
+    /// macOS imposes no width cap on a status item, but past ~500pt a
+    /// crowded/notched menu bar starts silently hiding the whole item.
+    static let minBudget: CGFloat = 200
+    static let maxBudget: CGFloat = 500
     /// History spark track width (user-tuned).
     static let sparkTrack: CGFloat = 45
     private static let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)

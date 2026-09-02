@@ -226,6 +226,7 @@ public let AGENT_DISPLAY_NAMES: [String: String] = [
     "opencode": "OpenCode",
     "cline": "Cline",
     "grok": "Grok",
+    "cursor-cli": "Cursor",
 ]
 
 /// Monochrome short codes — vertical_text identity and VO labels.
@@ -236,9 +237,20 @@ public let AGENT_SHORT_CODES: [String: String] = [
     "opencode": "OPC",
     "cline": "CLN",
     "grok": "GRK",
+    "cursor-cli": "CUR",
 ]
 
-public let SWITCHABLE_AGENTS: Set<String> = ["claude-code", "codex", "opencode"]
+public let SWITCHABLE_AGENTS: Set<String> = [
+    "claude-code", "codex", "opencode", "grok", "cursor-cli",
+]
+
+public let BRAND_GLYPH_AGENTS: Set<String> = [
+    "claude-code", "antigravity", "opencode", "codex", "cline", "grok", "cursor-cli",
+]
+
+public func agentHasBrandGlyph(_ agent: String) -> Bool {
+    BRAND_GLYPH_AGENTS.contains(agent)
+}
 
 public func agentDisplayName(_ agent: String) -> String {
     AGENT_DISPLAY_NAMES[agent] ?? agent

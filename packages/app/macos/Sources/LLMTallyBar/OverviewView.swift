@@ -479,14 +479,17 @@ struct HeadlineView: View {
         }
     }
 
-    private var kicker: String { item.rank == .quiet ? "All clear" : "Needs attention" }
+    // a free plan is informative, not actionable — never "Needs attention"
+    private var kicker: String {
+        item.rank == .quiet || item.rank == .noSubscription ? "All clear" : "Needs attention"
+    }
 
     private var accent: Color {
         let theme = Theme.current()
         switch item.rank {
         case .authInvalid, .critical: return theme.crit
         case .accountMismatch, .rateLimited, .stale, .warning, .resetSoon: return theme.warn
-        case .quiet: return theme.accent
+        case .noSubscription, .quiet: return theme.accent
         }
     }
 
@@ -495,6 +498,7 @@ struct HeadlineView: View {
         case .authInvalid: return "Live quota failed · auth"
         case .accountMismatch: return "Account mismatch · switch reverted"
         case .rateLimited: return "Rate limited · retry \(retryIn)"
+        case .noSubscription: return "No active subscription · free plan"
         case .stale: return "Stale · \(shortAge(sinceEpoch: item.snapshot.observedAtUtc))"
         case .critical, .warning, .resetSoon, .quiet:
             guard let window = item.topWindow else { return "no windows reported" }
@@ -519,6 +523,8 @@ struct HeadlineView: View {
                 return "last-good \(window.id) \(Int(window.usedPercent.rounded()))% · not fresh"
             }
             return "last-good kept · not fresh"
+        case .noSubscription:
+            return "resubscribe to restore quota gauges"
         case .stale:
             return "from local logs, not live"
         case .critical, .warning, .resetSoon, .quiet:
@@ -596,6 +602,7 @@ struct StatusChip: View {
             case "auth_invalid": return "auth"
             case "account_mismatch": return "mismatch"
             case "rate_limited": return "429"
+            case "no_subscription": return "free plan"
             // an intentionally skipped live fetch (budget/cadence/claim)
             // is normal operation: the user-facing word is "cached"
             case "deferred": return "cached"
@@ -611,6 +618,9 @@ struct StatusChip: View {
         if item.snapshot.failure?.kind == "auth_invalid" { return theme.crit }
         // cached is healthy — same accent as live, never a warning
         if item.snapshot.failure?.kind == "deferred" { return theme.accent }
+        // a free plan is a normal state: the chip names it in neutral
+        // ink, same as "stored" (2026-08-17)
+        if item.snapshot.failure?.kind == "no_subscription" { return .secondary }
         if item.snapshot.failure != nil || item.rank == .stale { return theme.warn }
         return item.snapshot.source == "vendor_api" ? theme.accent : .secondary
     }
@@ -754,11 +764,17 @@ struct FreshnessSummary: View {
         if quota.contains(where: { $0.failure?.kind == "account_mismatch" }) {
             return ("!", "mismatch", theme.warn)
         }
+        // a free plan is a normal state (2026-08-17): the row's own
+        // "free plan" chip carries the fact, and the header must not
+        // turn a healthy refresh state into a warning over it — free
+        // rows are also exempt from the age gate, since no fresh gauge
+        // will ever arrive for them
         let agedSources: Set<String> = ["vendor_api", "stored_history", "third_party_cache"]
         let staleCount = quota.filter {
-            $0.failure?.kind == "rate_limited"
-                || (agedSources.contains($0.source)
-                    && now.timeIntervalSince1970 - epochSeconds($0.observedAtUtc) > STALE_AFTER_SECONDS)
+            $0.failure?.kind != "no_subscription"
+                && ($0.failure?.kind == "rate_limited"
+                    || (agedSources.contains($0.source)
+                        && now.timeIntervalSince1970 - epochSeconds($0.observedAtUtc) > STALE_AFTER_SECONDS))
         }.count
         if staleCount > 0 {
             return ("◷", "\(staleCount) stale", theme.warn)
@@ -1184,8 +1200,9 @@ struct ProviderDetailView: View {
                 Text("Switch is a function of this provider. Credentials are not edited here.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .padding(.horizontal, 14).padding(.vertical, 8)
-                // fixed, stable order like the TUI accounts tab — not
-                // attention-sorted, so rows never jump between opens
+                // active pinned first (like the TUI accounts tab), the
+                // rest in stable alphabetical order — never
+                // attention-sorted, so rows only move on an actual switch
                 ForEach(Array(orderedItems.enumerated()), id: \.offset) { _, item in
                     accountSection(item)
                     Divider()
@@ -1242,9 +1259,16 @@ struct ProviderDetailView: View {
         }
     }
 
+    private func isActive(_ snapshot: QuotaSnapshotDTO) -> Bool {
+        snapshot.accountId != nil && snapshot.accountId == activeAccountId
+    }
+
     private var orderedItems: [AgentAttention] {
         items.sorted {
-            ($0.snapshot.account ?? $0.snapshot.accountId ?? "")
+            let lhsActive = isActive($0.snapshot)
+            let rhsActive = isActive($1.snapshot)
+            if lhsActive != rhsActive { return lhsActive }
+            return ($0.snapshot.account ?? $0.snapshot.accountId ?? "")
                 < ($1.snapshot.account ?? $1.snapshot.accountId ?? "")
         }
     }
@@ -1252,7 +1276,7 @@ struct ProviderDetailView: View {
     @ViewBuilder
     private func accountSection(_ item: AgentAttention) -> some View {
         let snapshot = item.snapshot
-        let isActive = snapshot.accountId != nil && snapshot.accountId == activeAccountId
+        let isActive = isActive(snapshot)
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(privacy ? "Account hidden" : (snapshot.account ?? snapshot.accountId ?? "unknown account"))
