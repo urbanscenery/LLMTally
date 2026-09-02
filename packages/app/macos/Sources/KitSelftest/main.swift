@@ -374,6 +374,13 @@ do {
     }
     let buckets = [bucket("2026-08-12", tokens: 100, usd: 1.0),
                    bucket("2026-08-13", tokens: 200, usd: 2.0)]
+    // Every range cuts by wall time, so the fixture pins `now` to the
+    // evening of its own fixed day — a real Date() would age the
+    // buckets out of the 7d window and turn this into a time bomb.
+    let hourFormatter = DateFormatter()
+    hourFormatter.locale = Locale(identifier: "en_US_POSIX")
+    hourFormatter.dateFormat = "yyyy-MM-dd HH:mm"
+    let fixtureNow = hourFormatter.date(from: "2026-08-13 23:30")!
 
     expect(supportsPairWindows(agent: "claude-code", quota: quota), "claude returns a 5h+7d pair")
 
@@ -555,7 +562,7 @@ do {
         descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .consumedTokenHistory,
                                          presentation: "bar", timeRange: "last_7d",
                                          providerIdentityPresentation: nil)],
-        quota: quota, buckets: [buckets[0]], activeAccounts: [:])
+        quota: quota, buckets: [buckets[0]], activeAccounts: [:], now: fixtureNow)
     expectEqual(thin.segments.first, StatusSegment.placeholder, "one bucket renders a placeholder, not a trend")
 
     // cost spark disappears under privacy
@@ -563,7 +570,7 @@ do {
                                    presentation: "bar", timeRange: "last_7d",
                                    providerIdentityPresentation: nil)
     let visible = renderStatusSegments(descriptors: [money], quota: quota,
-                                       buckets: buckets, activeAccounts: [:])
+                                       buckets: buckets, activeAccounts: [:], now: fixtureNow)
     if case .spark(let values, let isMoney, let isLine)? = visible.segments.first {
         expectEqual(values.count, 2, "cost spark renders the buckets")
         expect(isMoney, "cost spark is marked as money")
@@ -574,12 +581,6 @@ do {
     }
 
     // 5h/24h ranges ride hour buckets; line presentation carries through.
-    // The renderer cuts by wall time now, so the fixture pins `now` to
-    // the evening of its own fixed day.
-    let hourFormatter = DateFormatter()
-    hourFormatter.locale = Locale(identifier: "en_US_POSIX")
-    hourFormatter.dateFormat = "yyyy-MM-dd HH:mm"
-    let fixtureNow = hourFormatter.date(from: "2026-08-13 23:30")!
     let hourly = (0..<24).map { bucket("2026-08-13 \(String(format: "%02d", $0)):00", tokens: Double($0 + 1), usd: nil) }
     let dayRange = renderStatusSegments(
         descriptors: [MenuItemDescriptor(scope: .aggregate, metric: .consumedTokenHistory,

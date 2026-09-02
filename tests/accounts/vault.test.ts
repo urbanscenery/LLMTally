@@ -139,7 +139,10 @@ describe('createActiveCredentialStore', () => {
       value: credentials('refresh-1'),
     });
     expect(readFileSync(filePath, 'utf8')).toBe('{}');
-    expect(statSync(filePath).mtimeMs).toBeGreaterThanOrEqual(before);
+    // utimes lands at millisecond precision on some runtimes (bun 1.4
+    // truncates), so a sub-millisecond `before` would read as "went
+    // backwards" — compare at the precision the write can honour
+    expect(Math.floor(statSync(filePath).mtimeMs)).toBeGreaterThanOrEqual(Math.floor(before));
   });
 
   test('a keychain-only machine never gains a plaintext credentials file', () => {
