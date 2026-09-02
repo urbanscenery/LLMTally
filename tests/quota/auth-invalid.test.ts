@@ -99,6 +99,53 @@ describe('a refused credential across the cadence window', () => {
     db.close();
   });
 
+  test('an observer process repeats the refusal on every repaint, never a generic deferral', async () => {
+    // Arrange — the refusal is recorded by one process; another process
+    // (fresh throttle memory) only observes it through the shared store
+    const { databasePath, db } = harness();
+    const store = openQuotaFetchStateStore(databasePath, NOW);
+    recordQuotaSamples(db, [good(NOW - 60)], NOW - 60);
+    await throttledQuota(SUBJECT, NOW, async () => refused(NOW), {
+      ttlSeconds: CADENCE,
+      stateStore: store,
+    });
+    resetQuotaThrottle();
+
+    // Act — two polls WITHOUT a reset in between: the second answers
+    // from the local defer mirror, which must keep the refusal's name
+    const first = await throttledQuota(
+      SUBJECT,
+      NOW + 10,
+      async () => {
+        throw new Error('must not reach the vendor inside the cadence');
+      },
+      { ttlSeconds: CADENCE, stateStore: store },
+    );
+    const second = await throttledQuota(
+      SUBJECT,
+      NOW + 11,
+      async () => {
+        throw new Error('must not reach the vendor inside the cadence');
+      },
+      { ttlSeconds: CADENCE, stateStore: store },
+    );
+    const fallback = readStoredLastGood(db, {
+      agent: 'opencode',
+      accountId: 'bundle-a',
+      account: 'bundle-a',
+      nowUtc: NOW + 11,
+      failure: second.failure,
+    });
+
+    // Assert — a generic 'deferred' here would slip past the stored-
+    // history gate and resurrect the rejected credential's numbers
+    expect(first.failure?.kind).toBe('auth_invalid');
+    expect(second.failure?.kind).toBe('auth_invalid');
+    expect(fallback).toBeNull();
+    store.close();
+    db.close();
+  });
+
   test('a successful read clears the refusal for good', async () => {
     // Arrange
     const { databasePath, db } = harness();

@@ -75,3 +75,58 @@ export async function fetchClaudeAccountIdentity(
     organizationUuid: asString(organization?.uuid ?? null),
   };
 }
+
+/**
+ * Whether a paid plan still stands behind the token. `unknown` on any
+ * failure, so callers keep their original verdict instead of guessing.
+ */
+export type ClaudeSubscriptionState = 'paid' | 'free' | 'unknown';
+
+/**
+ * The profile endpoint keeps answering 200 after a subscription lapses,
+ * which makes it the one place a "free now" verdict can come from — the
+ * usage endpoint just refuses free accounts (observed: 429/403, never a
+ * body that says why).
+ *
+ * The discriminator is `organization.organization_type`, NOT the
+ * `has_claude_pro`/`has_claude_max` account flags: a Team/Enterprise
+ * seat carries both flags as false while the organization is very much
+ * paid (observed on a live `claude_team` org). Any non-free type
+ * therefore reads as paid; only a schema drift reads as unknown.
+ */
+export async function fetchClaudeSubscriptionState(
+  accessToken: string,
+  fetchFn: ProfileFetch = fetch,
+): Promise<ClaudeSubscriptionState> {
+  if (accessToken.length === 0) {
+    return 'unknown';
+  }
+  let response: Response;
+  try {
+    response = await fetchFn(PROFILE_URL, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'User-Agent': LLMTALLY_USER_AGENT,
+      },
+      signal: AbortSignal.timeout(PROFILE_TIMEOUT_MS),
+    });
+  } catch {
+    return 'unknown';
+  }
+  if (!response.ok) {
+    return 'unknown';
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return 'unknown';
+  }
+  const organization = asObject(asObject(body)?.organization ?? null);
+  const organizationType = asString(organization?.organization_type ?? null)?.trim();
+  if (organizationType === undefined || organizationType.length === 0) {
+    return 'unknown';
+  }
+  return organizationType === 'claude_free' ? 'free' : 'paid';
+}

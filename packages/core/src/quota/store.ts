@@ -152,9 +152,11 @@ export function readStoredLastGood(
   /** Receives a human-readable reason when history existed but was rejected. */
   rejectionNotes?: string[],
 ): QuotaSnapshot | null {
-  if (request.failure?.kind === 'auth_invalid') {
+  if (request.failure?.kind === 'auth_invalid' || request.failure?.kind === 'no_subscription') {
     // a rejected credential invalidates its own history: the numbers
-    // may still be true, but nothing can confirm that any more
+    // may still be true, but nothing can confirm that any more. A
+    // lapsed subscription invalidates it just as hard — the stored
+    // windows belonged to the paid plan that ended
     return null;
   }
   // the stable id is the lookup key when the caller has one. Rows

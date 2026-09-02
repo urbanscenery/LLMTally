@@ -122,9 +122,10 @@ describe('008 claude message dedup reset', () => {
     const db = new Database(':memory:', { strict: true });
     migrate(db);
     db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '7')", []);
-    // rewinding past 009 means its column must go too, or re-applying fails
+    // rewinding past 009/010 means their columns must go too, or re-applying fails
     db.run('DROP INDEX idx_usage_ledger_prompt_key', []);
     db.run('ALTER TABLE usage_ledger DROP COLUMN prompt_key', []);
+    db.run('ALTER TABLE quota_fetch_state DROP COLUMN no_subscription_at_utc', []);
     const insert = `INSERT INTO usage_ledger
         (ts_utc, agent, model, natural_id, parser_version)
       VALUES (1786350000, ?, 'model-x', ?, 1)`;
@@ -165,6 +166,7 @@ describe('009_prompt_key migration', () => {
     db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '8')", []);
     db.run('DROP INDEX idx_usage_ledger_prompt_key', []);
     db.run('ALTER TABLE usage_ledger DROP COLUMN prompt_key', []);
+    db.run('ALTER TABLE quota_fetch_state DROP COLUMN no_subscription_at_utc', []);
     const insert = `INSERT INTO usage_ledger
         (ts_utc, agent, model, prompt_text, natural_id, parser_version)
       VALUES (1786350000, ?, 'model-x', 'kept words', ?, 2)`;

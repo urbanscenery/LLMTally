@@ -199,6 +199,85 @@ describe('fetchClaudeQuota', () => {
     expect(snapshot.retryAfterSeconds).toBe(120);
     expect(snapshot.accountId).toBe('acc-uuid-1');
   });
+
+  // The usage endpoint refuses free accounts outright (observed
+  // 2026-08-16: endless 429s, occasional 403s, after a Pro plan was
+  // canceled), so a refusal is disambiguated with one profile read
+  // before it is reported.
+  function profileAwareFetch(usageStatus: number, organizationType: string) {
+    return (url: string | URL | Request): Promise<Response> =>
+      Promise.resolve(
+        String(url).includes('/api/oauth/profile')
+          ? new Response(
+              JSON.stringify({
+                account: { uuid: 'acc-uuid-1', email: 'me@test.dev' },
+                organization: { uuid: 'org-1', organization_type: organizationType },
+              }),
+            )
+          : new Response('refused', { status: usageStatus }),
+      );
+  }
+
+  test('a refusal for a lapsed (free) account reads as no_subscription, not a retry loop', async () => {
+    for (const status of [429, 403]) {
+      // Act
+      const snapshot = await fetchClaudeQuota({
+        tokenReader: () => 't',
+        identityReader: () => TEST_IDENTITY,
+        nowUtc: NOW,
+        fetchFn: profileAwareFetch(status, 'claude_free'),
+      });
+
+      // Assert — the state is "free plan", never "rate limited, retrying"
+      expect(snapshot.failure?.kind).toBe('no_subscription');
+      expect(snapshot.rateLimited).toBe(false);
+      expect(snapshot.plan).toBe('free');
+      expect(snapshot.windows).toEqual([]);
+      expect(snapshot.warnings[0]).toContain('no active subscription');
+    }
+  });
+
+  test('a 429 for a paid organization stays rate_limited (team seats carry no pro/max flags)', async () => {
+    // Act — a Team seat's profile has has_claude_pro/max false, so the
+    // organization type must be the discriminator
+    const snapshot = await fetchClaudeQuota({
+      tokenReader: () => 't',
+      identityReader: () => TEST_IDENTITY,
+      nowUtc: NOW,
+      fetchFn: profileAwareFetch(429, 'claude_team'),
+    });
+
+    // Assert
+    expect(snapshot.failure?.kind).toBe('rate_limited');
+    expect(snapshot.rateLimited).toBe(true);
+    expect(snapshot.plan).toBeNull();
+  });
+
+  test('an unanswerable profile probe keeps the original refusal verdict', async () => {
+    // Act — the probe failing must never invent a plan state
+    const on429 = await fetchClaudeQuota({
+      tokenReader: () => 't',
+      identityReader: () => TEST_IDENTITY,
+      nowUtc: NOW,
+      fetchFn: (url) =>
+        String(url).includes('/api/oauth/profile')
+          ? Promise.reject(new Error('offline'))
+          : Promise.resolve(new Response('', { status: 429 })),
+    });
+    const on403 = await fetchClaudeQuota({
+      tokenReader: () => 't',
+      identityReader: () => TEST_IDENTITY,
+      nowUtc: NOW,
+      fetchFn: (url) =>
+        String(url).includes('/api/oauth/profile')
+          ? Promise.resolve(new Response('denied', { status: 500 }))
+          : Promise.resolve(new Response('denied', { status: 403 })),
+    });
+
+    // Assert
+    expect(on429.failure?.kind).toBe('rate_limited');
+    expect(on403.failure?.kind).toBe('auth_invalid');
+  });
 });
 
 describe('makeQuotaSnapshot', () => {

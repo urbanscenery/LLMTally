@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import { readClaudeActiveIdentity } from '../accounts/claude.ts';
 import type { ClaudeActiveIdentity } from '../accounts/claude.ts';
+import { fetchClaudeSubscriptionState } from '../accounts/oauth-profile.ts';
+import type { ClaudeSubscriptionState } from '../accounts/oauth-profile.ts';
 import { asObject, asString } from '../parsers/shared.ts';
 import { LLMTALLY_USER_AGENT } from '../version.ts';
 
@@ -28,10 +30,18 @@ export type QuotaSource = 'vendor_api' | 'source_log' | 'third_party_cache' | 's
  * `auth_invalid` means the vendor rejected the credential we do have
  * (401) or refused the product to it (403).
  *
- * The split matters beyond wording: `auth_invalid` is the one kind that
+ * The split matters beyond wording: `auth_invalid` is a kind that
  * must never be answered with remembered numbers. A 429 or a timeout
- * leaves the last reading true; a revoked key or a lapsed subscription
- * means nobody can vouch for it any more.
+ * leaves the last reading true; a revoked key means nobody can vouch
+ * for it any more.
+ *
+ * `no_subscription` is the lapsed-plan verdict: the credential itself
+ * still works (the profile endpoint confirms it), but the account is on
+ * the free plan now and the usage endpoint refuses free accounts —
+ * observed as endless 429s (and occasional 403s) that no waiting cures.
+ * Like `auth_invalid` it forbids remembered numbers: they describe a
+ * subscription that ended. It clears on the next successful read, or
+ * on any later refusal whose profile probe no longer says free.
  *
  * `account_mismatch` is the split-brain state: the config names one
  * account but the live credential store provably holds another's bytes
@@ -45,6 +55,7 @@ export type QuotaFailureKind =
   | 'unavailable'
   | 'deferred'
   | 'auth_invalid'
+  | 'no_subscription'
   | 'account_mismatch';
 
 export interface QuotaFailure {
@@ -177,16 +188,46 @@ export interface ClaudeUsageRequest {
   readonly account: string | null;
   readonly nowUtc: number;
   readonly fetchFn?: FetchLike;
+  /** Injected in tests; production probes the OAuth profile endpoint. */
+  readonly subscriptionProbe?: (accessToken: string) => Promise<ClaudeSubscriptionState>;
+}
+
+/** A lapsed plan is a state of the account, not a transient failure. */
+function freePlanSnapshot(request: ClaudeUsageRequest, httpStatus: number): QuotaSnapshot {
+  return makeQuotaSnapshot({
+    agent: 'claude-code',
+    source: 'vendor_api',
+    observedAtUtc: request.nowUtc,
+    windows: [],
+    accountId: request.accountId,
+    account: request.account,
+    plan: 'free',
+    failure: { kind: 'no_subscription', failedAtUtc: request.nowUtc, retryAtUtc: null },
+    warnings: [
+      `no active subscription (free plan) — the usage endpoint answers http ${httpStatus} to free accounts; resubscribe to restore quota gauges`,
+    ],
+  });
 }
 
 /**
  * One read of the OAuth usage endpoint with a caller-supplied token, so
  * the same code serves the logged-in account and every stored one.
+ *
+ * A refusal (429/401/403) is disambiguated with one profile read before
+ * it is reported: a lapsed subscription produces exactly those statuses
+ * forever, and reporting it as "rate limited, retrying" would keep the
+ * account in a retry loop no wait can end (observed 2026-08-16 when a
+ * Pro plan was canceled). The probe costs one profile request per
+ * refused usage read, which the throttle already spaces out.
  */
 export async function fetchClaudeUsage(request: ClaudeUsageRequest): Promise<QuotaSnapshot> {
   const { accessToken, accountId, account, nowUtc } = request;
   try {
     const fetchFn = request.fetchFn ?? fetch;
+    const probe =
+      request.subscriptionProbe ??
+      ((token: string): Promise<ClaudeSubscriptionState> =>
+        fetchClaudeSubscriptionState(token, fetchFn));
     const response = await fetchFn(CLAUDE_USAGE_URL, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -196,6 +237,9 @@ export async function fetchClaudeUsage(request: ClaudeUsageRequest): Promise<Quo
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (response.status === 429) {
+      if ((await probe(accessToken)) === 'free') {
+        return freePlanSnapshot(request, response.status);
+      }
       const header = Number(response.headers.get('retry-after'));
       const retryAfterSeconds = Number.isFinite(header) && header > 0 ? header : null;
       return makeQuotaSnapshot({
@@ -215,6 +259,9 @@ export async function fetchClaudeUsage(request: ClaudeUsageRequest): Promise<Quo
       });
     }
     if (response.status === 401 || response.status === 403) {
+      if ((await probe(accessToken)) === 'free') {
+        return freePlanSnapshot(request, response.status);
+      }
       // a refused credential is an auth failure, not transport — the
       // distinction matters: transport keeps serving stored last-good
       // for up to a day, auth_invalid demands a reconnect and stops a

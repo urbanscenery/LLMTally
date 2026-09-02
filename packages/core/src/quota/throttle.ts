@@ -18,6 +18,7 @@ import { makeQuotaSnapshot } from './providers.ts';
 import type { QuotaFailure, QuotaSnapshot } from './providers.ts';
 import { LLMTALLY_USER_AGENT } from '../version.ts';
 import {
+  NO_SUBSCRIPTION_RECHECK_SECONDS,
   POST_429_MIN_INTERVAL_SECONDS,
   POST_429_WINDOW_SECONDS,
   rateLimitWaitSeconds,
@@ -56,6 +57,14 @@ interface ThrottleEntry {
   lastRateLimitedAtUtc: number | null;
   /** Shared-cadence verdict mirrored locally to avoid re-asking SQLite. */
   deferUntilUtc: number;
+  /**
+   * The typed verdict (`auth_invalid`/`no_subscription`) behind the
+   * current deferral, when there is one. The local mirror must repeat
+   * it verbatim: degrading it to a generic `deferred` on the next
+   * repaint would slip past the stored-history gate and re-serve the
+   * numbers the verdict exists to bury.
+   */
+  deferSnapshot: QuotaSnapshot | null;
   inFlight: Promise<QuotaSnapshot> | null;
 }
 
@@ -73,6 +82,7 @@ function entryFor(key: string): ThrottleEntry {
     consecutiveRateLimits: 0,
     lastRateLimitedAtUtc: null,
     deferUntilUtc: 0,
+    deferSnapshot: null,
     inFlight: null,
   };
   entries.set(key, created);
@@ -222,7 +232,12 @@ export async function throttledQuota(
   }
   if (nowUtc < entry.deferUntilUtc) {
     // the shared cadence already said "wait": answer from memory instead
-    // of opening another SQLite write transaction per repaint
+    // of opening another SQLite write transaction per repaint. A typed
+    // verdict behind the wait is repeated verbatim — reporting it as an
+    // ordinary deferral would re-open the stored-history fallback
+    if (entry.deferSnapshot !== null) {
+      return entry.deferSnapshot;
+    }
     const failure: QuotaFailure = {
       kind: 'deferred',
       failedAtUtc: nowUtc,
@@ -249,6 +264,29 @@ export async function throttledQuota(
         : withCurrentFailure(entry.snapshot, failure, [note]);
     }
     if (decision.kind === 'deferred') {
+      if (decision.state.noSubscriptionAtUtc !== null) {
+        // a lapsed plan works like a refusal for display purposes: the
+        // wait keeps the verdict's name, and the paid-era numbers must
+        // not fill the gap — they describe a subscription that ended
+        entry.snapshot = null;
+        entry.cachedAtUtc = 0;
+        entry.deferUntilUtc = decision.retryAtUtc;
+        entry.deferSnapshot = {
+          ...emptySnapshot(
+            subject,
+            nowUtc,
+            {
+              kind: 'no_subscription',
+              failedAtUtc: decision.state.noSubscriptionAtUtc,
+              retryAtUtc: decision.retryAtUtc,
+            },
+            ['no active subscription (free plan) — re-checking for a resubscription on a slow cadence'],
+            decision.state,
+          ),
+          plan: 'free',
+        };
+        return entry.deferSnapshot;
+      }
       if (decision.state.authInvalidAtUtc !== null) {
         // waiting out the cadence after a refusal is not an ordinary
         // wait: reporting it as `deferred` is what lets the stored
@@ -257,7 +295,7 @@ export async function throttledQuota(
         entry.snapshot = null;
         entry.cachedAtUtc = 0;
         entry.deferUntilUtc = decision.retryAtUtc;
-        return emptySnapshot(
+        entry.deferSnapshot = emptySnapshot(
           subject,
           nowUtc,
           {
@@ -268,7 +306,10 @@ export async function throttledQuota(
           ['the vendor rejected this credential; sign in again to restore the reading'],
           decision.state,
         );
+        return entry.deferSnapshot;
       }
+      // an ordinary deferral means no typed verdict stands any more
+      entry.deferSnapshot = null;
       // mirror the shared verdict locally so repeat reads stay cheap
       if (decision.reason === 'rate_limit') {
         entry.blockedUntilUtc = decision.retryAtUtc;
@@ -327,6 +368,7 @@ export async function throttledQuota(
       entry.cachedAtUtc = nowUtc;
       entry.blockedUntilUtc = 0;
       entry.deferUntilUtc = 0;
+      entry.deferSnapshot = null;
       // teach the shared row whose numbers these were, so a later
       // deferred read in any process can still find their history
       complete({ kind: 'success', accountId: snapshot.accountId, account: snapshot.account });
@@ -345,6 +387,27 @@ export async function throttledQuota(
       return servedWhileRateLimited(subject, entry, nowUtc, entry.blockedUntilUtc, snapshot);
     }
 
+    if (snapshot.failure.kind === 'no_subscription') {
+      // like a refusal, the verdict replaces the cached numbers, and
+      // recording it persistently is what stretches the shared cadence
+      // to a slow resubscription re-check in every process. The provider
+      // cannot know the re-check cadence, so the retry hint is filled in
+      // here — the process that made the call should show the same
+      // "next check" a deferred observer would.
+      complete({ kind: 'no_subscription' });
+      const withRetry: QuotaSnapshot = {
+        ...snapshot,
+        failure: {
+          ...snapshot.failure,
+          retryAtUtc: snapshot.failure.retryAtUtc ?? nowUtc + NO_SUBSCRIPTION_RECHECK_SECONDS,
+        },
+      };
+      entry.snapshot = withRetry;
+      entry.cachedAtUtc = nowUtc;
+      entry.deferSnapshot = null;
+      return withRetry;
+    }
+
     if (snapshot.failure.kind === 'auth_invalid') {
       // The credential behind those numbers was just refused, so the
       // numbers go and the refusal takes their place in the cache:
@@ -355,6 +418,7 @@ export async function throttledQuota(
       complete({ kind: 'auth_invalid' });
       entry.snapshot = snapshot;
       entry.cachedAtUtc = nowUtc;
+      entry.deferSnapshot = null;
       return snapshot;
     }
     complete({ kind: 'failure' });

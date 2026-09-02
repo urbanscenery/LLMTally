@@ -37,6 +37,14 @@ export interface QuotaFetchState {
    * anyone — including a process that has never talked to the vendor.
    */
   readonly authInvalidAtUtc: number | null;
+  /**
+   * When the account was last confirmed to have no paid subscription
+   * (the usage endpoint refused it AND the profile probe said free), or
+   * null. Set, remembered numbers stay hidden (they describe the plan
+   * that ended) and the cadence stretches to a slow resubscription
+   * re-check instead of the normal polling interval.
+   */
+  readonly noSubscriptionAtUtc: number | null;
   readonly claimOwner: string | null;
   readonly claimUntilUtc: number | null;
   readonly updatedAtUtc: number;
@@ -62,6 +70,8 @@ export type QuotaFetchCompletion =
   | { readonly kind: 'rate_limited'; readonly retryAfterSeconds: number | null }
   /** The vendor refused the credential itself; remembered numbers die with it. */
   | { readonly kind: 'auth_invalid' }
+  /** The account has no paid plan any more; remembered numbers die with it too. */
+  | { readonly kind: 'no_subscription' }
   | { readonly kind: 'failure' };
 
 export interface QuotaFetchStateStore {
@@ -81,6 +91,13 @@ const CLAIM_TTL_SECONDS = 30;
 export const POST_429_WINDOW_SECONDS = 3600;
 /** Minimum interval while a 429 governs the rolling hour. */
 export const POST_429_MIN_INTERVAL_SECONDS = 360;
+/**
+ * How often a "no subscription" account is re-checked. A lapsed plan
+ * only changes when the user resubscribes, so polling faster than this
+ * spends usage-endpoint refusals and profile probes on a state that
+ * cannot flip on its own.
+ */
+export const NO_SUBSCRIPTION_RECHECK_SECONDS = 3600;
 /** First-429 exponential base and its cap. */
 const BACKOFF_BASE_SECONDS = 5 * 60;
 const BACKOFF_CAP_SECONDS = 30 * 60;
@@ -115,6 +132,7 @@ interface StateRow {
   readonly last_429_utc: number | null;
   readonly last_fetch_utc: number;
   readonly auth_invalid_at_utc: number | null;
+  readonly no_subscription_at_utc: number | null;
   readonly claim_owner: string | null;
   readonly claim_until_utc: number | null;
   readonly updated_at_utc: number;
@@ -131,6 +149,7 @@ function toState(row: StateRow): QuotaFetchState {
     last429Utc: row.last_429_utc,
     lastFetchUtc: row.last_fetch_utc,
     authInvalidAtUtc: row.auth_invalid_at_utc,
+    noSubscriptionAtUtc: row.no_subscription_at_utc,
     claimOwner: row.claim_owner,
     claimUntilUtc: row.claim_until_utc,
     updatedAtUtc: row.updated_at_utc,
@@ -158,7 +177,7 @@ export function openQuotaFetchStateStore(
 
   const selectRow = db.prepare<StateRow, [string]>(
     `SELECT key, agent, account_id, account_label, blocked_until_utc, consecutive_429,
-            last_429_utc, last_fetch_utc, auth_invalid_at_utc,
+            last_429_utc, last_fetch_utc, auth_invalid_at_utc, no_subscription_at_utc,
             claim_owner, claim_until_utc, updated_at_utc
      FROM quota_fetch_state WHERE key = ?`,
   );
@@ -175,9 +194,9 @@ export function openQuotaFetchStateStore(
         db.run(
           `INSERT INTO quota_fetch_state
              (key, agent, account_id, account_label, blocked_until_utc, consecutive_429,
-              last_429_utc, last_fetch_utc, auth_invalid_at_utc,
+              last_429_utc, last_fetch_utc, auth_invalid_at_utc, no_subscription_at_utc,
               claim_owner, claim_until_utc, updated_at_utc)
-           VALUES (?, ?, ?, ?, 0, 0, NULL, 0, NULL, NULL, NULL, ?)
+           VALUES (?, ?, ?, ?, 0, 0, NULL, 0, NULL, NULL, NULL, NULL, ?)
            ON CONFLICT (key) DO NOTHING`,
           [subject.key, subject.agent, subject.accountId, subject.account, nowUtc_],
         );
@@ -187,9 +206,12 @@ export function openQuotaFetchStateStore(
         }
         const post429Active =
           row.last_429_utc !== null && nowUtc_ - row.last_429_utc < POST_429_WINDOW_SECONDS;
-        const effectiveInterval = post429Active
-          ? post429IntervalSeconds
-          : normalIntervalSeconds;
+        // a lapsed plan outranks every other cadence: nothing but a
+        // resubscription changes the answer, so re-check slowly
+        const effectiveInterval = Math.max(
+          post429Active ? post429IntervalSeconds : normalIntervalSeconds,
+          row.no_subscription_at_utc !== null ? NO_SUBSCRIPTION_RECHECK_SECONDS : 0,
+        );
         const cadenceAt = row.last_fetch_utc + effectiveInterval;
         const liveClaim = row.claim_owner !== null && (row.claim_until_utc ?? 0) > nowUtc_;
         const claimAt = liveClaim ? (row.claim_until_utc ?? 0) : 0;
@@ -310,6 +332,7 @@ export function openQuotaFetchStateStore(
                    WHEN last_429_utc IS NOT NULL AND ? - last_429_utc < ${POST_429_WINDOW_SECONDS}
                      THEN last_429_utc ELSE NULL END,
                  auth_invalid_at_utc = NULL,
+                 no_subscription_at_utc = NULL,
                  claim_owner = NULL, claim_until_utc = NULL, updated_at_utc = ?
              WHERE key = ? AND claim_owner = ?`,
             [
@@ -324,10 +347,32 @@ export function openQuotaFetchStateStore(
           );
         } else if (completion.kind === 'auth_invalid') {
           // the slot stays spent and the refusal is recorded, so a
-          // deferred read in any process knows not to serve history
+          // deferred read in any process knows not to serve history.
+          // A fresh credential verdict replaces any older plan verdict:
+          // exactly one of the two marks describes the current state
           db.run(
             `UPDATE quota_fetch_state
              SET auth_invalid_at_utc = ?,
+                 no_subscription_at_utc = NULL,
+                 claim_owner = NULL, claim_until_utc = NULL, updated_at_utc = ?
+             WHERE key = ? AND claim_owner = ?`,
+            [nowUtc_, nowUtc_, key, owner],
+          );
+        } else if (completion.kind === 'no_subscription') {
+          // the account is on the free plan now: record it so a deferred
+          // read in any process shows "free plan" instead of retrying,
+          // and clear the auth mark — the profile probe that produced
+          // this verdict proved the credential itself still works. The
+          // 429 bookkeeping goes too: exactly one mark describes the
+          // current state, and the slow re-check cadence outlasts any
+          // backoff those columns could impose
+          db.run(
+            `UPDATE quota_fetch_state
+             SET no_subscription_at_utc = ?,
+                 auth_invalid_at_utc = NULL,
+                 blocked_until_utc = 0,
+                 consecutive_429 = 0,
+                 last_429_utc = NULL,
                  claim_owner = NULL, claim_until_utc = NULL, updated_at_utc = ?
              WHERE key = ? AND claim_owner = ?`,
             [nowUtc_, nowUtc_, key, owner],
@@ -341,7 +386,10 @@ export function openQuotaFetchStateStore(
           if (row !== null) {
             // a late reporter's clock may be older than the newest 429
             // on the row: anchor the block at the newest evidence so a
-            // stale completion can only extend the wait, never shrink it
+            // stale completion can only extend the wait, never shrink it.
+            // A plain rate_limited verdict also clears any older "no
+            // subscription" mark: it means the profile probe no longer
+            // found the account free, so the plan verdict is obsolete
             const effective429At = Math.max(nowUtc_, row.last_429_utc ?? 0);
             const withinWindow =
               row.last_429_utc !== null &&
@@ -353,6 +401,7 @@ export function openQuotaFetchStateStore(
                SET blocked_until_utc = MAX(blocked_until_utc, ?),
                    consecutive_429 = MAX(consecutive_429, ?),
                    last_429_utc = MAX(COALESCE(last_429_utc, 0), ?),
+                   no_subscription_at_utc = NULL,
                    claim_owner = CASE WHEN claim_owner = ? THEN NULL ELSE claim_owner END,
                    claim_until_utc = CASE WHEN claim_owner = ? THEN NULL ELSE claim_until_utc END,
                    updated_at_utc = MAX(updated_at_utc, ?)
