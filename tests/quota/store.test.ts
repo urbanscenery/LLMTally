@@ -414,6 +414,7 @@ describe('discoverAccounts', () => {
       antigravityStoreDir: antigravityStore,
       opencodeAuthPath: opencodeAuth,
       grokAuthPath: join(home, 'grok-auth.json'),
+      cursorCliHome: home,
     });
 
     // Assert
@@ -442,6 +443,7 @@ describe('discoverAccounts', () => {
         antigravityStoreDir: join(home, 'none-store'),
         opencodeAuthPath: join(home, 'none-opencode.json'),
         grokAuthPath: join(home, 'none-grok.json'),
+        cursorCliHome: home,
       }),
     ).toEqual([]);
   });

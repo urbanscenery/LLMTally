@@ -2,7 +2,7 @@
 
 > Tally up your LLM usage — 로컬 AI 코딩 에이전트들의 사용량을 한곳에서 세고, 기록하고, 지켜본다.
 
-LLMTally는 로컬에서 사용하는 AI 코딩 에이전트(Claude Code, Codex CLI, OpenCode, Cline, Antigravity, Grok Build)의
+LLMTally는 로컬에서 사용하는 AI 코딩 에이전트(Claude Code, Codex CLI, OpenCode, Cline, Antigravity, Grok Build, Cursor CLI)의
 세션 로그를 스캔하여 **per-prompt 사용 원장**을 만들고, **잔여 사용량과 멀티 계정을 터미널 대시보드(TUI)에서
 모니터링**하는 도구입니다. macOS 메뉴바 앱은 로컬 프리뷰 단계로 동작합니다
 (정식 배포 서명 전 — 조회는 TUI가 정본입니다).
@@ -18,7 +18,7 @@ LLMTally는 로컬에서 사용하는 AI 코딩 에이전트(Claude Code, Codex 
 ## 아키텍처
 
 ```
-[에이전트 로컬 로그 6종] --(최초 풀스캔 + launchd 주기 증분 수집)--> [SQLite 원장]
+[에이전트 로컬 로그 7종] --(최초 풀스캔 + launchd 주기 증분 수집)--> [SQLite 원장]
                                                                      ├── TUI (조회 직전 증분 수집)
                                                                      └── macOS 메뉴바 앱 (로컬 프리뷰)
 ```
@@ -207,7 +207,7 @@ projects·settings·히스토리는 그대로 유지됩니다.
 
 - **Quota cost (`~$`)**: 구독·무료 쿼터 소모의 **정가 환산 명목치** — 실지출이 아닙니다.
   구독제(Claude Code, Codex, Antigravity)의 계산치와 쿼터 상품(Grok Build,
-  OpenCode Go, ClinePass)이 소스에 기록한 값이 같은 통으로 합산됩니다.
+  Cursor CLI 네이티브 모델, OpenCode Go, ClinePass)이 소스에 기록한 값이 같은 통으로 합산됩니다.
   단, 출처별 환산 기준(리포트 시점 정가 / 사용 당시 정가 / 쿼터 회계 단위)은 다릅니다
 - **Spend cost (`$`)**: 카드/선결제 크레딧에서 **실제 지출된 돈**. 해당 행이 없으면
   카드·컬럼 자체가 표시되지 않습니다. quota cost와 spend cost는 절대 합산되지 않습니다
@@ -237,6 +237,7 @@ projects·settings·히스토리는 그대로 유지됩니다.
 | Cline (CLI) | `~/.cline/data/sessions/` | ✅ 구현 완료 |
 | Antigravity CLI | `~/.gemini/antigravity-cli/conversations/` | ✅ 구현 완료 |
 | Grok Build | `~/.grok/sessions/**/updates.jsonl` | ✅ 구현 완료 |
+| Cursor CLI | `~/.cursor/projects/**/agent-transcripts/*.jsonl` | ✅ 구현 완료 |
 
 ### 토큰 필드 의미 (중요)
 
@@ -247,6 +248,8 @@ projects·settings·히스토리는 그대로 유지됩니다.
 - `opencode`: 소스가 기록한 실비 `cost_usd`를 그대로 보존
 - `grok`: codex와 같은 의미 (`input_tokens`에 cache read 포함, `output_tokens`에 reasoning 포함).
   소스가 턴마다 `costUsdTicks`(1e10 ticks = 1 USD)를 남기므로 그 값을 `cost_usd`로 보존
+- `cursor-cli`: Claude와 같이 `input_tokens`는 캐시 미포함 (cache read/write 별도 컬럼).
+  네이티브 모델(`grok-4*`, `composer-*`)만 구독 쿼터; 서드파티는 unknown
 
 비용 계산은 조회 시점에 에이전트별 semantics를 적용해 수행합니다.
 

@@ -19,9 +19,17 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 import { resolveActiveClaudeContext } from '../accounts/active-claude.ts';
-import { defaultGrokAuthPath } from '../accounts/grok.ts';
+import { defaultGrokAuthPath, readStoredGrokEntry } from '../accounts/grok.ts';
+import { syncActiveGrokCredentials } from '../accounts/grok-live-sync.ts';
 import { syncActiveCodexCredential } from '../accounts/codex-live-sync.ts';
 import { syncActiveClaudeCredential, verifyLiveCredentialOwner } from '../accounts/live-sync.ts';
+import {
+  cursorCliBackendOrigin,
+  readCursorCliCredentials,
+  readCursorCliIdentity,
+  readStoredCursorCliDocument,
+} from '../accounts/cursor-cli.ts';
+import { syncActiveCursorCliCredentials } from '../accounts/cursor-cli-live-sync.ts';
 import type { ActiveClaudeContext } from '../accounts/active-claude.ts';
 import { createActiveCredentialStore, oauthAccessToken, oauthRefreshToken } from '../accounts/credentials.ts';
 import type { ActiveCredentialStore } from '../accounts/credentials.ts';
@@ -60,12 +68,19 @@ import {
 } from './codex-live.ts';
 import type { CodexAuth } from './codex-live.ts';
 import { readVaultCodexQuota } from './codex-vault.ts';
+import { readVaultGrokQuota } from './grok-vault.ts';
+import { readVaultCursorCliQuota } from './cursor-cli-vault.ts';
+import {
+  cursorCliQuotaSubject,
+  cursorCliUnavailableSnapshot,
+  fetchCursorCliQuota,
+} from './cursor-cli.ts';
 import {
   fetchClaudeQuota,
   makeQuotaSnapshot,
   readCodexQuota,
 } from './providers.ts';
-import type { QuotaSnapshot } from './providers.ts';
+import type { FetchLike, QuotaSnapshot } from './providers.ts';
 import { openQuotaFetchStateStore } from './fetch-state.ts';
 import type { QuotaFetchStateStore, QuotaThrottleSubject } from './fetch-state.ts';
 import {
@@ -75,9 +90,15 @@ import {
   grokQuotaSubject,
   readGrokCredentials,
 } from './grok.ts';
+import type { GrokCredential } from './grok.ts';
 import { readStoredLastGood, recordQuotaSamples } from './store.ts';
 import { LLMTALLY_USER_AGENT } from '../version.ts';
-import { accessTokenFingerprint, claudeQuotaSubject, throttledQuota } from './throttle.ts';
+import {
+  QUOTA_CACHE_TTL_SECONDS,
+  accessTokenFingerprint,
+  claudeQuotaSubject,
+  throttledQuota,
+} from './throttle.ts';
 
 export type QuotaAgentFilter =
   | 'claude-code'
@@ -86,6 +107,7 @@ export type QuotaAgentFilter =
   | 'opencode'
   | 'cline'
   | 'grok'
+  | 'cursor-cli'
   | null;
 
 /**
@@ -114,6 +136,10 @@ export async function loadAllQuota(options: {
   readonly grokAuthPath?: string;
   /** Injected in tests; production reads ~/.codex/auth.json. */
   readonly codexAuthPath?: string;
+  /** Injected in tests; production reads ~/.cursor. */
+  readonly cursorCliHome?: string;
+  readonly cursorCliFetchFn?: FetchLike;
+  readonly cursorCliFileStore?: boolean;
   /** Injected in tests; production probes the OAuth profile endpoint. */
   readonly profileFetchFn?: ProfileFetch;
 } = {}): Promise<QuotaSnapshot[]> {
@@ -155,6 +181,35 @@ export async function loadAllQuota(options: {
       // opportunistic, exactly like the Claude mirror above
     }
   }
+  // The grok mirror is likewise network-free: every auth.json record
+  // names its own owner (user_id). xAI rotates the refresh token on
+  // every grant, so an unmirrored vault copy would be a consumed
+  // predecessor by the time its account leaves the live file.
+  if (agent === null || agent === 'grok') {
+    try {
+      syncActiveGrokCredentials({
+        vault,
+        authPath: options.grokAuthPath ?? defaultGrokAuthPath(homedir()),
+        nowUtc: now,
+      });
+    } catch {
+      // opportunistic, exactly like the mirrors above
+    }
+  }
+  if (agent === null || agent === 'cursor-cli') {
+    try {
+      syncActiveCursorCliCredentials({
+        vault,
+        home: options.cursorCliHome ?? homedir(),
+        nowUtc: now,
+        ...(options.cursorCliFileStore === undefined
+          ? {}
+          : { fileStore: options.cursorCliFileStore }),
+      });
+    } catch {
+      // opportunistic, exactly like the mirrors above
+    }
+  }
   // OpenCode's account id is derived from the provider list, so adding
   // a provider (xai onto an existing go+cline login) would otherwise
   // leave the previous id sitting next to the live one as a second row.
@@ -193,6 +248,14 @@ export async function loadAllQuota(options: {
       ? readCodexAuth(options.codexAuthPath ?? defaultCodexAuthPath())
       : null;
 
+  // read once per load and shared by both grok passes, for the same
+  // reason as codex: the live logins decide budget keys on one side and
+  // exclusions on the other, and a disagreement would leave one account
+  // read by neither
+  const grokAuthPath = options.grokAuthPath ?? defaultGrokAuthPath(homedir());
+  const grokCredentials =
+    agent === null || agent === 'grok' ? readGrokCredentials(grokAuthPath) : [];
+
   // read once per load and share: the OpenCode and Cline readings must
   // agree about which credential set was live while they ran
   const bundles =
@@ -201,7 +264,7 @@ export async function loadAllQuota(options: {
       : [];
 
   try {
-    const [claude, codexLive, antigravity, opencode, cline, grok] = await Promise.all([
+    const [claude, codexLive, antigravity, opencode, cline, grok, cursorCli] = await Promise.all([
       agent === null || agent === 'claude-code'
         ? loadActiveClaudeQuota(context, now, stateStore, stateStoreUnavailable, activeStore, options.profileFetchFn)
         : null,
@@ -216,7 +279,17 @@ export async function loadAllQuota(options: {
         ? loadClineQuota(bundles, now, stateStore, stateStoreUnavailable)
         : null,
       agent === null || agent === 'grok'
-        ? loadGrokQuota(now, stateStore, stateStoreUnavailable, options.grokAuthPath)
+        ? loadGrokQuota(grokCredentials, grokAuthPath, now, stateStore, stateStoreUnavailable)
+        : null,
+      agent === null || agent === 'cursor-cli'
+        ? loadCursorCliQuota(
+            options.cursorCliHome ?? homedir(),
+            now,
+            stateStore,
+            stateStoreUnavailable,
+            options.cursorCliFetchFn,
+            options.cursorCliFileStore === true,
+          )
         : null,
     ]);
 
@@ -300,6 +373,41 @@ export async function loadAllQuota(options: {
     }
     if (grok !== null) {
       snapshots.push(...grok);
+      try {
+        snapshots.push(
+          ...(await loadStoredGrokQuota(
+            vault,
+            grokCredentials
+              .map((credential) => credential.accountId)
+              .filter((id): id is string => id !== null),
+            now,
+            options.allowRefresh,
+            stateStore,
+            stateStoreUnavailable,
+          )),
+        );
+      } catch {
+        // a vault problem must not take the live readings down with it
+      }
+    }
+    if (cursorCli !== null) {
+      snapshots.push(cursorCli);
+      try {
+        const liveId = readCursorCliIdentity(options.cursorCliHome ?? homedir())?.accountId ?? null;
+        snapshots.push(
+          ...(await loadStoredCursorCliQuota(
+            vault,
+            liveId,
+            now,
+            options.cursorCliHome ?? homedir(),
+            options.cursorCliFetchFn,
+            stateStore,
+            stateStoreUnavailable,
+          )),
+        );
+      } catch {
+        // a vault problem must not take the live reading down with it
+      }
     }
     const withHistory =
       options.databasePath === undefined
@@ -624,13 +732,12 @@ async function loadClineQuota(
  * itself — that would rotate the lineage out from under the CLI).
  */
 async function loadGrokQuota(
+  credentials: readonly GrokCredential[],
+  resolvedPath: string,
   nowUtc: number,
   stateStore: QuotaFetchStateStore | null,
   stateStoreUnavailable: boolean,
-  authPath: string | undefined,
 ): Promise<QuotaSnapshot[]> {
-  const resolvedPath = authPath ?? defaultGrokAuthPath(homedir());
-  const credentials = readGrokCredentials(resolvedPath);
   if (credentials.length === 0) {
     // an empty read must not erase the provider: every catalog downstream
     // (popover rows, Builder provider picker, TUI accounts) is built from
@@ -652,6 +759,224 @@ async function loadGrokQuota(
         () => fetchGrokQuota({ credential, nowUtc }),
         {
           ttlSeconds: SUBSCRIPTION_CADENCE_SECONDS,
+          stateStore,
+          stateStoreUnavailable,
+        },
+      ),
+    ),
+  );
+}
+
+/**
+ * Stored grok accounts claim under the same token-fingerprint key the
+ * live pass uses, so an account keeps one budget while its token bytes
+ * are shared between the live file and the vault (right after a capture
+ * or a switch). Once the vault renews the token, the rotated token
+ * starts a fresh row — the same accepted window as the Claude stored
+ * pass, and vendor-legal for the same reason. Unreadable credentials
+ * fall back to an account-scoped key: budgeting still happens, just
+ * conservatively.
+ */
+function storedGrokSubject(vault: AccountVault, entry: VaultEntry): QuotaThrottleSubject {
+  let token: string | null = null;
+  try {
+    const stored = vault.loadCredentials(entry.agent, entry.accountId);
+    token = stored === null ? null : (readStoredGrokEntry(stored)?.accessToken ?? null);
+  } catch {
+    // an unanswerable keychain still gets a budget key, just not a token one
+  }
+  if (token !== null) {
+    return grokQuotaSubject({
+      accessToken: token,
+      accountId: entry.accountId,
+      account: entry.email ?? entry.accountId,
+    });
+  }
+  return {
+    key: `grok|ua=${LLMTALLY_USER_AGENT}|acct=${entry.accountId}`,
+    agent: 'grok',
+    accountId: entry.accountId,
+    account: entry.email ?? entry.accountId,
+  };
+}
+
+/**
+ * One reading per grok account the vault holds that is not live in
+ * auth.json right now. Each is throttled under its own key so a backoff
+ * on one account never starves the others, and each failure stays
+ * attributed to the entry it belongs to.
+ */
+async function loadStoredGrokQuota(
+  vault: AccountVault,
+  activeAccountIds: readonly string[],
+  nowUtc: number,
+  allowRefresh: boolean | undefined,
+  stateStore: QuotaFetchStateStore | null,
+  stateStoreUnavailable: boolean,
+): Promise<QuotaSnapshot[]> {
+  const active = new Set(activeAccountIds);
+  const targets = vault
+    .list()
+    .filter((entry) => entry.agent === 'grok' && !active.has(entry.accountId));
+  return Promise.all(
+    targets.map(async (entry) =>
+      throttledQuota(
+        storedGrokSubject(vault, entry),
+        nowUtc,
+        async () => {
+          const [snapshot] = await readVaultGrokQuota({
+            vault,
+            activeAccountIds,
+            nowUtc,
+            only: entry.accountId,
+            allowRefresh,
+          });
+          // never substitute another account's reading: an empty result
+          // stays attributed to THIS entry
+          return (
+            snapshot ??
+            makeQuotaSnapshot({
+              agent: 'grok',
+              accountId: entry.accountId,
+              account: entry.email ?? entry.accountId,
+              source: 'vendor_api',
+              observedAtUtc: nowUtc,
+              windows: [],
+              failure: { kind: 'unavailable', failedAtUtc: nowUtc, retryAtUtc: null },
+              warnings: ['stored account produced no reading'],
+            })
+          );
+        },
+        {
+          ttlSeconds: SUBSCRIPTION_CADENCE_SECONDS,
+          stateStore,
+          stateStoreUnavailable,
+        },
+      ),
+    ),
+  );
+}
+
+function loadCursorCliQuota(
+  home: string,
+  nowUtc: number,
+  stateStore: QuotaFetchStateStore | null,
+  stateStoreUnavailable: boolean,
+  fetchFn: FetchLike | undefined,
+  fileStore: boolean,
+): Promise<QuotaSnapshot | null> {
+  const identity = readCursorCliIdentity(home);
+  const read = readCursorCliCredentials({ home, fileStore });
+  if (identity === null && read.kind === 'absent') {
+    return Promise.resolve(null);
+  }
+  if (read.kind === 'error') {
+    return Promise.resolve(
+      cursorCliUnavailableSnapshot(
+        identity,
+        nowUtc,
+        'cursor-cli credentials could not be read (keychain locked?); quota shows stored values only',
+      ),
+    );
+  }
+  if (read.kind === 'absent') {
+    return Promise.resolve(
+      cursorCliUnavailableSnapshot(
+        identity,
+        nowUtc,
+        'cursor-cli is signed in but has no access token; run "cursor agent login" (or "cursor-agent login")',
+      ),
+    );
+  }
+  return throttledQuota(
+    cursorCliQuotaSubject({
+      accessToken: read.credentials.accessToken,
+      accountId: identity?.accountId ?? null,
+      account: identity?.email ?? identity?.accountId ?? null,
+    }),
+    nowUtc,
+    () =>
+      fetchCursorCliQuota({
+        credentials: read.credentials,
+        identity,
+        nowUtc,
+        origin: cursorCliBackendOrigin(home),
+        ...(fetchFn === undefined ? {} : { fetchFn }),
+      }),
+    {
+      ttlSeconds: QUOTA_CACHE_TTL_SECONDS,
+      stateStore,
+      stateStoreUnavailable,
+    },
+  );
+}
+
+function storedCursorCliSubject(vault: AccountVault, entry: VaultEntry): QuotaThrottleSubject {
+  let token: string | null = null;
+  try {
+    const stored = vault.loadCredentials(entry.agent, entry.accountId);
+    token = stored === null ? null : (readStoredCursorCliDocument(stored)?.accessToken ?? null);
+  } catch {
+    // an unanswerable keychain still gets a budget key, just not a token one
+  }
+  if (token !== null) {
+    return cursorCliQuotaSubject({
+      accessToken: token,
+      accountId: entry.accountId,
+      account: entry.email ?? entry.accountId,
+    });
+  }
+  return {
+    key: `cursor-cli|ua=${LLMTALLY_USER_AGENT}|acct=${entry.accountId}`,
+    agent: 'cursor-cli',
+    accountId: entry.accountId,
+    account: entry.email ?? entry.accountId,
+  };
+}
+
+async function loadStoredCursorCliQuota(
+  vault: AccountVault,
+  liveAccountId: string | null,
+  nowUtc: number,
+  home: string,
+  fetchFn: FetchLike | undefined,
+  stateStore: QuotaFetchStateStore | null,
+  stateStoreUnavailable: boolean,
+): Promise<QuotaSnapshot[]> {
+  const active = new Set(liveAccountId === null ? [] : [liveAccountId]);
+  const targets = vault
+    .list()
+    .filter((entry) => entry.agent === 'cursor-cli' && !active.has(entry.accountId));
+  return Promise.all(
+    targets.map(async (entry) =>
+      throttledQuota(
+        storedCursorCliSubject(vault, entry),
+        nowUtc,
+        async () => {
+          const [snapshot] = await readVaultCursorCliQuota({
+            vault,
+            activeAccountIds: [...active],
+            nowUtc,
+            home,
+            only: entry.accountId,
+            ...(fetchFn === undefined ? {} : { fetchFn }),
+          });
+          return (
+            snapshot ??
+            makeQuotaSnapshot({
+              agent: 'cursor-cli',
+              accountId: entry.accountId,
+              account: entry.email ?? entry.accountId,
+              source: 'vendor_api',
+              observedAtUtc: nowUtc,
+              windows: [],
+              failure: { kind: 'unavailable', failedAtUtc: nowUtc, retryAtUtc: null },
+              warnings: ['stored account produced no reading'],
+            })
+          );
+        },
+        {
+          ttlSeconds: QUOTA_CACHE_TTL_SECONDS,
           stateStore,
           stateStoreUnavailable,
         },

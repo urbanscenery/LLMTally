@@ -13,6 +13,7 @@ import { asObject, asString } from '../parsers/shared.ts';
 import { defaultAntigravityStoreDir, listAntigravityAccounts } from '../quota/antigravity.ts';
 import { defaultClaudeConfigPath, readClaudeActiveIdentity } from './claude.ts';
 import { GROK_AGENT, defaultGrokAuthPath, readGrokIdentities } from './grok.ts';
+import { CURSOR_CLI_AGENT, readCursorCliIdentity } from './cursor-cli.ts';
 import {
   defaultOpencodeAuthPath,
   opencodeAccountId,
@@ -25,7 +26,8 @@ export type DiscoverySource =
   | 'codex-auth'
   | 'antigravity-store'
   | 'opencode-auth'
-  | 'grok-auth';
+  | 'grok-auth'
+  | 'cursor-cli-config';
 
 export interface AccountProfile {
   readonly agent: string;
@@ -170,12 +172,30 @@ function discoverGrok(authPath: string): AccountProfile[] {
   }));
 }
 
+function discoverCursorCli(home: string): AccountProfile[] {
+  const identity = readCursorCliIdentity(home);
+  if (identity === null) {
+    return [];
+  }
+  return [
+    {
+      agent: CURSOR_CLI_AGENT,
+      accountId: identity.accountId,
+      displayLabel: identity.email ?? identity.accountId,
+      email: identity.email,
+      organizationId: null,
+      discoveredVia: 'cursor-cli-config',
+    },
+  ];
+}
+
 export interface DiscoveryOptions {
   readonly claudeConfigPath?: string;
   readonly codexAuthPath?: string;
   readonly antigravityStoreDir?: string;
   readonly opencodeAuthPath?: string;
   readonly grokAuthPath?: string;
+  readonly cursorCliHome?: string;
 }
 
 /** Later sources never overwrite an earlier profile for the same (agent, id). */
@@ -187,6 +207,7 @@ export function discoverAccounts(options: DiscoveryOptions = {}): AccountProfile
     ...discoverAntigravity(options.antigravityStoreDir ?? defaultAntigravityStoreDir(home)),
     ...discoverOpencode(options.opencodeAuthPath ?? defaultOpencodeAuthPath(home)),
     ...discoverGrok(options.grokAuthPath ?? defaultGrokAuthPath(home)),
+    ...discoverCursorCli(options.cursorCliHome ?? home),
   ];
   const seen = new Map<string, AccountProfile>();
   for (const profile of profiles) {

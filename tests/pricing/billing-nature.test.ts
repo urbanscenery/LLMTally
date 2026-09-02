@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
+import { AGENT_TOKEN_SEMANTICS } from '@llmtally/core/pricing/types.ts';
 import {
   billingNature,
   parseBillingOverrides,
@@ -19,6 +20,12 @@ describe('billingNature defaults', () => {
     expect(billingNature('cline', 'cline-pass')).toBe('quota');
   });
 
+  test('classifies native cursor-cli models as quota and third-party as unknown', () => {
+    expect(billingNature('cursor-cli', 'cursor')).toBe('quota');
+    expect(billingNature('cursor-cli', 'anthropic')).toBe('unknown');
+    expect(billingNature('cursor-cli', null)).toBe('unknown');
+  });
+
   test('returns unknown for unlisted providers instead of guessing', () => {
     expect(billingNature('opencode', 'anthropic')).toBe('unknown');
     expect(billingNature('opencode', 'openrouter')).toBe('unknown');
@@ -28,6 +35,13 @@ describe('billingNature defaults', () => {
   test('returns unknown for unknown agents and null providers', () => {
     expect(billingNature('mystery-agent', 'anthropic')).toBe('unknown');
     expect(billingNature('opencode', null)).toBe('unknown');
+  });
+
+  test('cursor-cli uses claude_separate_cache token semantics', () => {
+    expect(AGENT_TOKEN_SEMANTICS['cursor-cli']).toEqual({
+      version: 1,
+      formula: 'claude_separate_cache',
+    });
   });
 });
 

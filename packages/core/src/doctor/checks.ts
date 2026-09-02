@@ -1,6 +1,8 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
+
+import { readCursorCliIdentity } from '../accounts/cursor-cli.ts';
 
 import { AccountVault, defaultVaultDir, vaultPaths } from '../accounts/vault.ts';
 
@@ -62,9 +64,11 @@ export function runDoctorChecks(options: DoctorOptions): readonly DoctorCheck[] 
     ),
   );
   checks.push(directoryCheck('source.grok', join(home, '.grok', 'sessions'), 'Grok Build'));
+  checks.push(cursorCliSourceCheck(home));
   checks.push(...pricingChecks(home));
   checks.push(quotaAntigravityCheck(home));
   checks.push(quotaGrokCheck(home));
+  checks.push(quotaCursorCliCheck(home));
   checks.push(...vaultChecks(home));
   checks.push(daemonCheck(home));
   return checks;
@@ -204,6 +208,91 @@ function quotaAntigravityCheck(home: string): DoctorCheck {
     id: 'quota.antigravity',
     status: 'pass',
     message: `${accounts.length} account(s), ${validTokens} with a valid token`,
+  };
+}
+
+/**
+ * Transcript tree under ~/.cursor/projects. A present directory with
+ * no agent-transcripts yet is a warn, not a skip — the CLI is installed
+ * but has not produced a session. Messages never include tokens.
+ */
+function cursorCliSourceCheck(home: string): DoctorCheck {
+  const root = join(home, '.cursor', 'projects');
+  try {
+    const stats = statSync(root);
+    if (!stats.isDirectory()) {
+      return { id: 'source.cursor-cli', status: 'fail', message: `${root} is not a directory` };
+    }
+  } catch {
+    return { id: 'source.cursor-cli', status: 'skip', message: 'Cursor CLI transcripts not detected' };
+  }
+  const jsonl = countCursorCliTranscripts(root);
+  if (jsonl === 0) {
+    return {
+      id: 'source.cursor-cli',
+      status: 'warn',
+      message: 'no agent-transcripts yet',
+      remediation:
+        'run "cursor agent login" (or "cursor-agent login"), then use the agent so transcripts appear',
+    };
+  }
+  return {
+    id: 'source.cursor-cli',
+    status: 'pass',
+    message: `Cursor CLI transcripts detected at ${root}`,
+  };
+}
+
+function countCursorCliTranscripts(root: string): number {
+  let count = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    if (dir === undefined) {
+      break;
+    }
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const path = join(dir, name);
+      let stats;
+      try {
+        stats = statSync(path);
+      } catch {
+        continue;
+      }
+      if (stats.isDirectory()) {
+        stack.push(path);
+      } else if (stats.isFile() && name.endsWith('.jsonl') && path.includes('agent-transcripts')) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * Offline identity only — Doctor never opens the Keychain. Presence of
+ * authInfo.userId is enough to say a login exists.
+ */
+function quotaCursorCliCheck(home: string): DoctorCheck {
+  const identity = readCursorCliIdentity(home);
+  if (identity === null) {
+    return {
+      id: 'quota.cursor-cli',
+      status: 'skip',
+      message: 'no Cursor CLI login',
+      remediation: 'run "cursor agent login" (or "cursor-agent login") to read subscription quota',
+    };
+  }
+  return {
+    id: 'quota.cursor-cli',
+    status: 'pass',
+    message: 'Cursor CLI login present in cli-config.json',
   };
 }
 

@@ -374,6 +374,63 @@ describe('loadAllQuota and the grok credential file', () => {
     expect(torn).toHaveLength(1);
     expect(torn[0]?.warnings.join(' ')).toContain('could not be read');
   });
+
+  test('vault-stored grok accounts get their own rows next to the live ones', async () => {
+    // Arrange — grok is signed out, but the vault holds a second account
+    // whose token has expired; read-only mode must still surface the row
+    const { home, vault } = harness();
+    const dir = join(home, '.grok');
+    mkdirSync(dir);
+    vault.put(
+      {
+        agent: 'grok',
+        accountId: 'acc-vault',
+        email: 'vaulted@test.dev',
+        organizationUuid: null,
+        organizationName: null,
+        alias: null,
+        addedAtUtc: NOW,
+      },
+      JSON.stringify({
+        'https://auth.x.ai::client-1': {
+          key: 'stored-access-token',
+          user_id: 'acc-vault',
+          email: 'vaulted@test.dev',
+          refresh_token: 'stored-refresh-token',
+          oidc_client_id: 'client-1',
+          expires_at: new Date((NOW - 10) * 1000).toISOString(),
+        },
+      }),
+    );
+    resetQuotaThrottle();
+    const original = globalThis.fetch;
+    globalThis.fetch = ((): Promise<Response> =>
+      Promise.reject(new Error('no vendor call expected'))) as unknown as typeof fetch;
+
+    // Act
+    let rows: QuotaSnapshot[];
+    try {
+      rows = await loadAllQuota({
+        agent: 'grok',
+        nowUtc: NOW,
+        vault,
+        activeContext: SIGNED_OUT,
+        grokAuthPath: join(dir, 'auth.json'),
+        allowRefresh: false,
+      });
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    // Assert — the signed-out placeholder AND the stored account, which
+    // explains that switching (not a token call) is the way back in
+    const storedRow = rows.find((row) => row.accountId === 'acc-vault');
+    expect(rows).toHaveLength(2);
+    expect(storedRow?.account).toBe('vaulted@test.dev');
+    expect(storedRow?.failure?.kind).toBe('unavailable');
+    expect(storedRow?.warnings.join(' ')).toContain('stored token expired');
+    expect(JSON.stringify(rows)).not.toContain('stored-access-token');
+  });
 });
 
 describe('active claude quota attribution', () => {

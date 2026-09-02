@@ -7,6 +7,7 @@ import {
   fetchGrokQuota,
   grokPeriodWindowId,
   grokPlaceholderSnapshot,
+  grokPlanLabel,
   grokQuotaSubject,
   grokWindows,
   isGrokTokenExpired,
@@ -149,6 +150,52 @@ describe('grokPeriodWindowId', () => {
   });
 });
 
+describe('grokPlanLabel', () => {
+  function jwt(payload: Record<string, unknown>): string {
+    return `x.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.y`;
+  }
+
+  test('maps the measured tier claims and keeps unmeasured ones numeric', () => {
+    // Act & Assert — 1/5 measured 2026-08-17; 0 is the paywall gate's
+    // "no subscription" default
+    expect(grokPlanLabel(jwt({ tier: 1 }))).toBe('supergrok');
+    expect(grokPlanLabel(jwt({ tier: 5 }))).toBe('supergrok heavy');
+    expect(grokPlanLabel(jwt({ tier: 0 }))).toBe('free');
+    expect(grokPlanLabel(jwt({ tier: 3 }))).toBe('tier 3');
+  });
+
+  test('invents no plan from a token that does not carry the claim', () => {
+    // Act & Assert
+    expect(grokPlanLabel(jwt({ sub: 'user' }))).toBeNull();
+    expect(grokPlanLabel(jwt({ tier: 'gold' }))).toBeNull();
+    expect(grokPlanLabel('not-a-jwt')).toBeNull();
+    expect(grokPlanLabel('a.%%%.c')).toBeNull();
+  });
+
+  test('the snapshot carries the plan on success and on failure alike', async () => {
+    // Arrange
+    const token = jwt({ tier: 5 });
+    const ok = responder(200, billingBody());
+    const refused = responder(403, 'no');
+
+    // Act
+    const success = await fetchGrokQuota({
+      credential: credential({ accessToken: token }),
+      nowUtc: NOW,
+      fetchFn: ok.fetchFn,
+    });
+    const failure = await fetchGrokQuota({
+      credential: credential({ accessToken: token }),
+      nowUtc: NOW,
+      fetchFn: refused.fetchFn,
+    });
+
+    // Assert
+    expect(success.plan).toBe('supergrok heavy');
+    expect(failure.plan).toBe('supergrok heavy');
+  });
+});
+
 describe('grokWindows', () => {
   test('emits the shared pool and drops a per-product duplicate of it', () => {
     // Act
@@ -169,6 +216,21 @@ describe('grokWindows', () => {
     // Assert — `7d <name>` is what the TUI normalizes to 7days_<name>
     expect(windows.map((w) => w.id)).toEqual(['weekly', '7d GrokBuild']);
     expect(windows[1]?.usedPercent).toBe(12);
+  });
+
+  test('reads an elided creditUsagePercent as 0% while the period names the shape', () => {
+    // Arrange — verbatim shape measured 2026-08-17 on a fresh account:
+    // proto3-style JSON drops zero scalars, so an untouched weekly pool
+    // arrives with no creditUsagePercent at all (the CLI's own /usage
+    // shows the same account at 0%)
+    const body = billingBody({ creditUsagePercent: undefined, productUsage: undefined });
+    delete (body.config as Record<string, unknown>).creditUsagePercent;
+    delete (body.config as Record<string, unknown>).productUsage;
+
+    // Act & Assert
+    expect(grokWindows(body)).toEqual([
+      { id: 'weekly', usedPercent: 0, resetsAtUtc: NOW + 500_000 },
+    ]);
   });
 
   test('never invents a window from a body it does not recognize', () => {

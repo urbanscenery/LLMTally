@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { openDatabase } from '@llmtally/core/db/connection.ts';
@@ -130,7 +130,7 @@ describe('sidecar server', () => {
   test('activeAccounts reports every agent, null when nothing is active', async () => {
     // Arrange — empty vault dir + unreadable claude config + missing
     // codex auth: no agent is logged in, and the reply must still
-    // enumerate all six agents
+    // enumerate all seven agents
     const dir = makeTempDir();
     const server = createSidecarServer({
       databasePath: makeLedger(),
@@ -140,6 +140,7 @@ describe('sidecar server', () => {
       opencodeAuthPath: join(dir, 'no-such-opencode.json'),
       grokAuthPath: join(dir, 'no-such-grok.json'),
       antigravityStoreDir: join(dir, 'no-such-antigravity'),
+      cursorCliHome: dir,
     });
 
     // Act
@@ -148,7 +149,7 @@ describe('sidecar server', () => {
     // Assert
     expect(reply.error).toBeUndefined();
     expect(Object.keys(reply.result).sort()).toEqual(
-      ['antigravity', 'claude-code', 'cline', 'codex', 'grok', 'opencode'],
+      ['antigravity', 'claude-code', 'cline', 'codex', 'cursor-cli', 'grok', 'opencode'],
     );
     expect(Object.values(reply.result).every((value) => value === null)).toBe(true);
   });
@@ -181,6 +182,24 @@ describe('sidecar server', () => {
     expect(reply.error).toBeUndefined();
     expect(reply.result.grok).toBe('grok-user-1');
     expect(typeof reply.result.opencode).toBe('string');
+  });
+
+  test('activeAccounts derives cursor-cli from cli-config.json', async () => {
+    const dir = makeTempDir();
+    mkdirSync(join(dir, '.cursor'), { recursive: true });
+    writeFileSync(
+      join(dir, '.cursor', 'cli-config.json'),
+      JSON.stringify({ authInfo: { userId: 405, email: 'dev@example.com' } }),
+    );
+    const server = createSidecarServer({
+      databasePath: makeLedger(),
+      vaultDir: join(dir, 'vault'),
+      claudeConfigPath: join(dir, 'no-such-claude.json'),
+      cursorCliHome: dir,
+    });
+    const reply = await call(server, 'activeAccounts');
+    expect(reply.error).toBeUndefined();
+    expect(reply.result['cursor-cli']).toBe('405');
   });
 
   test('activeAccounts derives codex from its live auth.json', async () => {

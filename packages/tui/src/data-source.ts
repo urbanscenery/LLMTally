@@ -19,7 +19,14 @@ import {
   switchOpencodeAccount,
 } from '@llmtally/core/accounts/opencode.ts';
 import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
-import { defaultGrokAuthPath, readGrokIdentities } from '@llmtally/core/accounts/grok.ts';
+import {
+  captureGrokAccounts,
+  defaultGrokAuthPath,
+  readGrokIdentities,
+} from '@llmtally/core/accounts/grok.ts';
+import { switchGrokAccount } from '@llmtally/core/accounts/grok-switch.ts';
+import { captureCursorCliAccount, readCursorCliIdentity } from '@llmtally/core/accounts/cursor-cli.ts';
+import { switchCursorCliAccount } from '@llmtally/core/accounts/cursor-cli-switch.ts';
 import { createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import { captureActiveAccount, switchAccount } from '@llmtally/core/accounts/switch.ts';
 import {
@@ -137,6 +144,7 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
           // one live grok identity is unambiguous; two logins at once
           // means nobody can say which is "active" — show none
           grok: singleGrokIdentity(),
+          'cursor-cli': readCursorCliIdentity()?.accountId ?? null,
         },
       };
     },
@@ -168,6 +176,23 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
         stored.push(`${entry.accountId} (opencode)`);
       } catch (error) {
         skipped.push(`opencode: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      try {
+        const captured = captureGrokAccounts({ vault });
+        for (const entry of captured.entries) {
+          stored.push(`${entry.email ?? entry.accountId} (grok)`);
+        }
+        for (const failure of captured.failures) {
+          skipped.push(`grok: ${failure}`);
+        }
+      } catch (error) {
+        skipped.push(`grok: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      try {
+        const entry = captureCursorCliAccount({ vault });
+        stored.push(`${entry.email ?? entry.accountId} (cursor-cli)`);
+      } catch (error) {
+        skipped.push(`cursor-cli: ${error instanceof Error ? error.message : String(error)}`);
       }
       if (stored.length === 0) {
         throw new Error(skipped.join('\n'));
@@ -204,6 +229,20 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
         const result = await switchOpencodeAccount(accountId, { vault });
         return [
           `switched opencode to ${result.target.alias ?? result.target.accountId}`,
+          ...result.warnings,
+        ].join('\n');
+      }
+      if (agent === 'grok') {
+        const result = await switchGrokAccount(accountId, { vault });
+        return [
+          `switched grok to ${result.target.email ?? result.target.accountId}`,
+          ...result.warnings,
+        ].join('\n');
+      }
+      if (agent === 'cursor-cli') {
+        const result = await switchCursorCliAccount(accountId, { vault });
+        return [
+          `switched cursor-cli to ${result.target.email ?? result.target.accountId}`,
           ...result.warnings,
         ].join('\n');
       }

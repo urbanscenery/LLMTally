@@ -57,6 +57,17 @@ cross-package import는 `@llmtally/*` 지정자를 쓰고 tsconfig `paths`로 �
      파일을 둔 채 로그인하면 이전 계정 401, 먼저 치우고 로그인하면 200 유지.
      반드시 ① 볼트에 캡처하고 ② 저장된 바이트가 라이브와 **완전히 일치함을 확인한 뒤**
      삭제한다. 불일치면 파일을 건드리지 않고 중단한다
+   - **세 번째 예외 (2026-08-17 사용자 승인)**: grok의 계정 전환(`accounts/grok-switch.ts`).
+     `~/.grok/auth.json`의 **해당 `<oidc_issuer>::<client_id>` 엔트리만** 스플라이스한다.
+     이때 ① grok CLI 자신의 락(`auth.json.lock`에 flock)을 잡은 뒤에만 쓰고 락 보유 중
+     네트워크 호출 금지, ② 밀려나는 엔트리는 먼저 볼트에 백업하되 소유자를 특정할 수
+     없으면 자동 캡처 + `unclaimed/` 보존, ③ 재읽기 CAS 불일치면 중단, ④ 쓰기는
+     임시 파일 + rename 원자적 교체. grok은 codex와 달리 로그인/로그아웃이 아무것도
+     revoke하지 않으므로(1.0.4 바이너리 실측, `local_docs/init/grok/multiaccount.md`)
+     detach는 없다 — 재로그인 전 `n` 캡처만으로 충분하다
+   - grok 크레덴셜 갱신(`quota/grok-vault.ts`)도 **볼트에만** 쓴다. "절대 refresh 금지"
+     규칙(`quota/grok.ts`)은 라이브 lineage 전용 — 볼트 전용 lineage는 CLI 소유자가
+     없어 갱신해도 충돌하지 않는다
    - Antigravity 토큰 갱신은 메모리 내에서만 수행하며 antigravity-usage 저장소에 되쓰지 않는다
    - codex 크레덴셜 갱신(`quota/codex-vault.ts`)은 **볼트에만** 쓴다. `~/.codex/auth.json`은
      갱신 대상이 아니다 (활성 로그인은 codex CLI가 스스로 갱신한다)

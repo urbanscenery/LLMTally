@@ -52,6 +52,12 @@ export function normalizeQuotaWindow(id: string): NormalizedWindow {
   if (id === 'monthly') {
     return { label: '1month', rank: 2, model: null };
   }
+  if (id === 'cursor_models') {
+    return { label: '1month_CursorModels', rank: 2, model: 'CursorModels' };
+  }
+  if (id === 'other_models') {
+    return { label: '1month_OtherModels', rank: 2, model: 'OtherModels' };
+  }
   if (id === 'seven_day_opus') {
     return { label: '7days_Opus', rank: 1, model: 'Opus' };
   }

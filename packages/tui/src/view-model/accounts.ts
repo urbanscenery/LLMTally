@@ -79,7 +79,13 @@ export interface AccountsInput {
   readonly activeByAgent?: Readonly<Record<string, string | null>>;
 }
 
-export const SWITCHABLE_AGENTS: readonly string[] = ['claude-code', 'codex', 'opencode'];
+export const SWITCHABLE_AGENTS: readonly string[] = [
+  'claude-code',
+  'codex',
+  'opencode',
+  'grok',
+  'cursor-cli',
+];
 
 /** Which account id counts as "active" for rows of this agent. */
 function activeIdFor(agent: string, input: AccountsInput): string | null {

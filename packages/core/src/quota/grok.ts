@@ -14,6 +14,8 @@
  *     grant (three distinct values observed on one login), so minting
  *     from `auth.json` would rotate the lineage and kill the running
  *     Grok CLI's own session. The CLI refreshes itself; we only read.
+ *     (Vault-stored lineages have no CLI owner and are the one
+ *     exception — see `grok-vault.ts`.)
  *   - **Never cache it.** The CLI rewrites `auth.json` when it renews,
  *     so a token held from process start goes stale. Every read goes
  *     back to the file.
@@ -94,6 +96,41 @@ export function grokQuotaSubject(input: {
     accountId: input.accountId,
     account: input.account,
   };
+}
+
+/**
+ * Subscription tier from the access token's own `tier` claim — the
+ * same claim the CLI's paywall gate reads ("JWT tier claim missing or
+ * stale vs live tier"). Measured 2026-08-17: 1 on a SuperGrok account,
+ * 5 on a SuperGrok Heavy one; 0 is proto3's default and the gate's
+ * "no subscription" verdict, so it reads as the free tier. Unmeasured
+ * numbers keep their number instead of guessing a name — the binary
+ * lists supergrok_lite/plus and x_premium tiers whose values are
+ * unverified. This is what separates a free account from a subscribed
+ * one sitting at 0%: the billing route elides both to the same body.
+ */
+const GROK_TIER_PLANS: Record<number, string> = {
+  0: 'free',
+  1: 'supergrok',
+  5: 'supergrok heavy',
+};
+
+export function grokPlanLabel(accessToken: string): string | null {
+  const payloadPart = accessToken.split('.')[1];
+  if (payloadPart === undefined || payloadPart.length === 0) {
+    return null;
+  }
+  let payload: Record<string, unknown> | null;
+  try {
+    payload = asObject(JSON.parse(Buffer.from(payloadPart, 'base64url').toString('utf8')));
+  } catch {
+    return null;
+  }
+  const tier = payload?.tier;
+  if (typeof tier !== 'number' || !Number.isInteger(tier) || tier < 0) {
+    return null;
+  }
+  return GROK_TIER_PLANS[tier] ?? `tier ${tier}`;
 }
 
 function safeLabel(value: string | null, accessToken: string): string | null {
@@ -320,7 +357,13 @@ export function grokWindows(body: Record<string, unknown>): QuotaWindow[] {
   const period = asObject(config.currentPeriod);
   const resetsAtUtc = parseIso(period?.end ?? null);
   const periodId = grokPeriodWindowId(asString(period?.type ?? null));
-  const total = asPercent(config.creditUsagePercent);
+  // The serializer elides zero-valued scalars (proto3 JSON): a body
+  // that names the current period but omits `creditUsagePercent` is a
+  // 0% reading, not a format change — measured 2026-08-17 on a fresh
+  // account whose own CLI `/usage` showed the weekly gauge at zero,
+  // while this route answered 200 with the field absent. Without the
+  // period the shape is genuinely unrecognized and stays windowless.
+  const total = asPercent(config.creditUsagePercent) ?? (period !== null ? 0 : null);
   const windows: QuotaWindow[] = [];
   if (total !== null) {
     windows.push({ id: periodId, usedPercent: total, resetsAtUtc });
@@ -354,6 +397,9 @@ function failed(
     agent: GROK_AGENT,
     accountId: credential.accountId,
     account: credential.account,
+    // the plan is a fact of the credential, not of the read: a failed
+    // read still knows which tier it belongs to
+    plan: grokPlanLabel(credential.accessToken),
     source: 'vendor_api',
     observedAtUtc: nowUtc,
     windows: [],
@@ -420,6 +466,7 @@ export async function fetchGrokQuota(request: GrokQuotaRequest): Promise<QuotaSn
     agent: GROK_AGENT,
     accountId: credential.accountId,
     account: credential.account,
+    plan: grokPlanLabel(credential.accessToken),
     source: 'vendor_api',
     observedAtUtc: nowUtc,
     windows,

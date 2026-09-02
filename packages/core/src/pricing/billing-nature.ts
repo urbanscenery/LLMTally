@@ -36,6 +36,8 @@ const QUOTA_AGENTS: ReadonlySet<string> = new Set([
 const QUOTA_PROVIDERS: Readonly<Record<string, ReadonlySet<string>>> = {
   opencode: new Set(['opencode-go', 'cline-pass']),
   cline: new Set(['cline-pass']),
+  // native grok-4 / composer models only; third-party stays unknown
+  'cursor-cli': new Set(['cursor']),
 };
 
 /**

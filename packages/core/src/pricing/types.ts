@@ -114,6 +114,8 @@ export const AGENT_TOKEN_SEMANTICS: Readonly<Record<string, AgentTokenSemantics>
   // grok_build stamps every turn with costUsdTicks (1e10 ticks = 1 USD),
   // so its own accounting is the price — no table lookup can beat it
   grok: { version: 1, formula: 'source_authoritative' },
+  // Cursor staff: inputTokens is uncached; cache columns are separate
+  'cursor-cli': { version: 1, formula: 'claude_separate_cache' },
   // antigravity stores reasoning separately from text output (verified
   // invariant output+reasoning==total); reasoning bills at output rates
   'antigravity-cli': { version: 1, formula: 'separate_reasoning' },

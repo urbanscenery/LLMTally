@@ -22,6 +22,9 @@ import {
 } from '@llmtally/core/accounts/switch-cooldown.ts';
 import { AccountVault } from '@llmtally/core/accounts/vault.ts';
 import { defaultGrokAuthPath, readGrokIdentities } from '@llmtally/core/accounts/grok.ts';
+import { switchGrokAccount } from '@llmtally/core/accounts/grok-switch.ts';
+import { readCursorCliIdentity } from '@llmtally/core/accounts/cursor-cli.ts';
+import { switchCursorCliAccount, cursorAgentPids } from '@llmtally/core/accounts/cursor-cli-switch.ts';
 import { defaultOpencodeAuthPath, opencodeAccountId, readOpencodeProviders } from '@llmtally/core/accounts/opencode.ts';
 import { defaultAntigravityStoreDir, resolveActiveAccount } from '@llmtally/core/quota/antigravity.ts';
 import { readCodexAuth } from '@llmtally/core/quota/codex-live.ts';
@@ -40,7 +43,7 @@ import type { ScanCoordinator } from '@llmtally/core/scan/types.ts';
 import type { RpcServer } from './rpc.ts';
 
 /** Agents whose credential switch transactions exist in core today. */
-const SWITCHABLE_AGENTS = new Set(['claude-code', 'codex', 'opencode']);
+const SWITCHABLE_AGENTS = new Set(['claude-code', 'codex', 'opencode', 'grok', 'cursor-cli']);
 
 export interface SidecarOptions {
   readonly databasePath: string;
@@ -52,11 +55,12 @@ export interface SidecarOptions {
   readonly codexAuthPath?: string;
   readonly opencodeAuthPath?: string;
   readonly grokAuthPath?: string;
+  readonly cursorCliHome?: string;
   readonly antigravityStoreDir?: string;
 }
 
 /** Every ledger agent, whether or not it has a switch transaction. */
-const ALL_AGENTS = ['claude-code', 'codex', 'antigravity', 'opencode', 'cline', 'grok'] as const;
+const ALL_AGENTS = ['claude-code', 'codex', 'antigravity', 'opencode', 'cline', 'grok', 'cursor-cli'] as const;
 
 export function registerSidecarMethods(server: RpcServer, options: SidecarOptions): void {
   const databasePath = options.databasePath;
@@ -80,6 +84,8 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
         vault: getVault(),
         activeContext,
         allowRefresh,
+        ...(options.grokAuthPath === undefined ? {} : { grokAuthPath: options.grokAuthPath }),
+        ...(options.cursorCliHome === undefined ? {} : { cursorCliHome: options.cursorCliHome }),
       });
       return dedupeByAccount(snapshots);
     });
@@ -195,6 +201,7 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
     const grokIdentities = readGrokIdentities(options.grokAuthPath ?? defaultGrokAuthPath(homedir()));
     // two simultaneous logins are ambiguous — show none rather than guess
     active['grok'] = grokIdentities.length === 1 ? (grokIdentities[0]?.accountId ?? null) : null;
+    active['cursor-cli'] = readCursorCliIdentity(options.cursorCliHome ?? homedir())?.accountId ?? null;
     return active;
   });
 
@@ -202,6 +209,9 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
     const agent = requireString(params, 'agent');
     // only Claude sessions hold the shared credential store a switch
     // rewrites; other agents have nothing to preflight yet
+    if (agent === 'cursor-cli') {
+      return { liveSessionPids: cursorAgentPids() };
+    }
     if (agent !== 'claude-code') {
       return { liveSessionPids: [] };
     }
@@ -219,6 +229,15 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
     }
     if (agent === 'opencode') {
       return switchOpencodeAccount(selector, { vault: getVault() });
+    }
+    if (agent === 'grok') {
+      return switchGrokAccount(selector, { vault: getVault() });
+    }
+    if (agent === 'cursor-cli') {
+      return switchCursorCliAccount(selector, {
+        vault: getVault(),
+        ...(options.cursorCliHome === undefined ? {} : { home: options.cursorCliHome }),
+      });
     }
     // settle window: Claude Code caches the Keychain read ~30s, so a
     // switch right after a switch acts on stores that are still

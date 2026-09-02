@@ -33,6 +33,8 @@ describe('runDoctorChecks', () => {
     expect(byId.get('ledger.schema')?.status).toBe('pass');
     expect(byId.get('ledger.fts')?.status).toBe('pass');
     expect(byId.get('source.grok')?.status).toBe('skip');
+    expect(byId.get('source.cursor-cli')?.status).toBe('skip');
+    expect(byId.get('quota.cursor-cli')?.status).toBe('skip');
     expect(byId.get('daemon.plist')?.status).toBe('skip');
     expect(byId.get('quota.antigravity')?.status).toBe('skip');
     expect(checks.filter((check) => check.status === 'fail')).toHaveLength(0);
@@ -111,5 +113,25 @@ describe('runDoctorChecks', () => {
 
     // Assert
     expect(checks.find((check) => check.id === 'scan.lock')?.status).toBe('warn');
+  });
+
+  test('source.cursor-cli warns when projects exist without transcripts', () => {
+    const home = isolatedHome();
+    mkdirSync(join(home, '.cursor', 'projects'), { recursive: true });
+    const checks = runDoctorChecks({ databasePath: healthyLedger(home), homeDirectory: home });
+    const source = checks.find((check) => check.id === 'source.cursor-cli');
+    expect(source?.status).toBe('warn');
+    expect(source?.message).toBe('no agent-transcripts yet');
+    expect(source?.remediation).toContain('cursor agent login');
+    expect(source?.remediation).toContain('cursor-agent login');
+  });
+
+  test('source.cursor-cli passes when an agent-transcripts jsonl exists', () => {
+    const home = isolatedHome();
+    const dir = join(home, '.cursor', 'projects', 'demo', 'agent-transcripts');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'sess.jsonl'), '{}\n');
+    const checks = runDoctorChecks({ databasePath: healthyLedger(home), homeDirectory: home });
+    expect(checks.find((check) => check.id === 'source.cursor-cli')?.status).toBe('pass');
   });
 });

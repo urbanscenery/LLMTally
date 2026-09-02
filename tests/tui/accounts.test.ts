@@ -712,6 +712,55 @@ describe('multi-agent accounts', () => {
     expect(stored?.isActive).toBe(false);
   });
 
+  test('a stored grok account is switchable and the live one stays active', () => {
+    // Arrange — grok live snapshot next to a vaulted alternate
+    const snapshot = snapshotFixture({
+      agent: 'grok',
+      accountId: 'grok-1',
+      account: 'one@test.dev',
+    });
+
+    // Act
+    const model = toAccountsTabViewModel(
+      inputFor([snapshot], {
+        vault: [
+          { ...codexVaultEntry('grok-1', 'one@test.dev'), agent: 'grok' },
+          { ...codexVaultEntry('grok-2', 'two@test.dev'), agent: 'grok' },
+        ],
+        activeByAgent: { grok: 'grok-1' },
+      }),
+    );
+
+    // Assert
+    expect(model.switchableAgents).toContain('grok');
+    const live = model.rows.find((row) => row.accountId === 'grok-1');
+    const stored = model.rows.find((row) => row.accountId === 'grok-2');
+    expect(live?.isActive).toBe(true);
+    expect(stored?.isActive).toBe(false);
+    expect(stored === undefined ? false : isSwitchable(stored)).toBe(true);
+  });
+
+  test('cursor-cli rows are switchable and mark the live identity', () => {
+    const snapshot = snapshotFixture({
+      agent: 'cursor-cli',
+      accountId: '405',
+      account: 'dev@example.com',
+    });
+    const model = toAccountsTabViewModel(
+      inputFor([snapshot], {
+        vault: [
+          { ...codexVaultEntry('405', 'dev@example.com'), agent: 'cursor-cli' },
+          { ...codexVaultEntry('406', 'other@example.com'), agent: 'cursor-cli' },
+        ],
+        activeByAgent: { 'cursor-cli': '405' },
+      }),
+    );
+    expect(model.switchableAgents).toContain('cursor-cli');
+    expect(model.rows.find((row) => row.accountId === '405')?.isActive).toBe(true);
+    const stored = model.rows.find((row) => row.accountId === '406');
+    expect(stored === undefined ? false : isSwitchable(stored)).toBe(true);
+  });
+
   test('the active antigravity account is marked from activeByAgent', () => {
     // Arrange — read-only agent: rows come from snapshots only
     const active = snapshotFixture({
