@@ -34,6 +34,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationManager.shared.requestAuthorizationIfNeeded()
     }
 
+    /// A switch holds the lock protocol and must finish or roll back —
+    /// no quit path (⌘Q, menu, footer) may cut it short.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        QuitController.canQuit ? .terminateNow : .terminateCancel
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         SidecarClient.shared.stop()
     }

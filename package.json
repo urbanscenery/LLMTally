@@ -33,7 +33,8 @@
     "coverage": "bun test --coverage",
     "verify:compile": "bun scripts/verify-opentui-compile.ts",
     "verify:pack": "bun scripts/verify-pack-install.ts",
-    "install:local": "bun scripts/install-local.ts"
+    "install:local": "bun scripts/install-local.ts",
+    "install:app": "sh packages/app/scripts/install.sh"
   },
   "files": [
     "bin",

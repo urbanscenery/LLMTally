@@ -328,11 +328,20 @@ struct OverviewView: View {
         HStack {
             if let loaded = model.lastLoadedAt {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
+                    // three buttons plus "Retry in 1m 30s" can crowd the
+                    // 330pt row — the timestamp yields, the buttons never do
                     Text("Updated \(shortDuration(context.date.timeIntervalSince(loaded))) ago · local ledger")
                         .font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.tail)
                 }
             }
             Spacer()
+            // the only in-panel way out of a menubar-only app (no main
+            // menu, so ⌘Q needs the key monitor; see StatusItemController)
+            Button("Quit") { QuitController.requestQuit() }
+                .buttonStyle(HoverActionButtonStyle())
+                .font(.caption)
+                .help("Quit LLMTally (⌘Q)")
             Button("Open TUI") { OpenTUI.launch() }
                 .buttonStyle(HoverActionButtonStyle())
                 .font(.caption)
@@ -1444,7 +1453,9 @@ struct SwitchSheet: View {
 
     private func run() {
         phase = .inFlight
+        QuitController.switchInFlight = true
         model.performSwitch(agent: intent.agent, selector: intent.selector) { result in
+            QuitController.switchInFlight = false
             switch result {
             case .success(let outcome):
                 let warnings = outcome.warnings ?? []

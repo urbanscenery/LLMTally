@@ -66,6 +66,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePanel)
+        // right-click: the platform's menubar-app convention for Quit —
+        // and the way out when the panel itself cannot load
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         refreshStatusText()
         scheduleTimer()
@@ -123,12 +126,36 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     // MARK: - panel lifecycle
 
     @objc private func togglePanel() {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            showContextMenu()
+            return
+        }
         if panel != nil {
             closePanel()
         } else {
             showPanel()
         }
     }
+
+    /// Transient NSMenu on the status item: assigned only for the click
+    /// that pops it, so the left click keeps opening the panel.
+    private func showContextMenu() {
+        closePanel()
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Open TUI", action: #selector(menuOpenTUI), keyEquivalent: "o").target = self
+        menu.addItem(withTitle: "Settings…", action: #selector(menuOpenSettings), keyEquivalent: ",").target = self
+        menu.addItem(.separator())
+        let quit = menu.addItem(withTitle: "Quit LLMTally", action: #selector(menuQuit), keyEquivalent: "q")
+        quit.target = self
+        quit.isEnabled = QuitController.canQuit
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    @objc private func menuOpenTUI() { OpenTUI.launch() }
+    @objc private func menuOpenSettings() { SettingsWindowController.shared.show() }
+    @objc private func menuQuit() { QuitController.requestQuit() }
 
     private func showPanel() {
         guard panel == nil, let button = statusItem.button else { return }
@@ -233,8 +260,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             guard let self, self.panel?.attachedSheet == nil else { return }
             self.closePanel()
         }
-        // §9 keyboard while the panel is key: ⌘, / ⌘R / ⌘O handled
-        // here, navigation keys routed to the view.
+        // §9 keyboard while the panel is key: ⌘, / ⌘R / ⌘O / ⌘Q handled
+        // here (no main menu, so no key equivalents otherwise),
+        // navigation keys routed to the view.
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.panel != nil else { return event }
             // a sheet (Switch confirmation) owns its own keys — eating
@@ -245,6 +273,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
                 switch key {
                 case ",": SettingsWindowController.shared.show(); return nil
                 case "o": OpenTUI.launch(); return nil
+                case "q": QuitController.requestQuit(); return nil
                 case "r":
                     NotificationCenter.default.post(name: .llmtallyKeyCommand, object: "refresh")
                     return nil

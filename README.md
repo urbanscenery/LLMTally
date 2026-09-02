@@ -43,6 +43,9 @@ node로는 실행되지 않습니다. npm으로 설치해도 실행에는 Bun이
 bun install -g llmtally     # 또는 npm install -g llmtally (실행엔 Bun 필요)
 ```
 
+레포를 직접 받아 빌드하거나 macOS 메뉴바 앱까지 설치하려면 아래
+[소스에서 설치](#소스에서-설치-tui--macos-메뉴바-앱)를 따릅니다.
+
 ```bash
 llmtally                          # 대시보드 진입 (그 자체가 전부입니다)
 llmtally --theme tokyo-night      # App 팔레트 + Catppuccin / mono. p 로 고름
@@ -61,6 +64,48 @@ llmtally --db /path/ledger.db     # 원장 경로 지정
 | `3` Agents / `4` Models | 에이전트·모델별 집계 (정렬 가능). Models에서 `↑↓`+`Enter`로 모델을 열면 최신순 프롬프트 목록 |
 | `5` Search | 프롬프트 전문 검색 (`/`로 입력) |
 | `6` Doctor | 진단 + 백그라운드 수집 데몬 설치/해제 |
+
+### 소스에서 설치 (TUI + macOS 메뉴바 앱)
+
+새 Mac에서 레포를 받아 TUI와 메뉴바 앱을 모두 설치하는 절차입니다. 빌드에 필요한 파일은
+전부 git에 들어 있어 클론 뒤 명령 몇 개면 끝납니다.
+
+**사전 준비**
+
+| 항목 | 이유 |
+|---|---|
+| macOS 13 이상 | 메뉴바 앱의 배포 타깃(`packages/app/macos/Package.swift`) |
+| Xcode Command Line Tools | `swift build` (전체 Xcode는 불필요) |
+| Bun >= 1.3 | 코어 런타임 + 빌드 도구. `~/.bun/bin`이 PATH에 있어야 합니다 |
+
+```bash
+xcode-select --install
+curl -fsSL https://bun.sh/install | bash
+```
+
+**설치**
+
+```bash
+git clone git@github.com:LLMTally/LLMTally.git
+cd LLMTally
+bun install                 # 워크스페이스 의존성
+bun run install:local       # TUI: tarball 생성 → 전역 `llmtally` 설치 → --help 검증
+bun run install:app         # 메뉴바 앱: 빌드 → /Applications/LLMTally.app 설치 → 실행
+```
+
+- `install:local`은 `~/.llmtally/dist`에 tarball을 만들어 거기서 전역 설치합니다. 워크스페이스
+  심링크 없이 설치본이 동작하는지까지 검증하므로 `bun link`보다 이 경로를 권장합니다.
+- `install:app`은 `packages/app/scripts/install.sh`를 실행합니다. 번들 재생성(sidecar 내장) →
+  실행 중인 인스턴스 종료 대기 → `/Applications` 교체 → 실행 순서이며, 목적지는
+  `LLMTALLY_APP_DIR` 환경변수로 바꿀 수 있습니다. 앱과 sidecar는 그 Mac의 아키텍처로
+  네이티브 빌드되므로 Rosetta가 필요 없습니다.
+- 앱은 ad-hoc 서명이라 **빌드한 Mac에서만** 경고 없이 실행됩니다. 빌드된 `.app`을 다른 Mac에
+  복사하면 Gatekeeper가 막으므로, 파일이 아니라 레포를 옮겨 그 Mac에서 빌드하십시오.
+- 첫 실행은 그 Mac의 에이전트 로그를 풀스캔합니다. 원장·계정 볼트는 `~/.llmtally`에 머신별로
+  따로 쌓입니다.
+- 앱 종료는 패널 하단 **Quit**, 패널이 열린 상태의 `⌘Q`, 또는 메뉴바 아이콘 **우클릭 → Quit
+  LLMTally**로 합니다. 로그인 시 자동 실행은 Settings → General에서 켭니다.
+- 코드를 갱신한 뒤에는 `git pull` 후 위의 `install:local`·`install:app`을 다시 실행합니다.
 
 ### 쿼터 소스와 정책
 
