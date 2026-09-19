@@ -22,6 +22,7 @@ import { join } from 'node:path';
 
 import { asObject } from '../parsers/shared.ts';
 import { writeFilePrivate } from '../fs/atomic.ts';
+import { writeFileCredential, writeKeychainCredential } from './credential-transaction.ts';
 import { macosKeychain } from './keychain.ts';
 import type { KeychainPort } from './keychain.ts';
 
@@ -54,6 +55,10 @@ const SHARED_CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
 
 export class CredentialError extends Error {
   override readonly name = 'CredentialError';
+
+  constructor(message: string, readonly requiresInteraction: boolean = false) {
+    super(message);
+  }
 }
 
 export function defaultClaudeConfigHome(home: string = homedir()): string {
@@ -70,7 +75,7 @@ export interface ActiveCredentialStore {
    * overwrite the store must abort on that, not proceed as if empty.
    */
   read(): string | null;
-  write(text: string): void;
+  write(text: string): () => void;
   /** Removes the stored credentials; used to undo a write that had nothing before it. */
   clear(): void;
   /** Refreshes the credentials file mtime so a running session reloads. */
@@ -123,6 +128,7 @@ export function createActiveCredentialStore(options: ActiveStoreOptions = {}): A
           if (result.kind === 'error') {
             throw new CredentialError(
               `could not read the active Claude Code credentials (${result.message}) — refusing to treat them as absent`,
+              result.requiresInteraction ?? false,
             );
           }
         }
@@ -135,16 +141,14 @@ export function createActiveCredentialStore(options: ActiveStoreOptions = {}): A
       }
     },
 
-    write(text: string): void {
+    write(text: string): () => void {
       const compact = compactJson(text);
       if (useKeychain) {
-        for (const service of services) {
-          keychain.write(service, account, compact);
-        }
+        const undo = writeKeychainCredential(keychain, services, account, compact);
         this.touch();
-        return;
+        return undo;
       }
-      writeFilePrivate(filePath, compact);
+      return writeFileCredential(filePath, compact, writeFilePrivate);
     },
 
     clear(): void {
@@ -152,6 +156,7 @@ export function createActiveCredentialStore(options: ActiveStoreOptions = {}): A
         for (const service of services) {
           keychain.remove(service, account);
         }
+        return;
       }
       rmSync(filePath, { force: true });
     },

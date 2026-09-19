@@ -31,7 +31,7 @@ import {
 } from '../accounts/cursor-cli.ts';
 import { syncActiveCursorCliCredentials } from '../accounts/cursor-cli-live-sync.ts';
 import type { ActiveClaudeContext } from '../accounts/active-claude.ts';
-import { createActiveCredentialStore, oauthAccessToken, oauthRefreshToken } from '../accounts/credentials.ts';
+import { CredentialError, createActiveCredentialStore, oauthAccessToken, oauthRefreshToken } from '../accounts/credentials.ts';
 import type { ActiveCredentialStore } from '../accounts/credentials.ts';
 import type { ProfileFetch } from '../accounts/oauth-profile.ts';
 import {
@@ -482,8 +482,20 @@ async function loadActiveClaudeQuota(
   let live: string | null = null;
   try {
     live = activeStore.read();
-  } catch {
-    // an unanswerable keychain degrades to the token-less path below
+  } catch (error) {
+    if (error instanceof CredentialError && error.requiresInteraction) {
+      return makeQuotaSnapshot({
+        agent: 'claude-code',
+        accountId: context.activeAccountId,
+        account: context.identity?.email ?? null,
+        source: 'vendor_api',
+        observedAtUtc: now,
+        windows: [],
+        failure: { kind: 'unavailable', failedAtUtc: now, retryAtUtc: null },
+        warnings: ['Keychain approval required. Choose Authorize Keychain in Accounts.'],
+      });
+    }
+    if (!(error instanceof Error)) throw error;
   }
   const token = live === null ? null : oauthAccessToken(live);
   const accountId = context.activeAccountId;

@@ -217,6 +217,11 @@ public struct SwitchResultDTO: Decodable {
     public let warnings: [String]?
 }
 
+public struct KeychainAuthorizationDTO: Decodable {
+    public let storedAccounts: Int
+    public let activeCredential: Bool
+}
+
 // Formatting helpers shared by the popover views and the status item.
 
 public let AGENT_DISPLAY_NAMES: [String: String] = [

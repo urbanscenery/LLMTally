@@ -4,6 +4,7 @@ import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
+  CredentialError,
   compactJson,
   credentialFingerprint,
   createActiveCredentialStore,
@@ -192,9 +193,63 @@ describe('createActiveCredentialStore', () => {
     expect(store.read()).toBe(credentials('refresh-1'));
     expect(statSync(filePath).mode & 0o777).toBe(0o600);
   });
+
+  test('file undo restores the original bytes exactly', () => {
+    // Arrange
+    const configHome = makeTempDir();
+    const filePath = join(configHome, '.credentials.json');
+    const original = `${credentials('refresh-1')}\n`;
+    writeFileSync(filePath, original);
+    const store = createActiveCredentialStore({
+      configHome,
+      keychain: createMemoryKeychain(false),
+    });
+
+    // Act
+    const undo = store.write(credentials('refresh-2'));
+    undo();
+
+    // Assert
+    expect(readFileSync(filePath, 'utf8')).toBe(original);
+  });
+
+  test('file undo does not overwrite a later external change', () => {
+    // Arrange
+    const configHome = makeTempDir();
+    const filePath = join(configHome, '.credentials.json');
+    writeFileSync(filePath, credentials('refresh-1'));
+    const store = createActiveCredentialStore({
+      configHome,
+      keychain: createMemoryKeychain(false),
+    });
+    const undo = store.write(credentials('refresh-2'));
+    writeFileSync(filePath, credentials('external'));
+
+    // Act + Assert
+    expect(undo).toThrow('changed after the credential write');
+    expect(readFileSync(filePath, 'utf8')).toBe(credentials('external'));
+  });
 });
 
 describe('AccountVault', () => {
+  test('approval required never deletes the existing item or creates a file fallback', () => {
+    const dir = makeTempDir();
+    const memory = createMemoryKeychain();
+    const initial = new AccountVault({ dir, keychain: memory });
+    initial.put(entry('approval-test'), credentials('original'));
+    let removed = false;
+    const denied: KeychainPort = {
+      ...memory,
+      write() { throw new KeychainError('approval needed', 'unchanged', true); },
+      remove() { removed = true; },
+    };
+    const blocked = new AccountVault({ dir, keychain: denied });
+    expect(() => blocked.put(entry('approval-test'), credentials('replacement'))).toThrow(VaultError);
+    expect(removed).toBe(false);
+    expect(initial.loadCredentials('claude-code', 'approval-test')).toBe(credentials('original'));
+    expect(initial.get('claude-code', 'approval-test')?.backend).toBe('keychain');
+  });
+
   function makeVault(available = true) {
     return new AccountVault({ dir: makeTempDir(), keychain: createMemoryKeychain(available) });
   }
@@ -723,4 +778,17 @@ describe('registry corruption', () => {
     const vault = new AccountVault({ dir: join(makeTempDir(), 'fresh'), keychain: createMemoryKeychain() });
     expect(vault.list()).toEqual([]);
   });
+});
+
+
+test('active credential errors preserve the need for explicit Keychain authorization', () => {
+  const keychain: KeychainPort = {
+    ...createMemoryKeychain(),
+    read: () => ({ kind: 'error', message: 'approval required', requiresInteraction: true }),
+  };
+  const store = createActiveCredentialStore({ configHome: makeTempDir(), keychain });
+  let failure: unknown;
+  try { store.read(); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(CredentialError);
+  expect(failure).toMatchObject({ requiresInteraction: true });
 });

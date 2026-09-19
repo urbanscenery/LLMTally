@@ -34,6 +34,7 @@ import {
   writeFilePrivate,
 } from './credentials.ts';
 import type { ActiveCredentialStore } from './credentials.ts';
+import { KeychainError } from './keychain.ts';
 import type { AccountVault, VaultEntry } from './vault.ts';
 
 export class SwitchError extends Error {
@@ -271,17 +272,7 @@ export async function switchAccount(selector: string, ports: SwitchPorts): Promi
     }
 
     const activated = prepareForActivation(targetCredentials, live);
-    activeStore.write(activated);
-    undo.push(() => {
-      // clearing matters: if there were no credentials before, leaving
-      // the target's behind would make a later "accounts add" attribute
-      // them to whichever account the config still names
-      if (live === null) {
-        activeStore.clear();
-      } else {
-        activeStore.write(live);
-      }
-    });
+    undo.push(activeStore.write(activated));
 
     const configPath = globalConfigPath(home);
     const previousConfig = spliceOauthAccount(configPath, target);
@@ -320,7 +311,7 @@ export async function switchAccount(selector: string, ports: SwitchPorts): Promi
         `switch failed (${detail}) and rollback also failed (${failures.join('; ')}) — check "llmtally accounts" and re-login if needed`,
       );
     }
-    throw error instanceof CredentialError || error instanceof SwitchError
+    throw error instanceof CredentialError || error instanceof SwitchError || error instanceof KeychainError
       ? error
       : new SwitchError(`switch failed and was rolled back: ${detail}`);
   } finally {

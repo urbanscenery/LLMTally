@@ -238,6 +238,7 @@ function actionLine(row: AccountRowViewModel | undefined): RichLine {
     parts.push(span(keys, enabled ? 'key' : 'dim'), span(`${text}   `, enabled ? 'muted' : 'dim'));
   };
   push('[n]', ' add login', true);
+  push('[u]', ' authorize Keychain', true);
   push('[s]', ' switch', row !== undefined && isSwitchable(row) && !row.isActive && !row.refreshDead);
   // codex-only: the other agents do not revoke on sign-in, so they need
   // no detach step before adding a second account

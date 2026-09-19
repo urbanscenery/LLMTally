@@ -33,14 +33,18 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "coverage": "bun test --coverage",
+    "build:keychain-helper": "bun scripts/build-keychain-helper.ts",
+    "verify:keychain-helper": "bun scripts/build-keychain-helper.ts --check",
     "verify:compile": "bun scripts/verify-opentui-compile.ts",
     "verify:pack": "bun scripts/verify-pack-install.ts",
     "install:local": "bun scripts/install-local.ts",
-    "install:app": "sh packages/app/scripts/install.sh"
+    "install:app": "sh packages/app/scripts/install.sh",
+    "prepack": "bun run verify:keychain-helper"
   },
   "files": [
     "bin",
     "packages",
+    "packages/core/native/bin/darwin-universal/llmtally-keychain",
     "tsconfig.json"
   ],
   "devDependencies": {

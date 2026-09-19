@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { acquireClaudeLocks, claudeLockSpecs } from '@llmtally/core/accounts/claude-locks.ts';
 import { CredentialError, activeKeychainService, createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
 import type { ActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
-import { createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
+import { KeychainError, createMemoryKeychain } from '@llmtally/core/accounts/keychain.ts';
+import type { KeychainPort } from '@llmtally/core/accounts/keychain.ts';
 import {
   claudeSwitchPreflight,
   captureActiveAccount,
@@ -123,6 +124,41 @@ describe('switchAccount', () => {
     expect(harness.vault.activeAccountId('claude-code')).toBe('uuid-2');
   });
 
+  test('activates a 9492-character credential while preserving live MCP data', async () => {
+    // Arrange
+    const harness = makeHarness('uuid-1');
+    const largeToken = 'x'.repeat(9492);
+    harness.vault.put(
+      {
+        agent: 'claude-code',
+        accountId: 'uuid-2',
+        email: 'uuid-2@test.dev',
+        organizationUuid: 'org-1',
+        organizationName: 'Org One',
+        alias: null,
+        addedAtUtc: NOW,
+      },
+      JSON.stringify({
+        claudeAiOauth: { accessToken: largeToken, refreshToken: 'refresh-2' },
+        mcpOAuth: { server: 'stored' },
+      }),
+    );
+    harness.activeStore.write(
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'access-1', refreshToken: 'refresh-1' },
+        mcpOAuth: { server: 'live', nested: { token: 'preserve' } },
+      }),
+    );
+
+    // Act
+    await switchAccount('uuid-2', ports(harness));
+
+    // Assert
+    const active = JSON.parse(harness.activeStore.read() ?? '{}');
+    expect(active.claudeAiOauth.accessToken).toBe(largeToken);
+    expect(active.mcpOAuth).toEqual({ server: 'live', nested: { token: 'preserve' } });
+  });
+
   test('the outgoing account is backed up before it is replaced', async () => {
     // Arrange — the live token rotated since it was stored
     const harness = makeHarness('uuid-1');
@@ -175,6 +211,7 @@ describe('switchAccount', () => {
       },
       write: (text) => {
         writes.push(text);
+        return () => undefined;
       },
       clear: () => undefined,
       touch: () => undefined,
@@ -218,6 +255,80 @@ describe('switchAccount', () => {
     await expect(switchAccount('uuid-2', ports(harness))).rejects.toThrow('not valid JSON');
     expect(JSON.parse(harness.activeStore.read() ?? '{}').claudeAiOauth.refreshToken).toBe('refresh-1');
     expect(harness.vault.activeAccountId('claude-code')).toBe('uuid-1');
+  });
+
+  test('a config failure restores distinct scoped and legacy credentials', async () => {
+    // Arrange
+    const harness = makeHarness('uuid-1');
+    seedAccount(harness, 'uuid-2', 'refresh-2');
+    const keychain = createMemoryKeychain();
+    const scopedService = activeKeychainService(harness.configHome);
+    keychain.write(scopedService, 'me', credentials('scoped-before'));
+    keychain.write('Claude Code-credentials', 'me', credentials('legacy-before'));
+    const activeStore = createActiveCredentialStore({
+      configHome: harness.configHome,
+      keychain,
+      keychainAccount: 'me',
+    });
+    writeFileSync(harness.configPath, 'not json');
+
+    // Act
+    await expect(
+      switchAccount('uuid-2', ports(harness, { activeStore })),
+    ).rejects.toThrow('not valid JSON');
+
+    // Assert
+    expect(keychain.read(scopedService, 'me')).toEqual({
+      kind: 'found',
+      value: credentials('scoped-before'),
+    });
+    expect(keychain.read('Claude Code-credentials', 'me')).toEqual({
+      kind: 'found',
+      value: credentials('legacy-before'),
+    });
+  });
+
+  test('an unknown credential write failure is not reported as rolled back', async () => {
+    // Arrange
+    const harness = makeHarness('uuid-1');
+    seedAccount(harness, 'uuid-2', 'refresh-2');
+    const activeStore: ActiveCredentialStore = {
+      backend: 'keychain',
+      read: () => credentials('refresh-1'),
+      write: () => {
+        throw new KeychainError('credential state is unknown', 'unknown');
+      },
+      clear: () => undefined,
+      touch: () => undefined,
+    };
+
+    // Act
+    const failure = switchAccount('uuid-2', ports(harness, { activeStore }));
+
+    // Assert
+    await expect(failure).rejects.toThrow('credential state is unknown');
+    await expect(failure).rejects.not.toThrow('was rolled back');
+  });
+
+  test('a failed undo is reported as rollback failure', async () => {
+    // Arrange
+    const harness = makeHarness('uuid-1');
+    seedAccount(harness, 'uuid-2', 'refresh-2');
+    const activeStore: ActiveCredentialStore = {
+      backend: 'keychain',
+      read: () => credentials('refresh-1'),
+      write: () => () => {
+        throw new KeychainError('undo read-back is unknown', 'unknown');
+      },
+      clear: () => undefined,
+      touch: () => undefined,
+    };
+    writeFileSync(harness.configPath, 'not json');
+
+    // Act + Assert
+    await expect(
+      switchAccount('uuid-2', ports(harness, { activeStore })),
+    ).rejects.toThrow(/rollback also failed.*undo read-back is unknown/);
   });
 
   test('a rollback with nothing previously live clears instead of leaving the target behind', async () => {
@@ -557,5 +668,137 @@ describe('scoped keychain service (CLAUDE_CONFIG_DIR)', () => {
       kind: 'found',
       value: '{"fresh":true}',
     });
+  });
+
+  test('undo restores distinct scoped and legacy values', () => {
+    // Arrange
+    const configHome = makeTempDir();
+    const keychain = createMemoryKeychain();
+    const scoped = activeKeychainService(configHome);
+    keychain.write(scoped, 'user', '{"source":"scoped"}');
+    keychain.write('Claude Code-credentials', 'user', '{"source":"legacy"}');
+    const store = createActiveCredentialStore({ configHome, keychain, keychainAccount: 'user' });
+
+    // Act
+    const undo = store.write('{"source":"target"}');
+    undo();
+
+    // Assert
+    expect(keychain.read(scoped, 'user')).toEqual({ kind: 'found', value: '{"source":"scoped"}' });
+    expect(keychain.read('Claude Code-credentials', 'user')).toEqual({
+      kind: 'found',
+      value: '{"source":"legacy"}',
+    });
+  });
+
+  test('undo restores an absent legacy item without deleting the scoped item', () => {
+    // Arrange
+    const configHome = makeTempDir();
+    const keychain = createMemoryKeychain();
+    const scoped = activeKeychainService(configHome);
+    keychain.write(scoped, 'user', '{"source":"scoped"}');
+    const store = createActiveCredentialStore({ configHome, keychain, keychainAccount: 'user' });
+
+    // Act
+    const undo = store.write('{"source":"target"}');
+    undo();
+
+    // Assert
+    expect(keychain.read(scoped, 'user')).toEqual({ kind: 'found', value: '{"source":"scoped"}' });
+    expect(keychain.read('Claude Code-credentials', 'user')).toEqual({ kind: 'absent' });
+  });
+
+  test('a second service write failure compensates the first service', () => {
+    // Arrange
+    const configHome = makeTempDir();
+    const scoped = activeKeychainService(configHome);
+    const values = new Map<string, string>([
+      [scoped, '{"source":"scoped"}'],
+      ['Claude Code-credentials', '{"source":"legacy"}'],
+    ]);
+    let writes = 0;
+    const keychain: KeychainPort = {
+      available: true,
+      read: (service) => {
+        const value = values.get(service);
+        return value === undefined ? { kind: 'absent' } : { kind: 'found', value };
+      },
+      write: (service, _account, secret) => {
+        writes += 1;
+        if (service === 'Claude Code-credentials' && secret === '{"source":"target"}') {
+          throw new KeychainError('second service failed', 'unchanged');
+        }
+        values.set(service, secret);
+      },
+      remove: (service) => {
+        values.delete(service);
+      },
+      findAccount: () => 'user',
+    };
+    const store = createActiveCredentialStore({ configHome, keychain, keychainAccount: 'user' });
+
+    // Act + Assert
+    expect(() => store.write('{"source":"target"}')).toThrow('second service failed');
+    expect(writes).toBe(3);
+    expect(values.get(scoped)).toBe('{"source":"scoped"}');
+    expect(values.get('Claude Code-credentials')).toBe('{"source":"legacy"}');
+  });
+
+  test('an unknown failed service is left untouched while earlier services are compensated', () => {
+    // Arrange
+    const configHome = makeTempDir();
+    const scoped = activeKeychainService(configHome);
+    const values = new Map<string, string>([
+      [scoped, '{"source":"scoped"}'],
+      ['Claude Code-credentials', '{"source":"legacy"}'],
+    ]);
+    const keychain: KeychainPort = {
+      available: true,
+      read: (service) => {
+        const value = values.get(service);
+        return value === undefined ? { kind: 'absent' } : { kind: 'found', value };
+      },
+      write: (service, _account, secret) => {
+        values.set(service, secret);
+        if (service === 'Claude Code-credentials' && secret === '{"source":"target"}') {
+          values.set(service, '{"source":"divergent"}');
+          throw new KeychainError('write result is unknown', 'unknown');
+        }
+      },
+      remove: (service) => {
+        values.delete(service);
+      },
+      findAccount: () => 'user',
+    };
+    const store = createActiveCredentialStore({ configHome, keychain, keychainAccount: 'user' });
+
+    // Act + Assert
+    expect(() => store.write('{"source":"target"}')).toThrow('write result is unknown');
+    expect(values.get(scoped)).toBe('{"source":"scoped"}');
+    expect(values.get('Claude Code-credentials')).toBe('{"source":"divergent"}');
+  });
+
+  test('a pre-read failure prevents every service mutation', () => {
+    // Arrange
+    const configHome = makeTempDir();
+    const scoped = activeKeychainService(configHome);
+    let writes = 0;
+    const keychain: KeychainPort = {
+      available: true,
+      read: (service) =>
+        service === scoped
+          ? { kind: 'found', value: '{"source":"scoped"}' }
+          : { kind: 'error', message: 'locked' },
+      write: () => {
+        writes += 1;
+      },
+      remove: () => undefined,
+      findAccount: () => 'user',
+    };
+    const store = createActiveCredentialStore({ configHome, keychain, keychainAccount: 'user' });
+
+    // Act + Assert
+    expect(() => store.write('{"source":"target"}')).toThrow('locked');
+    expect(writes).toBe(0);
   });
 });

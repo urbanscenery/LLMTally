@@ -529,7 +529,7 @@ private struct AccountsPane: View {
     }
 
     private func detach() {
-        SidecarClient.shared.request("detachCodex") { result in
+        SidecarClient.shared.request("detachCodex", interactive: true) { result in
             DispatchQueue.main.async {
                 switch result {
                 case .success:

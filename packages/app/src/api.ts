@@ -12,6 +12,7 @@ import { homedir } from 'node:os';
 import { resolveActiveClaudeContext } from '@llmtally/core/accounts/active-claude.ts';
 import { detachCodexLogin, switchCodexAccount } from '@llmtally/core/accounts/codex.ts';
 import { createActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
+import { withKeychainInteraction } from '@llmtally/core/accounts/keychain.ts';
 import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
 import { switchOpencodeAccount } from '@llmtally/core/accounts/opencode.ts';
 import { claudeSwitchPreflight, switchAccount as switchClaudeAccount } from '@llmtally/core/accounts/switch.ts';
@@ -37,6 +38,7 @@ import { generateReport } from '@llmtally/core/report/service.ts';
 import { createDefaultCoordinator } from '@llmtally/core/scan/coordinator.ts';
 
 import type { ActiveCredentialStore } from '@llmtally/core/accounts/credentials.ts';
+import type { SwitchPorts } from '@llmtally/core/accounts/switch.ts';
 import type { QuotaSnapshot } from '@llmtally/core/quota/providers.ts';
 import type { ReportGroupBy, ReportSummary } from '@llmtally/core/report/types.ts';
 import type { ScanCoordinator } from '@llmtally/core/scan/types.ts';
@@ -57,6 +59,8 @@ export interface SidecarOptions {
   readonly grokAuthPath?: string;
   readonly cursorCliHome?: string;
   readonly antigravityStoreDir?: string;
+  readonly claudeSwitchPorts?: SwitchPorts;
+  readonly keychainInteraction?: <T>(callback: () => T) => T;
 }
 
 /** Every ledger agent, whether or not it has a switch transaction. */
@@ -64,6 +68,7 @@ const ALL_AGENTS = ['claude-code', 'codex', 'antigravity', 'opencode', 'cline', 
 
 export function registerSidecarMethods(server: RpcServer, options: SidecarOptions): void {
   const databasePath = options.databasePath;
+  const interactWithKeychain = options.keychainInteraction ?? withKeychainInteraction;
 
   // Lazy so that methods which never touch credentials (ping, scan,
   // report) do not create vault state as a side effect of startup.
@@ -71,8 +76,11 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
   let activeStore: ActiveCredentialStore | null = null;
   let coordinator: ScanCoordinator | null = options.coordinator ?? null;
   const getVault = (): AccountVault =>
-    (vault ??= new AccountVault(options.vaultDir === undefined ? {} : { dir: options.vaultDir }));
-  const getActiveStore = (): ActiveCredentialStore => (activeStore ??= createActiveCredentialStore());
+    (vault ??=
+      options.claudeSwitchPorts?.vault ??
+      new AccountVault(options.vaultDir === undefined ? {} : { dir: options.vaultDir }));
+  const getActiveStore = (): ActiveCredentialStore =>
+    (activeStore ??= options.claudeSwitchPorts?.activeStore ?? createActiveCredentialStore());
   const getCoordinator = (): ScanCoordinator => (coordinator ??= createDefaultCoordinator());
 
   const loadQuota =
@@ -218,7 +226,7 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
     return claudeSwitchPreflight();
   });
 
-  server.register('switchAccount', (params) => {
+  server.register('switchAccount', (params) => interactWithKeychain(() => {
     const agent = requireString(params, 'agent');
     const selector = requireString(params, 'selector');
     if (!SWITCHABLE_AGENTS.has(agent)) {
@@ -247,20 +255,35 @@ export function registerSidecarMethods(server: RpcServer, options: SidecarOption
         ? `${options.vaultDir}/switch-cooldown.json`
         : defaultSwitchCooldownPath();
     assertSwitchCooldown(cooldownPath);
-    return switchClaudeAccount(selector, { vault: getVault(), activeStore: getActiveStore() }).then(
+    const switchPorts = options.claudeSwitchPorts ?? {
+      vault: getVault(),
+      activeStore: getActiveStore(),
+    };
+    return switchClaudeAccount(selector, switchPorts).then(
       (result) => {
         recordSwitchCooldown(cooldownPath);
         return result;
       },
     );
-  });
+  }));
 
-  server.register('detachCodex', () => {
+  server.register('detachCodex', () => interactWithKeychain(() => {
     // Destructive (deletes ~/.codex/auth.json after a verified vault
     // capture — core aborts on any byte mismatch). The shell gates
     // this behind an explicit confirmation dialog in Settings.
     return detachCodexLogin({ vault: getVault() });
-  });
+  }));
+
+  server.register('authorizeKeychain', () => interactWithKeychain(() => {
+    let storedAccounts = 0;
+    for (const entry of getVault().list()) {
+      if (getVault().loadCredentials(entry.agent, entry.accountId) !== null) {
+        storedAccounts += 1;
+      }
+    }
+    const activeCredential = getActiveStore().read() !== null;
+    return { storedAccounts, activeCredential };
+  }));
 
   server.register('todayByAgent', async () => {
     // ledger activity for the agent_active status metric: which agents

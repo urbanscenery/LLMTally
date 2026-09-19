@@ -56,6 +56,8 @@ final class OverviewModel: ObservableObject {
     /// reads are cached ~30s by Claude Code; core holds 45s). The
     /// buttons count down instead of bouncing off the sidecar's error.
     @Published var switchCooldownUntil: Date?
+    @Published var keychainAuthorizationMessage: String?
+    @Published var keychainAuthorizationInFlight = false
     static let switchCooldownSeconds: TimeInterval = 45
 
     /// A user Refresh during a background load must not be dropped —
@@ -246,6 +248,7 @@ final class OverviewModel: ObservableObject {
         SidecarClient.shared.requestDecodable(
             "switchAccount",
             params: ["agent": agent, "selector": selector],
+            interactive: true,
             as: SwitchResultDTO.self
         ) { result in
             DispatchQueue.main.async {
@@ -256,6 +259,31 @@ final class OverviewModel: ObservableObject {
                     }
                     // the new active identity must be reflected everywhere
                     self.load(refresh: true)
+                }
+            }
+        }
+    }
+
+    func authorizeKeychain() {
+        guard !keychainAuthorizationInFlight else { return }
+        keychainAuthorizationInFlight = true
+        keychainAuthorizationMessage = "Waiting for Keychain approval…"
+        SidecarClient.shared.requestDecodable(
+            "authorizeKeychain",
+            interactive: true,
+            as: KeychainAuthorizationDTO.self
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.keychainAuthorizationInFlight = false
+                switch result {
+                case .success(let authorized):
+                    self?.keychainAuthorizationMessage =
+                        "Authorized \(authorized.storedAccounts) stored account(s)" +
+                        (authorized.activeCredential ? " and the active credential." : ".")
+                    self?.load(refresh: true)
+                case .failure(let error):
+                    self?.keychainAuthorizationMessage =
+                        "Keychain authorization failed: \(error.localizedDescription)"
                 }
             }
         }

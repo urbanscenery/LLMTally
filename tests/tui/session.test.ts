@@ -84,6 +84,9 @@ function makeDataSource(scan: () => Promise<ScanSummary>): TuiDataSource {
     async detachCodexAccount() {
       return 'detached';
     },
+    async authorizeKeychain() {
+      return 'authorized';
+    },
     invalidateQuotaCache(): void {
       // nothing cached in tests
     },
@@ -546,6 +549,7 @@ describe('add-account login guidance', () => {
     // Arrange
     const screen = new FakeScreen();
     let captured = 0;
+    let interactions = 0;
     const source = makeDataSource(async () => scanSummary());
     const session = await createTuiSession({
       createScreen: async () => screen,
@@ -563,6 +567,10 @@ describe('add-account login guidance', () => {
       firstRun: false,
       preferences: preferences(),
       quotaPollMs: 60_000,
+      keychainInteraction: (callback) => {
+        interactions += 1;
+        return callback();
+      },
     });
 
     // Act — open the accounts tab and press n
@@ -584,10 +592,72 @@ describe('add-account login guidance', () => {
 
     // Assert
     expect(captured).toBe(1);
+    expect(interactions).toBe(1);
     expect(screen.lastFrame().join('\n')).toContain('stored me@test.dev');
     session.stop();
     await done;
   });
+});
+
+test('manual refresh and explicit authorization enter the Keychain interaction boundary', async () => {
+  const screen = new FakeScreen();
+  let interactionActive = false;
+  const scanInteractions: boolean[] = [];
+  const accountInteractions: boolean[] = [];
+  const source = makeDataSource(async () => {
+    scanInteractions.push(interactionActive);
+    return scanSummary();
+  });
+  let interactions = 0;
+  let authorizations = 0;
+  const session = await createTuiSession({
+    createScreen: async () => screen,
+    dataSource: {
+      ...source,
+      loadAccounts: async () => {
+        accountInteractions.push(interactionActive);
+        return { snapshots: [], vault: [], discovered: [], activeAccountId: null };
+      },
+      authorizeKeychain: async () => {
+        authorizations += 1;
+        return 'authorized';
+      },
+    },
+    chartMode: 'block',
+    themeName: null,
+    refreshSeconds: null,
+    monoForced: true,
+    firstRun: false,
+    preferences: preferences(),
+    quotaPollMs: 60_000,
+    keychainInteraction: (callback) => {
+      interactions += 1;
+      interactionActive = true;
+      try {
+        return callback();
+      } finally {
+        interactionActive = false;
+      }
+    },
+  });
+
+  const done = session.run();
+  await settle();
+  expect(interactions).toBe(0);
+  screen.pressKey('r');
+  await settle();
+  expect(interactions).toBe(1);
+  screen.pressKey('2');
+  await settle();
+  screen.pressKey('u');
+  await settle();
+  session.stop();
+  await done;
+
+  expect(interactions).toBe(2);
+  expect(authorizations).toBe(1);
+  expect(accountInteractions).toContain(true);
+  expect(scanInteractions.every((active) => !active)).toBe(true);
 });
 
 describe('account action routing', () => {
@@ -611,6 +681,7 @@ describe('account action routing', () => {
     const screen = new FakeScreen();
     const switches: [string, string][] = [];
     const removals: [string, string][] = [];
+    let interactions = 0;
     const source = makeDataSource(async () => scanSummary());
     const session = await createTuiSession({
       createScreen: async () => screen,
@@ -638,6 +709,10 @@ describe('account action routing', () => {
       firstRun: false,
       preferences: preferences(),
       quotaPollMs: 60_000,
+      keychainInteraction: (callback) => {
+        interactions += 1;
+        return callback();
+      },
     });
 
     // Act — select the codex row (second) and switch, then remove
@@ -664,6 +739,7 @@ describe('account action routing', () => {
     // Assert — both actions carried (agent, accountId), codex included
     expect(switches).toEqual([['codex', 'uuid-x']]);
     expect(removals).toEqual([['codex', 'uuid-x']]);
+    expect(interactions).toBe(2);
   });
 });
 

@@ -7,13 +7,14 @@
  * Usage: bun scripts/verify-opentui-compile.ts
  * Exit codes: 0 pass, 1 fail.
  */
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const repoRoot = join(import.meta.dir, '..');
 const workDir = mkdtempSync(join(tmpdir(), 'llmtally-opentui-spike-'));
 const binaryPath = join(workDir, 'opentui-smoke');
+const checkoutHelper = join(repoRoot, 'packages', 'core', 'native', 'bin', 'darwin-universal', 'llmtally-keychain');
 
 /**
  * bun 1.3.x leaks its ~60MB `.{hash}-{n}.bun-build` compile temp in the
@@ -34,6 +35,27 @@ function fail(message: string): never {
   removeLeakedBunBuildTemps();
   process.exit(1);
 }
+
+function runHelperPreparation(): void {
+  const build = Bun.spawnSync(['bun', 'run', 'build:keychain-helper'], {
+    cwd: repoRoot,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  if (build.exitCode !== 0) {
+    fail(`keychain helper build exited ${build.exitCode}\n${build.stderr.toString()}`);
+  }
+  const check = Bun.spawnSync(['bun', 'run', 'verify:keychain-helper'], {
+    cwd: repoRoot,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  if (check.exitCode !== 0) {
+    fail(`keychain helper check exited ${check.exitCode}\n${check.stderr.toString()}`);
+  }
+}
+
+runHelperPreparation();
 
 const build = Bun.spawnSync(
   [
@@ -84,6 +106,15 @@ const appBuild = Bun.spawnSync(
 if (appBuild.exitCode !== 0) {
   fail(`entrypoint compile exited ${appBuild.exitCode}\n${appBuild.stderr.toString()}`);
 }
+const compiledHelper = join(workDir, 'llmtally-keychain');
+copyFileSync(checkoutHelper, compiledHelper);
+if ((statSync(compiledHelper).mode & 0o111) === 0) {
+  fail('compiled CLI helper lost its executable mode');
+}
+const helperVersion = Bun.spawnSync([compiledHelper, '--version'], { cwd: workDir, stdout: 'pipe', stderr: 'pipe' });
+if (helperVersion.exitCode !== 0 || !helperVersion.stdout.toString().includes('"version":1')) {
+  fail(`compiled CLI helper --version failed (exit ${helperVersion.exitCode})`);
+}
 const help = Bun.spawnSync([appBinary, '--help'], { cwd: workDir, stdout: 'pipe', stderr: 'pipe' });
 if (help.exitCode !== 0 || !help.stdout.toString().includes('Tabs:')) {
   fail(`compiled llmtally --help failed (exit ${help.exitCode})`);
@@ -91,4 +122,4 @@ if (help.exitCode !== 0 || !help.stdout.toString().includes('Tabs:')) {
 
 rmSync(workDir, { recursive: true, force: true });
 removeLeakedBunBuildTemps();
-console.log('verify-opentui-compile: PASS — compiled binaries rendered and exited cleanly');
+console.log('verify-opentui-compile: PASS — compiled binaries rendered, exited cleanly, and carried the keychain helper');

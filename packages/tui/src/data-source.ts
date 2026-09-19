@@ -19,6 +19,7 @@ import {
   switchOpencodeAccount,
 } from '@llmtally/core/accounts/opencode.ts';
 import { discoverAccounts } from '@llmtally/core/accounts/discovery.ts';
+import { withKeychainInteraction } from '@llmtally/core/accounts/keychain.ts';
 import {
   captureGrokAccounts,
   defaultGrokAuthPath,
@@ -76,6 +77,7 @@ export interface TuiDataSource {
   addCurrentAccount(): Promise<string>;
   removeAccount(agent: string, accountId: string): Promise<string>;
   switchToAccount(agent: string, accountId: string): Promise<string>;
+  authorizeKeychain(): Promise<string>;
   /** Stores the live codex login, then signs codex out without revoking. */
   detachCodexAccount(): Promise<string>;
 }
@@ -206,6 +208,20 @@ export function createDefaultDataSource(options: DefaultDataSourceOptions): TuiD
         `stored ${result.entry.email ?? result.entry.accountId} and signed codex out locally`,
         ...result.warnings,
       ].join('\n');
+    },
+
+    async authorizeKeychain(): Promise<string> {
+      return withKeychainInteraction(() => {
+        const vault = new AccountVault();
+        let stored = 0;
+        for (const entry of vault.list()) {
+          if (vault.loadCredentials(entry.agent, entry.accountId) !== null) {
+            stored += 1;
+          }
+        }
+        const active = createActiveCredentialStore().read() === null ? 0 : 1;
+        return `Keychain authorized for ${stored} stored account(s) and ${active} active credential`;
+      });
     },
 
     async removeAccount(agent: string, accountId: string): Promise<string> {

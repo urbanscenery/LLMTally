@@ -27,7 +27,7 @@ import { join } from 'node:path';
 
 import { asObject, asString } from '../parsers/shared.ts';
 import { credentialFingerprint, writeFilePrivate } from './credentials.ts';
-import { macosKeychain } from './keychain.ts';
+import { KeychainError, macosKeychain } from './keychain.ts';
 import type { KeychainPort } from './keychain.ts';
 
 export const VAULT_KEYCHAIN_SERVICE = 'llmtally';
@@ -250,6 +250,9 @@ export class AccountVault {
         this.#keychain.write(VAULT_KEYCHAIN_SERVICE, keychainAccount, encoded);
         backend = 'keychain';
       } catch (error) {
+        if (error instanceof KeychainError && error.requiresInteraction) {
+          throw new VaultError(error.message);
+        }
         // falling back to a file is only safe when the Keychain provably
         // holds nothing: reads prefer the Keychain, so a row we could
         // neither replace nor remove would shadow the fresher file copy

@@ -55,7 +55,7 @@ function storeWith(text: string | null) {
   return {
     backend: 'file' as const,
     read: () => text,
-    write: () => undefined,
+    write: () => () => undefined,
     clear: () => undefined,
     touch: () => undefined,
   };
@@ -318,7 +318,7 @@ describe('foreign mirror to the owner slot', () => {
     return {
       backend: 'file' as const,
       read: () => texts[Math.min(index++, texts.length - 1)] ?? null,
-      write: () => undefined,
+      write: () => () => undefined,
       clear: () => undefined,
       touch: () => undefined,
     };

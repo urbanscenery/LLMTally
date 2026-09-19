@@ -93,6 +93,9 @@ function makeFakes(options: FakeDataSourceOptions = {}) {
     async detachCodexAccount(): Promise<string> {
       return 'detached';
     },
+    async authorizeKeychain(): Promise<string> {
+      return 'authorized';
+    },
     async loadDoctorChecks(): Promise<readonly []> {
       return [];
     },

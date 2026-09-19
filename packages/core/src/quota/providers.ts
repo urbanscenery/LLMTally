@@ -2,6 +2,9 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { createActiveCredentialStore, defaultClaudeConfigHome } from '../accounts/credentials.ts';
+import { macosKeychain } from '../accounts/keychain.ts';
+import type { KeychainPort } from '../accounts/keychain.ts';
 import { readClaudeActiveIdentity } from '../accounts/claude.ts';
 import type { ClaudeActiveIdentity } from '../accounts/claude.ts';
 import { fetchClaudeSubscriptionState } from '../accounts/oauth-profile.ts';
@@ -100,34 +103,21 @@ export type TokenReader = () => string | null;
  * (Keychain, then the credentials file). The token is used for ONE
  * read-only usage request and is never written, refreshed, or logged.
  */
-/** Absolute path so a PATH-planted `security` cannot intercept the read. */
-const SECURITY_BIN = '/usr/bin/security';
-const SECURITY_TIMEOUT_MS = 5000;
-
-export function defaultClaudeTokenReader(home: string = homedir()): TokenReader {
+export function defaultClaudeTokenReader(
+  home: string = homedir(),
+  keychain: KeychainPort = macosKeychain,
+): TokenReader {
   return () => {
-    // macOS-only tool: on other platforms skip straight to the file so a
-    // same-named binary elsewhere on PATH is never spawned
-    if (process.platform === 'darwin') {
-      try {
-        const keychain = Bun.spawnSync(
-          [SECURITY_BIN, 'find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-          { stdout: 'pipe', stderr: 'pipe', timeout: SECURITY_TIMEOUT_MS },
-        );
-        if (keychain.exitCode === 0) {
-          const token = extractToken(keychain.stdout.toString());
-          if (token !== null) {
-            return token;
-          }
-        }
-      } catch {
-        // fall through to the credentials file
-      }
-    }
     try {
-      return extractToken(readFileSync(join(home, '.claude', '.credentials.json'), 'utf8'));
-    } catch {
-      return null;
+      const store = createActiveCredentialStore({
+        configHome: home === homedir() ? defaultClaudeConfigHome() : join(home, '.claude'),
+        keychain,
+      });
+      const text = store.read();
+      return text === null ? null : extractToken(text);
+    } catch (error) {
+      if (error instanceof Error) return null;
+      throw error;
     }
   };
 }

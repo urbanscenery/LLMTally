@@ -223,6 +223,9 @@ struct OverviewView: View {
                 dayModels: model.providerSelectedDay.flatMap {
                     model.providerDayModels["\(agent)|\($0)"]
                 },
+                authorizationMessage: model.keychainAuthorizationMessage,
+                authorizationInFlight: model.keychainAuthorizationInFlight,
+                onAuthorize: { model.authorizeKeychain() },
                 onSelectDay: { model.selectProviderDay(agent: agent, $0) },
                 onSwitch: { snapshot in
                     guard let accountId = snapshot.accountId else { return }
@@ -1191,15 +1194,31 @@ struct ProviderDetailView: View {
     /// and its model buckets (nil while loading).
     var selectedDay: String? = nil
     var dayModels: [ReportBucketDTO]? = nil
+    var authorizationMessage: String?
+    var authorizationInFlight = false
+    let onAuthorize: () -> Void
     var onSelectDay: ((String?) -> Void)? = nil
     let onSwitch: (QuotaSnapshotDTO) -> Void
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                Text("Switch is a function of this provider. Credentials are not edited here.")
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
+                HStack {
+                    Text("Switch is a function of this provider. Credentials are not edited here.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Authorize Keychain", action: onAuthorize)
+                        .buttonStyle(HoverActionButtonStyle())
+                        .font(.caption)
+                        .disabled(authorizationInFlight)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                if let authorizationMessage {
+                    Text(authorizationMessage)
+                        .font(.caption2)
+                        .foregroundStyle(authorizationMessage.contains("failed") ? .red : .secondary)
+                        .padding(.horizontal, 14).padding(.bottom, 8)
+                }
                 // active pinned first (like the TUI accounts tab), the
                 // rest in stable alphabetical order — never
                 // attention-sorted, so rows only move on an actual switch

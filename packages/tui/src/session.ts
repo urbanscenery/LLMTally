@@ -5,6 +5,7 @@
  * split between the command and the controller.
  */
 import { claudeSwitchPreflight } from '@llmtally/core/accounts/switch.ts';
+import { withKeychainInteraction } from '@llmtally/core/accounts/keychain.ts';
 import { loadUiPreferences, saveUiPreferences } from '@llmtally/core/config/preferences.ts';
 import type { UiPreferences } from '@llmtally/core/config/preferences.ts';
 import { sanitizeTerminalLine } from '@llmtally/core/terminal/sanitize.ts';
@@ -89,6 +90,7 @@ export interface TuiSessionOptions {
     load: () => UiPreferences;
     save: (patch: Partial<UiPreferences>) => string | null;
   };
+  readonly keychainInteraction?: <T>(callback: () => T) => T;
 }
 
 const SURFACE_TERMINAL = 'surface:terminal';
@@ -199,6 +201,7 @@ export interface TuiSession {
 }
 
 export async function createTuiSession(options: TuiSessionOptions): Promise<TuiSession> {
+  const interactWithKeychain = options.keychainInteraction ?? withKeychainInteraction;
   const prefs = options.preferences ?? {
     load: () => loadUiPreferences(),
     save: (patch: Partial<UiPreferences>) => saveUiPreferences(patch),
@@ -237,9 +240,11 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
     onRefreshRequest: () => {
       // r means "get me current numbers", so the quota cache must not
       // answer it with the reading it just served
-      options.dataSource.invalidateQuotaCache();
-      controller.commit(withInvalidatedTabs(controller.getState(), ['accounts']));
-      loader?.loadIfNeeded('accounts');
+      interactWithKeychain(() => {
+        options.dataSource.invalidateQuotaCache();
+        controller.commit(withInvalidatedTabs(controller.getState(), ['accounts']));
+        loader?.loadIfNeeded('accounts');
+      });
       scheduler?.requestManual();
     },
     onOpenPicker: (topic) => {
@@ -399,6 +404,12 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
           'Store the current logins?',
         payload: '',
       });
+      return true;
+    }
+    if (key.name === 'u') {
+      void runAction('Authorize Keychain', () =>
+        interactWithKeychain(() => options.dataSource.authorizeKeychain()),
+      );
       return true;
     }
     if (key.name === 'd') {
@@ -980,16 +991,22 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
 
   async function runConfirmed(topic: ConfirmTopic, payload: string): Promise<void> {
     if (topic === 'account-add') {
-      await runAction('Add account', () => options.dataSource.addCurrentAccount());
+      await runAction('Add account', () =>
+        interactWithKeychain(() => options.dataSource.addCurrentAccount()),
+      );
       return;
     }
     if (topic === 'account-switch') {
       const [agent, accountId] = splitAccountPayload(payload);
-      await runAction('Switch account', () => options.dataSource.switchToAccount(agent, accountId));
+      await runAction('Switch account', () =>
+        interactWithKeychain(() => options.dataSource.switchToAccount(agent, accountId)),
+      );
       return;
     }
     if (topic === 'account-detach') {
-      await runAction('Detach codex login', () => options.dataSource.detachCodexAccount());
+      await runAction('Detach codex login', () =>
+        interactWithKeychain(() => options.dataSource.detachCodexAccount()),
+      );
       return;
     }
     if (topic === 'daemon-install') {
@@ -1005,7 +1022,9 @@ export async function createTuiSession(options: TuiSessionOptions): Promise<TuiS
       return;
     }
     const [agent, accountId] = splitAccountPayload(payload);
-    await runAction('Remove account', () => options.dataSource.removeAccount(agent, accountId));
+    await runAction('Remove account', () =>
+      interactWithKeychain(() => options.dataSource.removeAccount(agent, accountId)),
+    );
   }
 
   /** Payload built as `<agent>:<accountId>`; neither side contains ":". */

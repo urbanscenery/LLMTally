@@ -181,6 +181,15 @@ export const KEY_BINDINGS: readonly KeyBinding[] = [
     priority: 30,
   },
   {
+    matches: [{ name: 'u' }],
+    action: 'noop',
+    scope: ['accounts'],
+    group: 'Data',
+    label: 'authorize Keychain access for stored and active credentials',
+    keysLabel: 'u',
+    priority: 29,
+  },
+  {
     matches: [{ name: 's' }],
     action: 'noop',
     scope: ['accounts'],

@@ -450,7 +450,7 @@ describe('active claude quota attribution', () => {
     return {
       backend: 'file',
       read: () => text,
-      write: () => undefined,
+      write: () => () => undefined,
       clear: () => undefined,
       touch: () => undefined,
     };

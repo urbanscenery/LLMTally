@@ -38,6 +38,7 @@ final class SidecarClient {
     }
 
     private static let requestTimeout: TimeInterval = 20
+    private static let interactiveTimeout: TimeInterval = 600
     /// A first-run full scan legitimately outlives the read deadline —
     /// it gets minutes, and its timeout never counts as a strike.
     private static let scanTimeout: TimeInterval = 300
@@ -56,6 +57,7 @@ final class SidecarClient {
     /// A batch expiring together counts once: five reads killed by one
     /// slow scan are one silence, not five (audit grok C2-01).
     private var timeoutStrikes = 0
+    private var interactiveRequests = 0
     private var lastStrikeAt: Date?
     /// Last stderr line — surfaced with failures for diagnosis.
     private(set) var lastStderrLine: String?
@@ -169,9 +171,10 @@ final class SidecarClient {
     /// Typed request: re-serializes the JSON-RPC `result` and decodes it
     /// into the caller's DTO, so views never touch untyped payloads.
     func requestDecodable<T: Decodable>(_ method: String, params: [String: Any]? = nil,
+                                        interactive: Bool = false,
                                         as type: T.Type,
                                         completion: @escaping (Result<T, Error>) -> Void) {
-        request(method, params: params) { result in
+        request(method, params: params, interactive: interactive) { result in
             switch result {
             case .failure(let error):
                 completion(.failure(error))
@@ -191,6 +194,7 @@ final class SidecarClient {
     }
 
     func request(_ method: String, params: [String: Any]? = nil,
+                 interactive: Bool = false,
                  completion: @escaping (Result<Any?, Error>) -> Void) {
         queue.async {
             if !self.running {
@@ -209,17 +213,29 @@ final class SidecarClient {
                 return
             }
             data.append(0x0A)
-            self.pending[id] = completion
-            let deadline = method == "scan" ? Self.scanTimeout : Self.requestTimeout
-            let countsAsStrike = method != "scan"
+            if interactive {
+                self.interactiveRequests += 1
+            }
+            let waiting: (Result<Any?, Error>) -> Void = { result in
+                if interactive {
+                    self.interactiveRequests = max(0, self.interactiveRequests - 1)
+                }
+                completion(result)
+            }
+            self.pending[id] = waiting
+            let protectedByInteraction = interactive || self.interactiveRequests > 0
+            let deadline = method == "scan"
+                ? Self.scanTimeout
+                : protectedByInteraction ? Self.interactiveTimeout : Self.requestTimeout
+            let countsAsStrike = method != "scan" && !protectedByInteraction
             do {
                 // throwing write: a broken pipe becomes a failed request
                 // (with SIGPIPE ignored in main.swift), not a dead app
                 try launch.stdinPipe.fileHandleForWriting.write(contentsOf: data)
             } catch {
-                self.pending.removeValue(forKey: id)
+                let waiting = self.pending.removeValue(forKey: id)
                 self.running = false
-                completion(.failure(SidecarError.notRunning))
+                waiting?(.failure(SidecarError.notRunning))
                 return
             }
             // deadline: one unanswered request must not park the UI in
@@ -230,7 +246,7 @@ final class SidecarClient {
                 // a helper that keeps timing out is wedged, and the
                 // serial pipe means everything behind it dies too —
                 // kill it so the backoff restart can recover (C1-04)
-                guard countsAsStrike else { return }
+                guard countsAsStrike, self.interactiveRequests == 0 else { return }
                 let now = Date()
                 if let last = self.lastStrikeAt, now.timeIntervalSince(last) < 2 {
                     return

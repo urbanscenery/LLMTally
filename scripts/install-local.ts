@@ -16,15 +16,18 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const DIST_DIR = join(homedir(), '.llmtally', 'dist');
+const root = join(import.meta.dir, '..');
 
-function run(command: string[]): void {
-  const result = Bun.spawnSync(command, { stdout: 'inherit', stderr: 'inherit' });
+function run(command: readonly string[]): void {
+  const result = Bun.spawnSync([...command], { cwd: root, stdout: 'inherit', stderr: 'inherit' });
   if (result.exitCode !== 0) {
     throw new Error(`${command.join(' ')} exited ${result.exitCode}`);
   }
 }
 
-const root = join(import.meta.dir, '..');
+run(['bun', 'run', 'build:keychain-helper']);
+run(['bun', 'run', 'verify:keychain-helper']);
+
 // a stale tarball of another version would make the pick below ambiguous
 rmSync(DIST_DIR, { recursive: true, force: true });
 mkdirSync(DIST_DIR, { recursive: true });
