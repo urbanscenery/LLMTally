@@ -42,6 +42,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var closeObserver: NSObjectProtocol?
     private var configObserver: NSObjectProtocol?
     private var heightObserver: NSObjectProtocol?
+    private var overviewLoadedObserver: NSObjectProtocol?
     private var keyMonitor: Any?
     private var outsideClickMonitor: Any?
     // last-good inputs so a Builder edit re-renders without a new fetch
@@ -91,6 +92,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         ) { [weak self] _ in
             self?.showPanel()
         }
+        overviewLoadedObserver = NotificationCenter.default.addObserver(
+            forName: .llmtallyOverviewLoaded, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.adoptPanelLoad()
+        }
         closeObserver = NotificationCenter.default.addObserver(
             forName: .llmtallyClosePopover, object: nil, queue: .main
         ) { [weak self] _ in
@@ -106,7 +112,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     deinit {
         refreshTimer?.invalidate()
-        for observer in [descriptorObserver, privacyObserver, openObserver, closeObserver, configObserver, heightObserver] {
+        for observer in [descriptorObserver, privacyObserver, openObserver, closeObserver, configObserver, heightObserver, overviewLoadedObserver] {
             if let observer { NotificationCenter.default.removeObserver(observer) }
         }
         removeMonitors()
@@ -399,6 +405,30 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             self.renderFromCache()
             NotificationManager.shared.process(quota: overview.quota, privacy: PrivacySetting.enabled)
         }
+    }
+
+    /// The popover finished a load of its own (Refresh, switch, Keychain
+    /// authorization): its data is newer than this tick's cache, so the
+    /// button — and the threshold planner — take it now. The reverse of
+    /// `OverviewModel.absorb`; without it the icon kept showing the
+    /// pre-switch account until the cadence fired.
+    private func adoptPanelLoad() {
+        // the observer runs on the main queue; the model is MainActor
+        let loaded: (overview: OverviewDTO, active: [String: String?], hours: [ReportBucketDTO])? =
+            MainActor.assumeIsolated {
+                let model = OverviewModel.shared
+                guard let overview = model.overview else { return nil }
+                return (overview, model.activeAccounts, model.hourBuckets)
+            }
+        guard let loaded else { return }
+        hasOverview = true
+        lastOverviewError = nil
+        lastQuota = loaded.overview.quota
+        lastBuckets = loaded.overview.report.buckets
+        lastHourBuckets = loaded.hours
+        lastActive = loaded.active
+        renderFromCache()
+        NotificationManager.shared.process(quota: loaded.overview.quota, privacy: PrivacySetting.enabled)
     }
 
     private func queue(setError message: String) {

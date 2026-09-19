@@ -140,6 +140,12 @@ final class OverviewModel: ObservableObject {
             if let hourResult {
                 self.hourBuckets = hourResult
             }
+            if case .success = overviewResult {
+                // the status item keeps its own cache (filled only by
+                // its cadence tick): hand it this load so a switch or a
+                // Refresh here shows on the menu bar now, not in ≤5 min
+                NotificationCenter.default.post(name: .llmtallyOverviewLoaded, object: self)
+            }
             if self.pendingUserRefresh {
                 self.pendingUserRefresh = false
                 self.load(refresh: true)

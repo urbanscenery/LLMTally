@@ -21,6 +21,11 @@ extension Notification.Name {
     static let llmtallyKeyCommand = Notification.Name("llmtallyKeyCommand")
     /// The popover view asks the controller to close it (Esc at root).
     static let llmtallyClosePopover = Notification.Name("llmtallyClosePopover")
+    /// Posted by the popover after one of its own loads (Refresh, a
+    /// switch, Keychain authorization) lands. The status item adopts
+    /// that result at once instead of drawing its previous tick's
+    /// account until the next cadence fires.
+    static let llmtallyOverviewLoaded = Notification.Name("llmtallyOverviewLoaded")
     /// The popover content reports its natural height (object: NSNumber,
     /// full panel points) so the panel can fit the content instead of a
     /// fixed size. The controller clamps to the screen's visible frame —
