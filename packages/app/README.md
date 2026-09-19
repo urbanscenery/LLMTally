@@ -46,6 +46,17 @@ login — all gated on a bundle identifier):
 sh packages/app/scripts/bundle.sh && open packages/app/build/LLMTally.app
 ```
 
+Prefer `open` (or a login item) over running the executable directly.
+macOS 27 tracks every status item under the *responsible* process in
+System Settings → Menu Bar. A directly spawned binary inherits the
+terminal as its responsible process, so the LLMTally item is filed
+under cmux/Ghostty/Terminal there and disappears whenever that
+terminal's toggle is off — while LLMTally's own toggle still reads on.
+`open` and login items make the app responsible for itself. If the icon
+vanishes after a Menu Bar settings change, relaunching the app is enough:
+`MenuBarAgent` re-evaluates on launch (`log show --predicate
+'process == "MenuBarAgent" AND eventMessage CONTAINS "Creating status item"'`).
+
 The bundle is self-contained: `bun build --compile` embeds the sidecar
 as a single binary in `Contents/Helpers/llmtally-sidecar`, so a
 bundled app needs neither a bun install nor this checkout. Resolution

@@ -19,7 +19,29 @@ if [ ! -x "$KEYCHAIN_HELPER" ]; then
   exit 1
 fi
 
-swift build -c release --package-path macos
+# macOS 27's Command Line Tools ship no SwiftUI macro plugin, and @State
+# is a macro since the 27 SDK — so a bare CLT toolchain cannot expand it
+# ("plugin for module 'SwiftUIMacros' not found"). Borrow Xcode's own
+# SDK + plugin server (they must match: a 26.x plugin against the 27 SDK
+# fails on `_makeStorage_v0`). Nothing here goes through xcrun, so an
+# unaccepted Xcode license does not block the build.
+DEV_DIR="$(xcode-select -p 2>/dev/null || true)"
+if [ ! -f "$DEV_DIR/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib" ] &&
+   [ ! -f "$DEV_DIR/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib" ]; then
+  XCODE_DEV="${LLMTALLY_XCODE_DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+  XCODE_PLUGINS="$XCODE_DEV/Platforms/MacOSX.platform/Developer/usr/lib/swift/host/plugins"
+  XCODE_PLUGIN_SERVER="$XCODE_DEV/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-plugin-server"
+  XCODE_SDK="$XCODE_DEV/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+  if [ -f "$XCODE_PLUGINS/libSwiftUIMacros.dylib" ] && [ -x "$XCODE_PLUGIN_SERVER" ] && [ -d "$XCODE_SDK" ]; then
+    echo "bundle: active toolchain ($DEV_DIR) lacks the SwiftUI macro plugin; building with the SDK and plugin server from $XCODE_DEV" >&2
+    export SDKROOT="$XCODE_SDK"
+    set -- -Xswiftc -external-plugin-path -Xswiftc "$XCODE_PLUGINS#$XCODE_PLUGIN_SERVER"
+  else
+    echo "bundle: the active Swift toolchain has no SwiftUI macro plugin and no Xcode.app to borrow one from (set LLMTALLY_XCODE_DEVELOPER_DIR)" >&2
+    exit 1
+  fi
+fi
+swift build -c release --package-path macos "$@"
 bun build --compile src/sidecar-main.ts --outfile build/llmtally-sidecar
 # bun 1.3.x leaks its ~60MB .{hash}.bun-build temp in cwd even on success
 rm -f ./.*.bun-build

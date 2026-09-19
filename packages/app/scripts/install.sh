@@ -37,5 +37,9 @@ fi
 # ditto keeps the ad-hoc signature and extended attributes intact
 rm -rf "$DEST"
 ditto build/LLMTally.app "$DEST"
+# Launch through LaunchServices, never by exec'ing the binary: macOS 27
+# files each status item under its responsible process in System
+# Settings → Menu Bar, and a direct spawn would inherit this terminal
+# as responsible — hiding the item whenever the terminal's toggle is off.
 open "$DEST"
 echo "installed $DEST"
