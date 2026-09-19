@@ -1,9 +1,10 @@
 import { renderCard } from '../components/card.ts';
+import { noticeLines } from '../components/notice.ts';
 import { buildQuotaBar, describeReset, severityMarker } from '../components/quota-bar.ts';
 import { joinLine, span } from '../rich-text.ts';
 import type { RichLine, StyledSpan } from '../rich-text.ts';
 import type { TuiState } from '../state.ts';
-import { fitLine, padEndWidth, truncateToWidth, wrapToWidth } from '../text.ts';
+import { fitLine, padEndWidth, truncateToWidth } from '../text.ts';
 import { isSwitchable } from '../view-model/accounts.ts';
 import type {
   AccountGroupViewModel,
@@ -95,6 +96,7 @@ function quotaLines(
   narrow: boolean,
   gauge: number,
   nowUtc: number,
+  textWidth: number,
 ): RichLine[] {
   const lines: RichLine[] = [];
   for (const bar of provider.bars) {
@@ -124,11 +126,18 @@ function quotaLines(
       provider.failure.credentialOwner?.accountId ??
       'another account';
     lines.push(
-      joinLine(span(`! selected: ${provider.account ?? 'unknown'} · live credential: ${owner}`, 'warning')),
+      ...noticeLines(
+        '! ',
+        `selected: ${provider.account ?? 'unknown'} · live credential: ${owner}`,
+        textWidth,
+        'warning',
+      ),
     );
   }
+  // provider warnings carry recovery instructions ("Choose Authorize
+  // Keychain in Accounts") — they wrap, they are never elided
   for (const warning of provider.warnings) {
-    lines.push(joinLine(span(`! ${warning}`, 'warning')));
+    lines.push(...noticeLines('! ', warning, textWidth, 'warning'));
   }
   return lines;
 }
@@ -141,20 +150,25 @@ function accountBody(
   nowUtc: number,
   innerWidth: number,
 ): RichLine[] {
+  // the card pads content by one cell and the body is indented two more,
+  // so notice text may use exactly innerWidth - 3 cells before the frame
+  const textWidth = innerWidth - 3;
   const body: RichLine[] =
     row.quota === null
-      ? [joinLine(span(row.note ?? 'no quota reading', 'muted'))]
-      : quotaLines(row.quota, narrow, gauge, nowUtc);
+      ? noticeLines('', row.note ?? 'no quota reading', textWidth, 'muted')
+      : quotaLines(row.quota, narrow, gauge, nowUtc, textWidth);
   if (body.length === 0) {
     body.push(joinLine(span('no quota windows reported', 'muted')));
   }
   if (row.refreshDead) {
     // recovery instructions must never be elided — wrap, don't truncate
     body.unshift(
-      ...wrapToWidth(
-        '⚠ stored refresh token is dead — sign in as this account once (llmtally re-captures it)',
-        Math.max(8, innerWidth - 4),
-      ).map((line): RichLine => joinLine(span(line, 'danger'))),
+      ...noticeLines(
+        '⚠ ',
+        'stored refresh token is dead — sign in as this account once (llmtally re-captures it)',
+        textWidth,
+        'danger',
+      ),
     );
   }
   return body.map((line): RichLine => joinLine('  ', line));
@@ -261,7 +275,7 @@ export const accountsTabView: TabView = (
       return [fitLine('  loading accounts…', width)];
     }
     if (resource.phase === 'error') {
-      return [fitLine(`  accounts unavailable: ${resource.error ?? 'unknown error'}`, width)];
+      return noticeLines('  ', `accounts unavailable: ${resource.error ?? 'unknown error'}`, width, 'danger');
     }
     return [fitLine('  accounts not loaded yet', width)];
   }
@@ -272,11 +286,11 @@ export const accountsTabView: TabView = (
   const header: TabViewLine[] = [joinLine(' ', ...actionLine(selectedRow))];
   if (resource.phase === 'error') {
     header.push(
-      joinLine(
-        span(
-          fitLine(`  ! refresh failed: ${resource.error ?? 'unknown'} (showing last data)`, width),
-          'danger',
-        ),
+      ...noticeLines(
+        '  ! ',
+        `refresh failed: ${resource.error ?? 'unknown'} (showing last data)`,
+        width,
+        'danger',
       ),
     );
   }

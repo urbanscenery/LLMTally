@@ -1,3 +1,4 @@
+import { noticeLines } from '../components/notice.ts';
 import { formatCompact } from '../format.ts';
 import { joinLine, span } from '../rich-text.ts';
 import type { RichLine } from '../rich-text.ts';
@@ -145,17 +146,20 @@ export function renderPromptList(options: PromptsRenderOptions): {
     return { lines, firstVisible: 0 };
   }
   const cursor = Math.max(0, Math.min(options.cursor, model.rows.length - 1));
+  // warnings wrap rather than truncate, so their footprint is measured
+  // before the list is windowed — the list yields rows, not the notice
+  const warningLines = model.warnings.flatMap((warning) =>
+    noticeLines(' ! ', warning, width, 'warning'),
+  );
   const { firstVisible, room } = promptWindowStart(
     model.rows.length,
     cursor,
-    height - PROMPT_LIST_HEADER_LINES - model.warnings.length,
+    height - PROMPT_LIST_HEADER_LINES - warningLines.length,
   );
   const visible = model.rows.slice(firstVisible, firstVisible + room);
   visible.forEach((row, offset) => {
     lines.push(...promptEntryLines(row, firstVisible + offset === cursor, width));
   });
-  for (const warning of model.warnings) {
-    lines.push(joinLine(' ', span(`! ${warning}`, 'warning')));
-  }
+  lines.push(...warningLines);
   return { lines, firstVisible };
 }

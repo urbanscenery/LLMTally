@@ -252,3 +252,39 @@ describe('sortable tables', () => {
     expect(text).toContain('sort Rows↓');
   });
 });
+
+describe('pricing warnings', () => {
+  test('renders every warning in full, however many and however long', () => {
+    // Arrange — three warnings (the old cap was two) and one that will
+    // not fit in 60 columns
+    const long =
+      'price table for anthropic could not be refreshed: network unreachable — showing cached prices from 2026-09-01';
+    const summary = summaryFixture([bucket('codex', 7)]);
+    const model = toBreakdownViewModel('agent', {
+      ...summary,
+      pricing: { ...summary.pricing, warnings: ['first warning', 'second warning', long] },
+    });
+    const state = withTabResource(withActiveTab(createInitialState(), 'agents'), 'agents', {
+      phase: 'ready',
+      data: model,
+      error: null,
+      updatedAtUtc: NOW,
+      invalidated: false,
+    });
+
+    // Act
+    const lines = viewText(agentsTabView(state, 60, 30, NOW));
+    const joined = lines.join('\n');
+    const notices = lines.filter((line) => /^\s+(!\s|\s{2}\S)/.test(line));
+    const flattened = notices.map((line) => line.trim().replace(/^! /, '')).join(' ');
+
+    // Assert
+    expect(joined).toContain('first warning');
+    expect(joined).toContain('second warning');
+    expect(flattened).toContain(long);
+    expect(joined).not.toContain('…');
+    for (const line of lines) {
+      expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
+    }
+  });
+});

@@ -1,4 +1,5 @@
 import { buildTableSummary, renderBreakdownTable } from '../components/breakdown-table.ts';
+import { noticeLines } from '../components/notice.ts';
 import { joinLine, span } from '../rich-text.ts';
 import { sortSpecFor } from '../state.ts';
 import type { TuiState } from '../state.ts';
@@ -56,7 +57,7 @@ function breakdownView(
         return [fitLine(`  loading ${noun}…`, width)];
       }
       if (resource.phase === 'error') {
-        return [fitLine(`  ${noun} unavailable: ${resource.error ?? 'unknown error'}`, width)];
+        return noticeLines('  ', `${noun} unavailable: ${resource.error ?? 'unknown error'}`, width, 'danger');
       }
       return [fitLine(`  ${noun} not loaded yet`, width)];
     }
@@ -72,16 +73,18 @@ function breakdownView(
       ...renderBreakdownTable(sorted, width, tableRows, sort, tab === 'models' ? state.modelsCursor : -1),
       '',
     ];
-    for (const warning of model.pricing.warnings.slice(0, 2)) {
-      lines.push(joinLine(span(fitLine(`  ! ${warning}`, width), 'warning')));
+    // every pricing warning, in full — a capped or elided warning hides
+    // the very fact the user needs to act on
+    for (const warning of model.pricing.warnings) {
+      lines.push(...noticeLines('  ! ', warning, width, 'warning'));
     }
     if (resource.phase === 'error') {
       lines.push(
-        joinLine(
-          span(
-            fitLine(`  ! refresh failed: ${resource.error ?? 'unknown'} (showing last data)`, width),
-            'danger',
-          ),
+        ...noticeLines(
+          '  ! ',
+          `refresh failed: ${resource.error ?? 'unknown'} (showing last data)`,
+          width,
+          'danger',
         ),
       );
     }

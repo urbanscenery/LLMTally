@@ -1033,3 +1033,69 @@ describe('opencode accounts', () => {
     expect(rows[0]?.label).toBe('me@test.dev');
   });
 });
+
+describe('notices are never elided', () => {
+  const KEYCHAIN_WARNING = 'Keychain approval required. Choose Authorize Keychain in Accounts.';
+
+  function readyState(model: ReturnType<typeof toAccountsTabViewModel>) {
+    return withAccountsCursor(
+      withTabResource(withActiveTab(createInitialState(), 'accounts'), 'accounts', {
+        phase: 'ready' as const,
+        data: model,
+        error: null,
+        updatedAtUtc: NOW,
+        invalidated: false,
+      }),
+      0,
+    );
+  }
+
+  test('a provider warning wraps in full inside a narrow card', () => {
+    // Arrange — the card is at most 78 wide; at 60 columns the Keychain
+    // instruction cannot fit on one line and used to end in "…"
+    const model = toAccountsTabViewModel(
+      inputFor([snapshotFixture({ windows: [], warnings: [KEYCHAIN_WARNING] })]),
+    );
+
+    // Act
+    const lines = viewText(accountsTabView(readyState(model), 60, 30, NOW));
+    const joined = lines.join('\n');
+    const flattened = lines
+      .filter((line) => /^\s*│\s+!/.test(line) || /^\s*│\s{4,}\S/.test(line))
+      .map((line) => line.replace(/^\s*│\s*!?\s*/, '').replace(/\s*│\s*$/, ''))
+      .join(' ');
+
+    // Assert — every word of the instruction is on screen, unelided,
+    // and the card (the action-hint header is the shell's to clip) fits
+    expect(joined).not.toContain('…');
+    expect(flattened).toContain(KEYCHAIN_WARNING);
+    for (const line of lines.filter((line) => line.includes('│'))) {
+      expect(Bun.stringWidth(line)).toBeLessThanOrEqual(60);
+    }
+  });
+
+  test('a refresh failure in the header wraps rather than truncates', () => {
+    // Arrange
+    const model = toAccountsTabViewModel(inputFor([snapshotFixture()]));
+    const error = 'usage endpoint returned 429 after three attempts; the reading is 12 minutes old';
+    const state = withTabResource(withActiveTab(createInitialState(), 'accounts'), 'accounts', {
+      phase: 'error' as const,
+      data: model,
+      error,
+      updatedAtUtc: NOW,
+      invalidated: false,
+    });
+
+    // Act — the notice is pinned in the header, above the first card
+    const lines = viewText(accountsTabView(state, 50, 30, NOW));
+    const header = lines.slice(0, lines.findIndex((line) => line.includes('╭')));
+    const joined = header.map((line) => line.trim().replace(/^! /, '')).join(' ');
+
+    // Assert
+    expect(joined).toContain(`refresh failed: ${error} (showing last data)`);
+    expect(header.join('\n')).not.toContain('…');
+    for (const line of header.slice(1)) {
+      expect(Bun.stringWidth(line)).toBeLessThanOrEqual(50);
+    }
+  });
+});

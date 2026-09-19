@@ -1,4 +1,5 @@
 import { renderCostSummary, renderTokenSummary, unclassifiedNote, QUOTA_COST_DISCLAIMER } from '../components/cost-summary.ts';
+import { noticeLines } from '../components/notice.ts';
 import {
   blockChartIndexAtColumn,
   renderDailyBlockChart,
@@ -156,7 +157,7 @@ export function makeOverviewTabView(
         return [fitLine('  loading usage…', width)];
       }
       if (resource.phase === 'error') {
-        return [fitLine(`  usage unavailable: ${resource.error ?? 'unknown error'}`, width)];
+        return noticeLines('  ', `usage unavailable: ${resource.error ?? 'unknown error'}`, width, 'danger');
       }
       return [fitLine('  usage not loaded yet', width)];
     }
@@ -209,16 +210,16 @@ export function makeOverviewTabView(
     }
     const unclassified = unclassifiedNote(model);
     if (unclassified !== null) {
-      lines.push(joinLine(span(fitLine(` ${unclassified}`, width), 'warning')));
+      lines.push(...noticeLines(' ', unclassified, width, 'warning'));
     }
     lines.push(joinLine(span(fitLine(` ${QUOTA_COST_DISCLAIMER}`, width), 'dim')));
     if (resource.phase === 'error') {
       lines.push(
-        joinLine(
-          span(
-            fitLine(`  ! refresh failed: ${resource.error ?? 'unknown'} (showing last data)`, width),
-            'danger',
-          ),
+        ...noticeLines(
+          '  ! ',
+          `refresh failed: ${resource.error ?? 'unknown'} (showing last data)`,
+          width,
+          'danger',
         ),
       );
     }

@@ -1,4 +1,5 @@
 import type { TokenTotals } from '@llmtally/core/pricing/types.ts';
+import { noticeLines } from '../components/notice.ts';
 import { formatCompact } from '../format.ts';
 import { joinLine, span } from '../rich-text.ts';
 import type { RichLine, ThemeRole } from '../rich-text.ts';
@@ -155,7 +156,7 @@ export function promptDetailLines(model: PromptDetailViewModel, width: number): 
   // per-call table can run long and follows
   lines.push([], ...bodySection(model, width), [], ...callsSection(model));
   for (const warning of model.warnings) {
-    lines.push(joinLine(' ', span(`! ${warning}`, 'warning')));
+    lines.push(...noticeLines(' ! ', warning, width, 'warning'));
   }
   return lines;
 }

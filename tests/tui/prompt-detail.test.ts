@@ -164,3 +164,25 @@ describe('renderPromptDetail', () => {
     expect(lines[2]).toContain('loading prompt…');
   });
 });
+
+describe('promptDetailLines warnings', () => {
+  test('a long warning wraps in full instead of running off the line', () => {
+    // Arrange
+    const long =
+      'pricing for gpt-5.6-sol is stale: the price table could not be refreshed, so this cost uses the cached rate from 2026-09-01';
+    const model = toPromptDetailViewModel(detail({ warnings: [long] }));
+
+    // Act
+    const lines = text(promptDetailLines(model, 48));
+    const start = lines.findIndex((line) => line.startsWith(' ! '));
+    const notice = lines.slice(start).map((line) => line.trim().replace(/^! /, '')).join(' ');
+
+    // Assert
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(notice).toContain(long);
+    expect(lines.join('\n')).not.toContain('…');
+    for (const line of lines.slice(start)) {
+      expect(Bun.stringWidth(line)).toBeLessThanOrEqual(48);
+    }
+  });
+});
