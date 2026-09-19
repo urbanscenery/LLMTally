@@ -112,3 +112,64 @@ test('approval denial during rollback remains marked as requiring interaction', 
   expect(failure).toMatchObject({ recovery: 'unknown', requiresInteraction: true });
   expect(stored).toBe('new');
 });
+
+// Items owned by another CLI (Claude Code, Cursor) are written by
+// /usr/bin/security, so their partition list names only `apple-tool:`
+// and every token refresh resets it to that. The ad-hoc helper's
+// cdhash partition never survives, so those reads go through the one
+// reader the item always trusts (observed 2026-09-18: helper -25293
+// right after Claude Code's SecKeychainItemModifyContent).
+function externalReadHarness(result: { exitCode: number | null; stderr?: string }, keychainPath?: string) {
+  const requests: KeychainProcessRequest[] = [];
+  const keychain = createMacosKeychain({
+    helperPath: '/test/helper',
+    ...(keychainPath === undefined ? {} : { keychainPath }),
+    runner(request) {
+      requests.push(request);
+      return { exitCode: result.exitCode, stdout: '', stderr: result.stderr ?? '' };
+    },
+  });
+  return { keychain, requests };
+}
+
+test('externally owned items are read through /usr/bin/security, never the helper', () => {
+  const harness = externalReadHarness({ exitCode: 0, stderr: 'password: "opaque-token"\n' });
+  expect(harness.keychain.read('Claude Code-credentials', 'someone')).toEqual({ kind: 'found', value: 'opaque-token' });
+  expect(harness.requests).toHaveLength(1);
+  expect(harness.requests[0]?.executable).toBe('/usr/bin/security');
+  expect(harness.requests[0]?.args).toEqual(['find-generic-password', '-s', 'Claude Code-credentials', '-a', 'someone', '-g']);
+  expect(harness.requests[0]?.timeoutMs).toBe(5000);
+});
+
+test('an explicit keychain path is passed to the external reader', () => {
+  const harness = externalReadHarness({ exitCode: 0, stderr: 'password: "v"\n' }, '/tmp/test.keychain-db');
+  harness.keychain.read('cursor-access-token', 'cursor-user');
+  expect(harness.requests[0]?.args.at(-1)).toBe('/tmp/test.keychain-db');
+});
+
+test('a missing external item is absent, not an error', () => {
+  const harness = externalReadHarness({ exitCode: 44 });
+  expect(harness.keychain.read('cursor-access-token', 'cursor-user')).toEqual({ kind: 'absent' });
+});
+
+test('an external read refused for approval asks for authorization without leaking output', () => {
+  for (const exitCode of [36, 51, 128, null]) {
+    const harness = externalReadHarness({ exitCode, stderr: 'password: "SECRET-MUST-NOT-LEAK"\n' });
+    const result = harness.keychain.read('Claude Code-credentials', 'someone');
+    expect(result).toMatchObject({ kind: 'error', requiresInteraction: true });
+    expect(JSON.stringify(result)).not.toContain('SECRET-MUST-NOT-LEAK');
+  }
+});
+
+test('an unexpected external failure is an error that does not claim to need approval', () => {
+  const harness = externalReadHarness({ exitCode: 1 });
+  const result = harness.keychain.read('Claude Code-credentials', 'someone');
+  expect(result.kind).toBe('error');
+  expect(result).not.toMatchObject({ requiresInteraction: true });
+});
+
+test('an explicit authorization gives the external reader time to show its dialog', () => {
+  const harness = externalReadHarness({ exitCode: 0, stderr: 'password: "v"\n' });
+  withKeychainInteraction(() => harness.keychain.read('Claude Code-credentials', 'someone'));
+  expect(harness.requests[0]?.timeoutMs).toBe(120_000);
+});

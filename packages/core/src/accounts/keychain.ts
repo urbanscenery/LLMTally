@@ -14,11 +14,15 @@ import type {
 import { KeychainError } from './keychain-types.ts';
 import type { KeychainPort, KeychainReadResult } from './keychain-types.ts';
 import {
+  interpretSecurityRead,
   parseKeychainPasswordOutput,
 } from './keychain-security.ts';
 
 const SECURITY_BIN = '/usr/bin/security';
 const INTERACTIVE_TIMEOUT_MS = 120_000;
+const BACKGROUND_TIMEOUT_MS = 5000;
+/** The only service this app owns; every other item belongs to an external CLI. */
+const OWN_SERVICE = 'llmtally';
 const CONTROL_CHARACTERS = new RegExp('[\\u0000-\\u001f\\u007f]');
 
 export type { KeychainProcessRequest, KeychainProcessResult, KeychainProcessRunner };
@@ -38,9 +42,12 @@ export function createMacosKeychain(options: MacosKeychainOptions = {}): Keychai
   const available = options.runner !== undefined || process.platform === 'darwin';
   const securityArgs = (args: readonly string[]): readonly string[] =>
     options.keychainPath === undefined ? args : [...args, options.keychainPath];
-  const runSecurity = (args: readonly string[]): KeychainProcessResult => {
+  const runSecurity = (
+    args: readonly string[],
+    timeoutMs: number = INTERACTIVE_TIMEOUT_MS,
+  ): KeychainProcessResult => {
     try {
-      return runner({ executable: SECURITY_BIN, args: securityArgs(args), timeoutMs: INTERACTIVE_TIMEOUT_MS });
+      return runner({ executable: SECURITY_BIN, args: securityArgs(args), timeoutMs });
     } catch (error) {
       if (error instanceof Error) {
         return { exitCode: null, stdout: '' };
@@ -55,7 +62,21 @@ export function createMacosKeychain(options: MacosKeychainOptions = {}): Keychai
       if (!available) {
         return { kind: 'absent' };
       }
-      return invokeKeychainQuery(helperPath, options.keychainPath, runner, 'read', service, account, isKeychainInteractionAllowed());
+      const interactive = isKeychainInteractionAllowed();
+      if (service !== OWN_SERVICE) {
+        // Items another CLI owns (Claude Code, Cursor) are (re)written
+        // by /usr/bin/security, which resets their partition list to
+        // `apple-tool:` on every token refresh. The ad-hoc helper's
+        // cdhash partition never survives that, so read them with the
+        // one client the item always trusts.
+        return interpretSecurityRead(
+          runSecurity(
+            ['find-generic-password', '-s', service, '-a', account, '-g'],
+            interactive ? INTERACTIVE_TIMEOUT_MS : BACKGROUND_TIMEOUT_MS,
+          ),
+        );
+      }
+      return invokeKeychainQuery(helperPath, options.keychainPath, runner, 'read', service, account, interactive);
     },
     write(service, account, secret) {
       if (!available) {
@@ -73,7 +94,7 @@ export function createMacosKeychain(options: MacosKeychainOptions = {}): Keychai
           );
         }
       }
-      const externalReader = service !== 'llmtally';
+      const externalReader = service !== OWN_SERVICE;
       if (externalReader && !isKeychainInteractionAllowed()) {
         throw new KeychainError('Shared credentials can only be changed by an explicit account action', 'unchanged');
       }
