@@ -162,15 +162,24 @@ export async function runKeychainSwitchQa(options: SwitchQaOptions): Promise<voi
     if (transactionalStore.read() !== credentialA) {
       throw new Error('second service failure did not restore the first native service');
     }
-    const readFailureRunner: KeychainProcessRunner = (request): KeychainProcessResult =>
-      request.executable === options.helperPath && request.args.includes('--read')
-        ? {
-            exitCode: 1,
-            stdout: JSON.stringify({
-              version: 1, ok: false, phase: 'read', status: -25308, value: null,
-            }),
-          }
-        : auditedRunner(request);
+    // External items (the active Claude credential) are read with
+    // security(1), llmtally's own items with the helper: fail both so
+    // the switch meets an unreadable Keychain whichever reader it uses.
+    const readFailureRunner: KeychainProcessRunner = (request): KeychainProcessResult => {
+      if (request.executable === options.helperPath && request.args.includes('--read')) {
+        return {
+          exitCode: 1,
+          stdout: JSON.stringify({
+            version: 1, ok: false, phase: 'read', status: -25308, value: null,
+          }),
+        };
+      }
+      if (request.executable === '/usr/bin/security' && request.args[0] === 'find-generic-password' && request.args.includes('-g')) {
+        // errSecInteractionNotAllowed (-25308) exits with its low byte
+        return { exitCode: 36, stdout: '', stderr: '' };
+      }
+      return auditedRunner(request);
+    };
     const unreadableStore = createActiveCredentialStore({
       configHome,
       keychain: options.createMacosKeychain({
